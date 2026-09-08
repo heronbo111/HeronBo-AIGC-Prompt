@@ -9,6 +9,7 @@ seedance-prompt skill（只生成 Seedance 口播提示词）+ 六维评分工�
 
 ## 当前状态（2026-09-08 晚更新）
 - v1.1 跨机化已完成；**v1.2 规律数据入库已完成**：`samples/` 收录 4 个实验的口播稿/提示词/评价 json/备注（大视频不进仓），.gitignore 已放行 samples 评价 json，README「同步与版本」已更新。提交 9a7ecf8。
+- **并行会话已推进样本4**（提交 596199b）：首版成片诊断=音色换人（F0 154→195Hz），rules.md 新增第14条（音色参考须独立音频+视频静音），samples-db 样本4 已更新为 v2 修复态；`samples/四六级/文案/提示词.txt` 已同步 v2（73c182a）。
 - **远程仓库尚未创建/推送**：用户 2026-09-08 晚已选定「用浏览器帮我建仓」（Gitee 私有 + GitHub 私有，均命名 seedance-prompt 空仓库）；但浏览器探查发现 **Edge 里 Gitee/GitHub 均未登录**——登录页标签页已打开（Gitee /projects/new、GitHub /new），等用户登录后继续。
 - 推送凭据已备好：本机 Git Credential Manager 2.9 可用，已配 repo 级 `credential.helper=manager`（`git config --local credential.helper manager`）。
 
