@@ -11,7 +11,7 @@ skill 正文一律使用变量名（`${SAMPLES_ROOT}` / `${AI_CREATE_ROOT}`）�
 ## 换机清单
 
 1. 把本 skill 仓库 clone 到 `~/.zcode/skills/`（ZCode 用户级；Codex 则是 `~/.codex/skills/`）：
-   `git clone <gitee仓库地址> C:\Users\你的用户名\.zcode\skills\seedance-prompt`（或从仓库管理页下载 zip 解压）
+   `git clone https://github.com/heronbo111/seedance-prompt.git C:\Users\你的用户名\.zcode\skills\seedance-prompt`（或从仓库管理页下载 zip 解压）
 2. **改本文件**上述两个变量为你机器的实际路径。
 3. 建样本库根目录（建议结构：`{实验名}\{文案, 素材, 成片, 废片, 评价, 备注}\`，参考 samples-db.md）。
 4. 评分工具：双击 `tools\启动评分工具.bat`（首次需点「连接样本目录」选中你的样本库根；之后自动记忆）。依赖 Python 3（在 PATH）；bat 已通用化，无需改路径。
