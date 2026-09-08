@@ -53,7 +53,7 @@ C:\Users\你的用户名\.codex\skills\seedance-prompt\
 
 ## 同步与版本（本包用 git 管理）
 
-- 本包是 **git 仓库**（GitHub 私有 + Gitee 私有双远程）：GitHub 已建（`https://github.com/heronbo111/seedance-prompt.git`，作者用）；Gitee 因账号私有权限受限暂缓（待账号具备私有权限后补建，地址待定）。
+- 本包是 **git 仓库**（双远程已建）：GitHub **私有** `https://github.com/heronbo111/seedance-prompt.git`（作者编排主库）；Gitee **公开** `https://gitee.com/HeronBo/seedance-prompt.git`（团队/同事国内直连；该 Gitee 账号当前仅支持创建公开仓库——新建时"私有"为禁用态，若日后解锁私有，建议在 Gitee 仓库设置中转私有）。
 - **按反馈更新规则后**：作者 `git push 双远程`；同事机器 `git pull` 即拿到最新规则——不存在"zip 快照过期"问题。
 - 大视频素材（成片/废片）不进仓库（.gitignore），各机样本库各自维护；**规律数据（评价 json、文案、备注）以仓库 `samples/` 为准**（结构与约定见 `samples/README.md`）。
 - 首次拉取：`git clone https://github.com/heronbo111/seedance-prompt.git C:\Users\你的用户名\.zcode\skills\seedance-prompt`（国内直连可用 Gitee 同构替换地址）

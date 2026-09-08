@@ -7,24 +7,15 @@
 seedance-prompt skill（只生成 Seedance 口播提示词）+ 六维评分工具，做成 git 仓库跨机/团队使用。
 仓库根：`C:\Users\<用户名>\.zcode\skills\seedance-prompt\`（git 已 init，main，首个 commit 5682f92，9 文件）。
 
-## 当前状态（2026-09-08 晚更新）
-- v1.1 跨机化已完成；**v1.2 规律数据入库已完成**：`samples/` 收录 4 个实验的口播稿/提示词/评价 json/备注（大视频不进仓），.gitignore 已放行 samples 评价 json，README「同步与版本」已更新。提交 9a7ecf8。
-- **并行会话已推进样本4**（提交 596199b）：首版成片诊断=音色换人（F0 154→195Hz），rules.md 新增第14条（音色参考须独立音频+视频静音），samples-db 样本4 已更新为 v2 修复态；`samples/四六级/文案/提示词.txt` 已同步 v2（73c182a）。
-- **远程仓库尚未创建/推送**：用户 2026-09-08 晚已选定「用浏览器帮我建仓」（Gitee 私有 + GitHub 私有，均命名 seedance-prompt 空仓库）；但浏览器探查发现 **Edge 里 Gitee/GitHub 均未登录**——登录页标签页已打开（Gitee /projects/new、GitHub /new），等用户登录后继续。
-- 推送凭据已备好：本机 Git Credential Manager 2.9 可用，已配 repo 级 `credential.helper=manager`（`git config --local credential.helper manager`）。
+## 当前状态（2026-09-08 晚 完成双远程）
+- v1.1 跨机化、v1.2 规律数据入库均已提交；并行会话持续更新规则（现至第15条：模型自读台词易读错，样本4 转 v3 配音驱动——以仓库为准）。
+- **双远程已建并推送完成**：GitHub **私有** `heronbo111/seedance-prompt`（作者主库）；Gitee **公开** `HeronBo/seedance-prompt`（团队同事用；该账号"私有"选项禁用=仅支持公开仓库，若日后解锁可在设置转私有）。Gitee 推送凭据=私人令牌，已存入本机 GCM（`credential.helper=manager`，repo 级已配）。
+- 备注：Gitee 私人令牌生成需账号密码验证（用户体验待优化点）；token 值请用户自行保管（聊天记录中含一份，安全性自担/建议必要时撤销重建）。
 
-## 下一条行动线（用户登录后执行）
-1. 在已打开的登录页确认用户登录 Gitee + GitHub（或让用户直接给 Gitee 私人令牌 + GitHub PAT 改走 API）。
-2. 创建两个私有空仓库（不选初始化文件），创建前向用户复述一次仓库名/公开性。
-3. ```bash
-   cd C:\Users\<用户名>\.zcode\skills\seedance-prompt
-   git remote add gitee https://gitee.com/<用户名>/seedance-prompt.git
-   git remote add github https://github.com/<用户名>/seedance-prompt.git
-   git push -u gitee main && git push -u github main
-   ```
-4. 首次 push 会弹 GCM 浏览器授权：GitHub 登录态可自动通过；Gitee 走通用凭据页，按提示输入 Gitee 密码或私人令牌。
-- Gitee=给同事用（国内直连），GitHub=作者编辑；之后规则更新走 push 双远程，同事 git pull。
-- 已解决：规律数据入库（samples/ 见 samples/README.md，含更新流程）。
+## 下一条行动线（无阻塞，可选优化）
+1. 若 Gitee 账号解锁私有权限：仓库设置改私有 + 更新本 README 的可见性描述。
+2. 令牌轮换：如需撤销/重建（Gitee 私人令牌页 -> 删除 -> 新建），重建后需重存 GCM 凭据（`printf "protocol=https\nhost=gitee.com\nusername=HeronBo\npassword=新令牌\n\n" | git credential approve`）。
+3. 规则/样本持续更新走双远程 push；同事 pull 即同步。
 
 ## 关键约束（务必保持）
 - 交付物只出提示词：永不出现 CLI 命令/积分报价/队列信息（rules.md 第13条；READ ME 铁律5）。
