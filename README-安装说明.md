@@ -40,7 +40,8 @@ C:\Users\你的用户名\.codex\skills\seedance-prompt\
 
 - **自然触发**：直接说"帮我写口播提示词 / 把这段台词变成 Seedance 提示词 / 做分镜提示词"
 - **显式调用**：`/seedance-prompt 把这段台词做成提示词：……`
-- 提示词生成后，自己在即梦网页生成视频；生成完**双击 `tools\启动评分工具.bat`** 打分（六维+违禁项+结论）——该 bat 自动起服务并打开页面 `http://localhost:8787/评价工具.html`，首次点「连接样本目录」选你的样本库根目录，之后自动记忆、打开即用。**给其他 agent 的自动化入口**：对 agent 说"运行 `seedance-prompt\tools\启动评分工具.bat`"即可自动完成启动与打开页面，无需人工双击。
+- 提示词生成后，自己在即梦网页生成视频；生成完**双击 `tools\启动评分工具.bat`** 打分（六维+违禁项+结论）。**该 bat 全自动完成四件事**：① 首次配置（检测样本库根目录，不存在则自动创建 `%USERPROFILE%\AI创作\提示词skill生成尝试\` 并写回 `references/paths.md`）→ ② 起服务 → ③ 自动打开页面 `http://localhost:8787/评价工具.html` → ④ 浏览器首次点「连接样本目录」选该根目录后自动记忆，之后打开即用。
+- **给其他 agent 的自动化入口**：对 agent(如 WorkBuddy)说"运行 `seedance-prompt\tools\启动评分工具.bat`"，即自动完成配置、建目录、起服务、打开评分页，无需人工双击；agent 也可以直接 `python seedance-prompt\tools\首次配置.py` 只做目录保证。
 - **给 agent 反馈**（"口型对不上""这条成了"）→ agent 会按 skill 的《反馈优化循环》自动把规律写进 rules.md，越用越准
 
 ## 必守铁律（已写入 skill，务必遵守）

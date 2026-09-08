@@ -9,6 +9,10 @@ if not defined PY (
   pause
   exit /b 1
 )
+rem 第一次配置：确保样本库根目录存在（不存在则自动创建并写入 paths.md）
+if exist "%~dp0首次配置.py" (
+  %PY% "%~dp0首次配置.py"
+)
 start "评价工坊服务" /min %PY% -m http.server 8787 --directory "%~dp0"
 timeout /t 1 >nul
 start "" "http://localhost:8787/评价工具.html"
