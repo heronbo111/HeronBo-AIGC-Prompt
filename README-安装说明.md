@@ -64,3 +64,4 @@ C:\Users\你的用户名\.codex\skills\seedance-prompt\
 - `references/samples-db.md` 里的样本路径是 `${SAMPLES_ROOT}` 变量；取值见 `references/paths.md`（每台机器一行）。
 - `tools/启动评分工具.bat` 无需改路径（自动探测 python/py；页面从 bat 所在目录提供）。
 - 若服务端口 8787 被占用：关掉旧「评价工坊服务」窗口后重开 bat，或改 bat 端口并同步改打开 URL。
+- **首次 push/pull 如弹出登录**：安装并启用 Git Credential Manager（Git for Windows 通常自带；`git config credential.helper manager` 后，git 会引导浏览器授权，帐号密码不用输入 git 命令行）。
