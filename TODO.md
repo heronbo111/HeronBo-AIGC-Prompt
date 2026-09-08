@@ -15,7 +15,7 @@ seedance-prompt skill（只生成 Seedance 口播提示词）+ 六维评分工�
 ## 下一条行动线（无阻塞，可选优化）
 1. 若 Gitee 账号解锁私有权限：仓库设置改私有 + 更新本 README 的可见性描述。
 2. 令牌轮换：如需撤销/重建（Gitee 私人令牌页 -> 删除 -> 新建），重建后需重存 GCM 凭据（`printf "protocol=https\nhost=gitee.com\nusername=HeronBo\npassword=新令牌\n\n" | git credential approve`）。
-3. 规则/样本持续更新走双远程 push；同事 pull 即同步。
+3. **同步节奏（2026-09-08 用户定）**：每周一 09:00 自动推送 cron 已建（automation-45fe6fb0）；平时改动只提交不推送，周推送前想提前让同事拿到可在任意会话手动 push。
 
 ## 关键约束（务必保持）
 - 交付物只出提示词：永不出现 CLI 命令/积分报价/队列信息（rules.md 第13条；READ ME 铁律5）。
