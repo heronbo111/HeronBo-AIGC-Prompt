@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Seedance 成片六维评价工具</title>
+<style>
+  :root { --bg:#0c0e13; --bg2:#11141c; --panel:#171b25; --panel2:#1d2230; --border:#2a3145; --border2:#39415c;
+    --text:#e8ebf3; --dim:#9aa3b8; --accent:#5b8cff; --accent2:#7aa2ff; --ok:#34d399; --warn:#fbbf24; --bad:#f87171;
+    --glow:0 0 18px rgba(91,140,255,.16); --radius:12px; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html,body { height:100%; }
+  body { font-family:"Microsoft YaHei","PingFang SC",system-ui,sans-serif; background:radial-gradient(1200px 600px at 15% -10%, #1a2440 0%, transparent 60%), var(--bg); color:var(--text); display:flex; overflow:hidden; }
+  ::-webkit-scrollbar { width:8px; height:8px; }
+  ::-webkit-scrollbar-thumb { background:#303a55; border-radius:4px; }
+  ::-webkit-scrollbar-thumb:hover { background:#3d4a6e; }
+
+  #sidebar { width:300px; min-width:300px; border-right:1px solid var(--border); padding:18px 16px; overflow-y:auto; background:linear-gradient(180deg, var(--bg2), var(--bg)); display:flex; flex-direction:column; gap:14px; }
+  #main { flex:1; overflow-y:auto; padding:20px 26px 40px; }
+
+  h1 { font-size:17px; display:flex; align-items:center; gap:8px; }
+  h1 .logo { font-size:20px; }
+  h2 { font-size:14px; margin:20px 0 10px; color:var(--dim); display:flex; align-items:center; gap:8px; }
+  h2::before { content:""; width:3px; height:13px; border-radius:2px; background:linear-gradient(180deg,var(--accent),var(--accent2)); }
+  .sub { color:var(--dim); font-size:12px; line-height:1.7; }
+
+  button { background:linear-gradient(180deg,var(--accent),#4a78e8); color:#fff; border:none; padding:9px 16px; border-radius:9px; cursor:pointer; font-size:13px; font-weight:600; box-shadow:var(--glow); transition:.15s; }
+  button:hover { filter:brightness(1.12); transform:translateY(-1px); }
+  button:active { transform:none; }
+  button.secondary { background:var(--panel2); color:var(--text); box-shadow:none; border:1px solid var(--border); font-weight:400; }
+  button.secondary:hover { border-color:var(--border2); }
+  button.small { padding:5px 12px; font-size:12px; }
+
+  #connbar { font-size:12px; color:var(--dim); background:var(--panel); border:1px solid var(--border); border-radius:9px; padding:9px 11px; line-height:1.6; word-break:break-all; }
+  #connbar .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; vertical-align:middle; }
+  .dot.ok { background:var(--ok); box-shadow:0 0 8px var(--ok); } .dot.warn { background:var(--warn); box-shadow:0 0 8px var(--warn); } .dot.bad { background:var(--bad); }
+
+  .sample-item { padding:10px 12px; border:1px solid var(--border); border-radius:10px; margin-bottom:8px; cursor:pointer; transition:.15s; background:var(--panel); }
+  .sample-item:hover { border-color:var(--border2); transform:translateX(2px); }
+  .sample-item.active { border-color:var(--accent); background:linear-gradient(180deg,#202a44,#1a2138); box-shadow:var(--glow); }
+  .sample-item .t { font-size:13px; font-weight:600; margin-top:4px; }
+  .sample-item .m { font-size:11px; color:var(--dim); margin-top:3px; }
+  .tag { display:inline-block; font-size:10px; padding:2px 8px; border-radius:9px; font-weight:600; }
+  .tag.done { background:rgba(52,211,153,.14); color:var(--ok); }
+  .tag.none { background:rgba(251,191,36,.14); color:var(--warn); }
+  .tag.video { background:rgba(91,140,255,.16); color:var(--accent2); }
+
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius); padding:18px; margin-bottom:16px; box-shadow:0 8px 24px rgba(0,0,0,.25); }
+  .row { display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:12px; }
+  .row label.item { min-width:104px; color:var(--dim); font-size:13px; }
+  .opts { display:flex; gap:8px; flex-wrap:wrap; }
+  .opt { padding:6px 14px; border:1px solid var(--border); border-radius:18px; cursor:pointer; font-size:13px; user-select:none; transition:.12s; color:var(--dim); }
+  .opt:hover { border-color:var(--border2); color:var(--text); }
+  .opt.sel.ok { background:rgba(52,211,153,.15); border-color:var(--ok); color:var(--ok); font-weight:600; }
+  .opt.sel.warn { background:rgba(251,191,36,.15); border-color:var(--warn); color:var(--warn); font-weight:600; }
+  .opt.sel.bad { background:rgba(248,113,113,.15); border-color:var(--bad); color:var(--bad); font-weight:600; }
+
+  .stars { font-size:22px; cursor:pointer; letter-spacing:3px; }
+  .stars span { color:#3a415e; transition:.1s; }
+  .stars span.on { color:var(--warn); text-shadow:0 0 10px rgba(251,191,36,.5); }
+
+  textarea, input[type=text] { width:100%; background:#0f131c; color:var(--text); border:1px solid var(--border); border-radius:8px; padding:9px 11px; font-size:13px; font-family:inherit; transition:.15s; }
+  textarea:focus, input[type=text]:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px rgba(91,140,255,.15); }
+  textarea { min-height:70px; resize:vertical; }
+
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th, td { border:1px solid var(--border); padding:7px 10px; text-align:left; }
+  th { background:var(--panel2); color:var(--dim); font-weight:600; }
+  tr:hover td { background:rgba(255,255,255,.02); }
+  .stat-cell { display:inline-block; margin:2px 6px 2px 0; padding:2px 8px; border-radius:8px; background:var(--panel2); font-size:12px; }
+  .stat-cell.ok { color:var(--ok); } .stat-cell.warn { color:var(--warn); } .stat-cell.bad { color:var(--bad); }
+
+  .hint { color:var(--dim); font-size:12px; line-height:1.8; margin-top:12px; padding:10px 12px; background:var(--panel); border:1px dashed var(--border2); border-radius:9px; }
+  code { background:#0f131c; padding:1px 6px; border-radius:4px; font-size:11.5px; font-family:Consolas,monospace; }
+  #saveMsg { color:var(--ok); font-size:12px; }
+  .exist-item { border:1px solid var(--border); border-radius:9px; padding:10px 12px; margin-bottom:8px; font-size:13px; background:var(--panel2); }
+  .exist-item b { color:var(--text); }
+  .exist-item .dims { color:var(--dim); font-size:12px; margin-top:4px; line-height:1.6; }
+
+  #toast { position:fixed; right:22px; bottom:22px; background:#12232b; border:1px solid var(--ok); color:var(--ok); padding:11px 16px; border-radius:10px; font-size:13px; box-shadow:0 10px 30px rgba(0,0,0,.4); opacity:0; transform:translateY(8px); transition:.25s; pointer-events:none; }
+  #toast.show { opacity:1; transform:none; }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+  <h1><span class="logo">🎬</span>Seedance 成片六维评价</h1>
+  <div class="sub">勾选打分 → 保存到样本目录 <code>评价/</code></div>
+  <button id="btnConnect">📁 连接样本目录</button>
+  <button class="secondary" id="btnReauth" style="display:none">🔑 重新授权上次目录</button>
+  <div id="connbar">未连接</div>
+  <h2>样本列表</h2>
+  <div id="sampleList"><div class="sub">先连接目录</div></div>
+  <div class="hint">
+    ✅ <b>已记住上次连接的目录</b>：打开页面自动恢复，无需每次手选（首次或换目录时点一次「连接样本目录」）。<br>
+    打开方式：双击 <code>启动评分工具.bat</code>（或服务已起好时直接刷新本页）；<br>
+    必须走 localhost（Edge/Chrome），file:// 方式无法写入本地目录。
+  </div>
+</div>
+
+<div id="main">
+  <div id="formArea" style="display:none">
+    <div class="card">
+      <div class="row" style="margin-bottom:14px">
+        <button id="btnSave">💾 保存评价</button>
+        <button class="secondary" id="btnRefresh">🔄 刷新样本状态</button>
+        <span id="saveMsg"></span>
+      </div>
+
+      <div class="row"><label class="item">样本</label><b id="curSample"></b></div>
+      <div class="row"><label class="item">成片文件</label><input type="text" id="inVideo" placeholder="如 文案一.mp4（自动填样本目录里的视频，可改）"></div>
+
+      <h2>六维打分</h2>
+      <div class="row"><label class="item">口型同步</label><div class="opts" data-dim="口型同步"><span class="opt" data-v="同步">✅ 同步</span><span class="opt" data-v="偶尔错位">⚠️ 偶尔错位</span><span class="opt" data-v="明显不对">❌ 明显不对</span></div></div>
+      <div class="row"><label class="item">动作跟随</label><div class="opts" data-dim="动作跟随"><span class="opt" data-v="准确">✅ 准确</span><span class="opt" data-v="部分偏离">⚠️ 部分偏离</span><span class="opt" data-v="明显违和">❌ 明显违和</span></div></div>
+      <div class="row"><label class="item">形象一致性</label><div class="opts" data-dim="形象一致性"><span class="opt" data-v="稳定">✅ 稳定</span><span class="opt" data-v="轻微漂移">⚠️ 轻微漂移</span><span class="opt" data-v="漂移明显">❌ 漂移明显</span></div></div>
+      <div class="row"><label class="item">语速</label><div class="opts" data-dim="语速"><span class="opt" data-v="合适">✅ 合适</span><span class="opt" data-v="偏快或偏慢">⚠️ 偏快或偏慢</span><span class="opt" data-v="不符">❌ 不符</span></div></div>
+      <div class="row"><label class="item">节奏卡点</label><div class="opts" data-dim="节奏卡点"><span class="opt" data-v="准">✅ 卡点准</span><span class="opt" data-v="一般">⚠️ 一般</span><span class="opt" data-v="没卡上">❌ 没卡上</span></div></div>
+
+      <h2>违禁项检查（无字幕/无运镜/无畸变）</h2>
+      <div class="row"><label class="item">字幕</label><div class="opts" data-dim="字幕"><span class="opt" data-v="无">✅ 无</span><span class="opt" data-v="有">❌ 有</span></div></div>
+      <div class="row"><label class="item">运镜</label><div class="opts" data-dim="运镜"><span class="opt" data-v="无">✅ 无</span><span class="opt" data-v="有">❌ 有</span></div></div>
+      <div class="row"><label class="item">AI 畸变</label><div class="opts" data-dim="AI畸变"><span class="opt" data-v="无">✅ 无</span><span class="opt" data-v="有">❌ 有</span></div></div>
+
+      <h2>整体评分（1-5 星）</h2>
+      <div class="row"><div class="stars" id="stars" title="点击打分"><span data-v="1">★</span><span data-v="2">★</span><span data-v="3">★</span><span data-v="4">★</span><span data-v="5">★</span></div>
+        <span id="starLabel" style="color:var(--dim);font-size:13px"></span></div>
+      <div class="row">
+        <label class="item">结论</label>
+        <div class="opts" id="verdict"><span class="opt" data-v="可用">✅ 可用</span><span class="opt" data-v="可改">🔄 可改</span><span class="opt" data-v="作废">🗑️ 作废</span></div>
+      </div>
+      <div class="row"><label class="item">备注</label><textarea id="inNote" placeholder="这版好的地方 / 坏的地方（会写进样本库供生成提示词参考）"></textarea></div>
+    </div>
+
+    <div class="card"><h2 style="margin-top:0">已有评价</h2><div id="existList" class="sub"></div></div>
+  </div>
+
+  <div id="statsArea" style="display:none">
+    <div class="card">
+      <div class="row"><h2 style="margin:0;flex:1">📊 六维统计（所有样本已保存的评价）</h2><button class="secondary small" id="btnStats">刷新统计</button></div>
+      <div id="statsTable"><div class="sub">连接目录后点「刷新统计」</div></div>
+      <div class="hint">每行：一维指标各选项的条数与占比；整体评分取均值。这些数据会被 AI 读入样本库，作为下次生成提示词的参照。</div>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+let dirHandle = null;
+let samples = [];       // {name, handle, hasVideo, reviews:[{name,json}]}
+let curSample = null;
+let sel = {};           // 当前表单选择
+let pendingHandle = null;
+
+// ---------- 目录记忆（IndexedDB：记住上次连接目录，打开自动恢复） ----------
+const IDB_NAME = 'seedance-eval', IDB_STORE = 'dirs';
+function idb() { return new Promise((res,rej)=>{ const r = indexedDB.open(IDB_NAME,1);
+  r.onupgradeneeded = () => r.result.createObjectStore(IDB_STORE);
+  r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
+async function idbPut(key, val) { const db = await idb(); return new Promise((res,rej)=>{
+  const t = db.transaction(IDB_STORE,'readwrite'); t.objectStore(IDB_STORE).put(val,key);
+  t.oncomplete = () => { db.close(); res(); }; t.onerror = () => { db.close(); rej(t.error); }; }); }
+async function idbGet(key) { const db = await idb(); return new Promise((res,rej)=>{
+  const rq = db.transaction(IDB_STORE,'readonly').objectStore(IDB_STORE).get(key);
+  rq.onsuccess = () => { db.close(); res(rq.result || null); }; rq.onerror = () => { db.close(); rej(rq.error); }; }); }
+
+function toast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'), 3200); }
+function setConn(text, dotClass) {
+  const bar = document.getElementById('connbar');
+  bar.innerHTML = (dotClass ? `<span class="dot ${dotClass}"></span>` : '') + text;
+}
+
+// 页面加载 → 尝试自动恢复上次目录
+(async function restoreDir() {
+  let h = null;
+  try { h = await idbGet('lastDir'); } catch(_) {}
+  if (!h) { setConn('未连接（首次使用请选择样本目录）'); return; }
+  try {
+    const p = await h.queryPermission({ mode:'readwrite' });
+    if (p === 'granted') {
+      dirHandle = h; setConn('已连接：' + h.name + '（自动恢复）', 'ok');
+      await scanSamples();
+    } else if (p === 'prompt') {
+      pendingHandle = h;
+      setConn('已记住上次目录：<b>' + h.name + '</b>　点击上方「重新授权上次目录」即可自动连接', 'warn');
+      document.getElementById('btnReauth').style.display = '';
+    } else {
+      setConn('上次目录 ' + h.name + ' 授权被拒，请重新连接目录', 'bad');
+    }
+  } catch(_) { setConn('上次目录恢复失败，请重新连接', 'bad'); }
+})();
+
+document.getElementById('btnReauth').onclick = async () => {
+  if (!pendingHandle) return;
+  const p = await pendingHandle.requestPermission({ mode:'readwrite' });
+  if (p === 'granted') {
+    dirHandle = pendingHandle; pendingHandle = null;
+    document.getElementById('btnReauth').style.display = 'none';
+    setConn('已连接：' + dirHandle.name + '（自动恢复）', 'ok');
+    await scanSamples();
+  } else alert('授权被拒，可点击「连接样本目录」重新选择。');
+};
+
+// ---------- 目录连接与扫描 ----------
+document.getElementById('btnConnect').onclick = async () => {
+  try {
+    dirHandle = await window.showDirectoryPicker({ id:'seedance-samples', mode:'readwrite' });
+    try { await idbPut('lastDir', dirHandle); } catch(_) {}
+    setConn('已连接：' + dirHandle.name + '（下次自动恢复）', 'ok');
+    await scanSamples();
+  } catch(e) {
+    if (e.name !== 'AbortError') alert('连接失败：' + e.message + '\n\n请通过 启动评分工具.bat 打开本页（localhost 环境才允许写入本地目录）。');
+  }
+};
+
+async function scanSamples() {
+  samples = [];
+  for await (const entry of dirHandle.values()) {
+    if (entry.kind !== 'directory' || entry.name.startsWith('.')) continue;
+    const sub = { name: entry.name, handle: entry, hasVideo: false, reviews: [] };
+    try {
+      sub.hasVideo = await findVideo(entry);
+      let isSample = sub.hasVideo || false;
+      if (!isSample) {
+        for (const d of ['成片','素材','文案']) { try { await entry.getDirectoryHandle(d); isSample = true; break; } catch(_) {} }
+      }
+      if (!isSample) continue;
+      try {
+        const evDir = await entry.getDirectoryHandle('评价');
+        for await (const e3 of evDir.values()) {
+          if (e3.kind === 'file' && e3.name.endsWith('.json')) {
+            const json = JSON.parse(await (await e3.getFile()).text());
+            sub.reviews.push({ name: e3.name, json });
+          }
+        }
+      } catch(_) {}
+      samples.push(sub);
+    } catch(_) {}
+  }
+  samples.sort((a,b)=>a.name.localeCompare(b.name,'zh'));
+  renderSampleList();
+  renderStats();
+  if (samples.length) {
+    const last = localStorage.getItem('lastSample');
+    const target = samples.find(s => s.name === last) || samples[0];
+    selectSample(target);
+  }
+  document.getElementById('formArea').style.display='block';
+  document.getElementById('statsArea').style.display='block';
+}
+
+async function findVideo(entry) {
+  for await (const e2 of entry.values()) {
+    if (e2.kind === 'file' && /\.(mp4|mov|webm)$/i.test(e2.name)) return e2.name;
+  }
+  try {
+    const fd = await entry.getDirectoryHandle('成片');
+    for await (const e3 of fd.values()) {
+      if (e3.kind === 'file' && /\.(mp4|mov|webm)$/i.test(e3.name)) return e3.name;
+    }
+  } catch(_) {}
+  return false;
+}
+
+function renderSampleList() {
+  const list = document.getElementById('sampleList');
+  list.innerHTML = '';
+  if (!samples.length) { list.innerHTML = '<div class="sub">没有识别到样本（不含 素材/成片/文案 的目录）</div>'; return; }
+  for (const s of samples) {
+    const d = document.createElement('div');
+    d.className = 'sample-item' + (curSample===s ? ' active':'');
+    const done = s.reviews.length > 0;
+    d.innerHTML = `<div><span class="tag ${done?'done':'none'}">${done?'已评':'未评'}</span>${s.hasVideo ? `<span class="tag video">🎞 有成片</span>` : ''}</div><div class="t">${s.name}</div><div class="m">成片：${s.hasVideo || '未发现'} · 评价 ${s.reviews.length} 条</div>`;
+    d.onclick = () => selectSample(s);
+    list.appendChild(d);
+  }
+}
+
+function selectSample(s) {
+  curSample = s;
+  document.getElementById('curSample').textContent = s.name;
+  localStorage.setItem('lastSample', s.name);
+  const v = document.getElementById('inVideo');
+  if (s.hasVideo) v.value = s.hasVideo;
+  sel = { 口型同步:null, 动作跟随:null, 形象一致性:null, 语速:null, 节奏卡点:null, 字幕:null, 运镜:null, AI畸变:null, 整体:0, 结论:null, 备注:'' };
+  clearForm();
+  if (s.reviews.length) {
+    const last = s.reviews[s.reviews.length-1].json;
+    Object.assign(sel, last['六维']||{}, last['违禁项']||{});
+    sel['整体'] = last['整体评分']||0; sel['结论'] = last['结论']||null; sel['备注'] = last['备注']||'';
+    paintForm();
+  }
+  renderExist();
+  renderSampleList();
+}
+
+// ---------- 表单 ----------
+const OK_VALS = ['同步','准确','稳定','合适','准','无','可用'];
+function classFor(v) { return v==='可改' ? 'warn' : (OK_VALS.includes(v) ? 'ok' : 'bad'); }
+
+function clearForm() {
+  document.querySelectorAll('#formArea .opt').forEach(o=>o.classList.remove('sel','ok','warn','bad'));
+  document.querySelectorAll('#stars span').forEach(s=>s.classList.remove('on'));
+  document.getElementById('starLabel').textContent='';
+  document.getElementById('inNote').value='';
+  document.getElementById('saveMsg').textContent='';
+}
+function paintForm() {
+  document.querySelectorAll('#formArea .opt').forEach(o=>{
+    const dim = o.parentElement.dataset.dim;
+    if (sel[dim] === o.dataset.v) { o.classList.add('sel'); o.classList.add(classFor(o.dataset.v)); }
+  });
+  document.querySelectorAll('#stars span').forEach(s=>{ if (+s.dataset.v <= sel['整体']) s.classList.add('on'); });
+  document.getElementById('starLabel').textContent = sel['整体'] ? (sel['整体'] + ' 分') : '点击选择';
+  document.getElementById('inNote').value = sel['备注']||'';
+}
+
+document.querySelectorAll('#formArea .opt').forEach(o=>{
+  o.onclick = () => {
+    const dim = o.parentElement.dataset.dim;
+    sel[dim] = o.dataset.v;
+    o.parentElement.querySelectorAll('.opt').forEach(x=>x.classList.remove('sel','ok','warn','bad'));
+    o.classList.add('sel'); o.classList.add(classFor(o.dataset.v));
+  };
+});
+document.querySelectorAll('#stars span').forEach(s=>{
+  s.onmouseenter = () => document.querySelectorAll('#stars span').forEach(x=>x.classList.toggle('on', +x.dataset.v <= +s.dataset.v));
+  s.onmouseleave = () => document.querySelectorAll('#stars span').forEach(x=>x.classList.toggle('on', +x.dataset.v <= sel['整体']));
+  s.onclick = () => {
+    const v = +s.dataset.v;
+    sel['整体'] = v;
+    document.querySelectorAll('#stars span').forEach(x=>x.classList.toggle('on', +x.dataset.v <= v));
+    document.getElementById('starLabel').textContent = v + ' 分';
+  };
+});
+document.querySelectorAll('#verdict .opt').forEach(o=>{
+  o.onclick = () => {
+    sel['结论'] = o.dataset.v;
+    document.querySelectorAll('#verdict .opt').forEach(x=>x.classList.remove('sel','ok','warn','bad'));
+    o.classList.add('sel'); o.classList.add(classFor(o.dataset.v));
+  };
+});
+
+// ---------- 保存 ----------
+document.getElementById('btnSave').onclick = async () => {
+  if (!dirHandle || !curSample) { alert('请先连接样本目录'); return; }
+  const missing = ['口型同步','动作跟随','形象一致性','语速','节奏卡点','字幕','运镜','AI畸变'].filter(k=>!sel[k]);
+  if (missing.length) { alert('还有没填的：' + missing.join('、')); return; }
+  if (!sel['整体']) { alert('请选整体评分'); return; }
+  if (!sel['结论']) { alert('请选结论（可用/可改/作废）'); return; }
+  const now = new Date();
+  const dateStr = now.toISOString().slice(0,10);
+  const video = document.getElementById('inVideo').value.trim() || '未指定';
+  const fname = `${dateStr}-${video.replace(/\.(mp4|mov|webm)$/i,'')}.json`;
+  const data = {
+    样本: curSample.name, 成片: video,
+    评价时间: `${dateStr} ${now.toTimeString().slice(0,5)}`,
+    六维: { 口型同步:sel['口型同步'], 动作跟随:sel['动作跟随'], 形象一致性:sel['形象一致性'], 语速:sel['语速'], 节奏卡点:sel['节奏卡点'] },
+    违禁项: { 字幕:sel['字幕'], 运镜:sel['运镜'], AI畸变:sel['AI畸变'] },
+    整体评分: sel['整体'], 结论: sel['结论'], 备注: sel['备注']||''
+  };
+  try {
+    const evDir = await curSample.handle.getDirectoryHandle('评价', { create:true });
+    const fh = await evDir.getFileHandle(fname, { create:true });
+    const w = await fh.createWritable();
+    await w.write(JSON.stringify(data, null, 2));
+    await w.close();
+    const msg = document.getElementById('saveMsg');
+    msg.textContent = '✅ 已保存：' + curSample.name + '/评价/' + fname;
+    toast('✅ 已保存评价');
+    curSample.reviews.push({ name: fname, json: data });
+    renderExist();
+    renderSampleList();
+    renderStats();
+  } catch(e) {
+    alert('保存失败：' + e.message + '\n（如果浏览器拒绝写入，请重试；不要有同名文件被占用的窗口）');
+  }
+};
+
+function renderExist() {
+  const el = document.getElementById('existList');
+  if (!curSample || !curSample.reviews.length) { el.textContent = '暂无历史评价'; return; }
+  el.innerHTML = curSample.reviews.map(r=>{
+    const j = r.json;
+    const dims = j['六维']||{};
+    const d = j['违禁项']||{};
+    const scoreLine = ['口型:'+dims['口型同步'],'动作:'+dims['动作跟随'],'形象:'+dims['形象一致性'],'语速:'+dims['语速'],'节奏:'+dims['节奏卡点'],'字幕:'+d['字幕'],'运镜:'+d['运镜'],'畸变:'+d['AI畸变']].join(' · ');
+    return `<div class="exist-item"><b>${r.name}</b> · ${j['整体评分']}星 · ${j['结论']}<div class="dims">${scoreLine}<br>备注：${j['备注']||'（无）'}</div></div>`;
+  }).join('');
+}
+
+// ---------- 统计 ----------
+function renderStats() {
+  const el = document.getElementById('statsTable');
+  const rows = { '口型同步':['同步','偶尔错位','明显不对'], '动作跟随':['准确','部分偏离','明显违和'], '形象一致性':['稳定','轻微漂移','漂移明显'], '语速':['合适','偏快或偏慢','不符'], '节奏卡点':['准','一般','没卡上'], '字幕':['无','有'], '运镜':['无','有'], 'AI畸变':['无','有'] };
+  let total = 0, sum = 0;
+  for (const s of samples) for (const r of s.reviews) { total++; sum += r.json['整体评分']||0; }
+  if (!total) { el.innerHTML = '<div class="sub">还没有任何评价记录。先保存几条吧。</div>'; return; }
+  let html = `<p style="margin-bottom:8px;font-size:13px">共 <b>${total}</b> 条评价，整体评分均值 <b>${(sum/total).toFixed(1)}</b> / 5</p><table><tr><th>维度</th><th>分布</th></tr>`;
+  for (const dim in rows) {
+    const counts = rows[dim].map(v => ({v, n: 0}));
+    for (const s of samples) for (const r of s.reviews) {
+      const map6 = r.json['六维']||{}; const map7 = r.json['违禁项']||{};
+      const val = map6[dim] ?? map7[dim];
+      const hit = counts.find(c=>c.v===val);
+      if (hit) hit.n++;
+    }
+    html += `<tr><td style="min-width:90px">${dim}</td><td>` + counts.map(c=>`<span class="stat-cell ${OK_VALS.includes(c.v) && c.n>0 ? 'ok' : (['偶尔错位','部分偏离','轻微漂移','偏快或偏慢','一般'].includes(c.v) ? 'warn' : 'bad')}">${c.v}×${c.n}</span>`).join('　') + `</td></tr>`;
+  }
+  html += '</table>';
+  el.innerHTML = html;
+}
+document.getElementById('btnStats').onclick = renderStats;
+document.getElementById('btnRefresh').onclick = () => scanSamples();
+</script>
+</body>
+</html>
