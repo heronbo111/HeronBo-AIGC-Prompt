@@ -8,3 +8,6 @@
 成片/
 废片/
 评价/
+# 例外：samples/ 下的评价 json 属于规律数据，随仓库同步
+!samples/**/评价/
+!samples/**/评价/*.json
