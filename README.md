@@ -16,7 +16,7 @@ seedance-prompt/
 │   ├── rules.md                   # 硬规则与已验证规律（规范化经验表述，跨机读取）
 │   ├── prompt-templates.md        # 三类模板（生成类单段/多段、参考视频类）
 │   ├── samples-db.md              # 样本库对照（提示词→成片→评价）
-│   └── paths.md                   # 路径表（换机只改这里）
+│   └── paths.md                   # 路径表（首次由用户指定项目位置后写入）
 ├── tools/
 │   ├── 评价工具.html              # 六维评分网页（口型/动作/形象/语速/节奏/违禁项）
 │   └── 启动评分工具.bat           # 一键起服务（localhost:8787，免改路径）
@@ -31,8 +31,8 @@ seedance-prompt/
 #### 安装教程
 
 1. 克隆仓库（国内直连建议 Gitee：`git clone https://gitee.com/HeronBo/seedance-prompt.git`；作者主库为 GitHub 私有）。
-2. 把本目录放到 `~/.zcode/skills/seedance-prompt/`（ZCode）或 `~/.codex/skills/`（Codex CLI），新对话自动识别。
-3. 改 `references/paths.md` 两个路径变量为你机器的样本库根目录。
+2. 把本目录放到 `~/.zcode/skills/seedance-prompt/`（ZCode）、`~/.codex/skills/`（Codex CLI）或 `~/.dsh/skills/`（DeepSeek Harness），新对话自动识别。
+3. 首次使用：agent 会问「请问您要把项目建在哪里？您提供好素材后，我会自动将其进行归类」→ 按你的答复建项目骨架、自动归类素材，并把样本库根写入 `references/paths.md`（不预设默认路径）。
 4. 装依赖：Python 3（评分工具）、Edge/Chrome（localhost 打开评分页）、ffmpeg（素材识别抽帧）。
 5. 详见 `README-安装说明.md`（换机三件套、全流程自检）。
 
@@ -47,10 +47,14 @@ seedance-prompt/
 
 1. 使用并反馈：成片反馈/六维评分是规则更新的唯一来源。
 2. 同步节奏：作者每周一 09:00 自动推送双远程；各端按需 `git pull`，不必跟随每次改动更新。
-3. 大视频（成片/废片）不进仓库；评价 json、口播稿等规律数据随 `samples/` 走仓库，更新流程见 `samples/README.md`。
+3. 大视频（成片/废片）不进仓库；真实口播稿/备注只存各机本机样本库，仓库 `samples/` 为脱敏示例，更新流程见 `samples/README.md`。
 
 #### 特技
 
 - 规则优先级：用户实测 > 模板 > 推断；出现 ≥2 次且因果明确的才升为「已验证规律」。
 - 引用一致性硬规则：提示词里写的每个 @视频1/@图片1 必须真实存在于上传素材。
 - 负面词每段写死：无字幕 / 无运镜 / 无AI畸变。
+
+#### 开源许可证
+
+MIT License，见 [LICENSE](LICENSE)。
