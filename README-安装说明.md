@@ -1,6 +1,6 @@
 # Seedance 口播提示词 Skill —— 安装与使用说明
 
-版本：v1.1（2026-09-08，跨机化）　适用：ZCode / Codex CLI / 其他能读文件的 agent
+版本：v1.3（2026-09-10，跨机化 + 平台选择 + 评价回收 + 本地覆盖层）　适用：ZCode / Codex CLI / DeepSeek Harness / 其他能读文件的 agent
 
 ## 这个包是什么
 
@@ -38,9 +38,13 @@ C:\Users\你的用户名\.dsh\skills\seedance-prompt\
 ```
 
 ### 换机三件套（必做，5 分钟）
-1. **问项目位置**：agent 按固定话术问「请问您要把项目建在哪里？您提供好素材后，我会自动将其进行归类」，按答复建骨架并把 `${SAMPLES_ROOT}` 写进 `references/paths.md`（skill 正文不写死任何本机路径；不预设默认目录）；
-2. **建样本库**：`python tools\首次配置.py --project "<项目目录>"` 一次建好骨架（项目子目录：`文案/素材/成片/废片/评价/备注`，参考 `references/samples-db.md`）；
-3. **装依赖**：Python 3（评分工具，需在 PATH）、Edge/Chrome（必须 localhost 方式打开，file:// 无法写入本地目录）、ffmpeg（素材识别抽帧用）；生成在即梦网页完成，需即梦账号。
+1. **问项目位置**：agent 问「请问您要把项目建在哪里？您提供好素材后，我会自动将其进行归类」→ `python tools\首次配置.py --project "<项目目录>"` 建骨架（`文案/素材/成片/废片/评价/备注`）+ 自动归类素材 + 写入 `references/paths.local.md`（已 gitignore，不进仓库）；
+2. **问平台（可选装 CLI）**：agent 问「你主要用哪个平台做 AI 视频？即梦 / 小云雀 / updream」→ 按 `references/platforms.md` 检测：
+   - 即梦 = `dreamina`（官方脚本 `curl -fsSL https://jimeng.jianying.com/cli \| bash`；Windows 用 Git Bash 或按官方指引）；
+   - 小云雀 = `pippit-tool-cli`（`npm i -g @pippit-dev/cli`，使用时需 `XYQ_ACCESS_KEY`，用户自行申请、不要写进仓库）；
+   - updream = 暂无公开 CLI → **不装**，网页操作。
+   **只有用户指定、且该平台确实有 CLI 时才装**；不检测账号、不代登录。
+3. **装依赖**：Python 3（需在 PATH）、Edge/Chrome（必须 localhost 方式打开，file:// 无法写入本地目录）、ffmpeg（素材识别抽帧用）。**不检测即梦账号**，账号由用户自己登录。
 
 ## 使用
 
@@ -48,6 +52,7 @@ C:\Users\你的用户名\.dsh\skills\seedance-prompt\
 - **显式调用**：`/seedance-prompt 把这段台词做成提示词：……`
 - 提示词生成后，自己在即梦网页生成视频；生成完**由 agent 自动启动评分工具**打分（六维+违禁项+结论；agent 按 SKILL.md 交付节执行：Bash 后台起 `python -m http.server 8787 --directory <tools 目录>`，再用浏览器打开 `http://localhost:8787/评价工具.html`）。手动兜底：**双击 `tools\启动评分工具.bat`**（首次可传参：`启动评分工具.bat "<样本库根目录>"`）——① 校验样本库根（未指定时提示先问用户项目位置，不再自动乱建目录）→ ② 起服务 → ③ 自动打开页面 → ④ 浏览器首次点「连接样本目录」选样本库根后自动记忆，之后打开即用。
 - **给其他 agent 的自动化入口**：日常评分服务启动按 SKILL.md 交付节（Bash 后台+浏览器打开，无需人工）；建骨架可单独跑 `python seedance-prompt\tools\首次配置.py --project "<项目目录>"`（或 `--set "<样本库根>"` 只登记根目录）；bat 仅作手动兜底。
+- **评分自动回收**：用户打完分后，agent 跑 `python seedance-prompt\tools\评价回收.py` 拿「待吸收评价」清单（六维均分/结论/备注），按《反馈优化循环》写进规则/模板/样本库，再 `--mark-all` 记账（账本 `references/eval-absorbed.local.json`，本机、不进仓库）。
 - **给 agent 反馈**（"口型对不上""这条成了"）→ agent 会按 skill 的《反馈优化循环》自动把规律写进 rules.md，越用越准
 
 ## 必守铁律（已写入 skill，务必遵守）
@@ -67,9 +72,20 @@ C:\Users\你的用户名\.dsh\skills\seedance-prompt\
 - 首次拉取：`git clone https://github.com/heronbo111/seedance-prompt.git C:\Users\你的用户名\.zcode\skills\seedance-prompt`（国内直连可用 Gitee 同构替换地址）
 - 反馈给作者：把成片放入自己样本库 `成片/`，用评分工具打分，把 `评价/*.json` 结论更新进仓库 `samples/`（或合并进仓库后 push）。
 
+## 更新与兼容（本地优化了 skill 怎么办）
+
+- **本地优化只写 gitignored 的本地覆盖层**，上游文件一律不改：
+  - `references/paths.local.md` —— 本机路径/平台（`tools\首次配置.py` 维护）
+  - `references/rules.local.md` —— 本地新增/推翻的规则，优先级**高于**上游 `rules.md`
+  - `references/eval-absorbed.local.json` —— 评价回收账本
+- 因此 `git pull` 不会冲突：受版本控制的文件保持上游原样，本地经验留在 `*.local.md` 里被 skill 优先读取。
+- **更新步骤**：`git pull --rebase` → `python tools\首次配置.py`（无参自检）→ `python tools\评价回收.py` → 起评分页确认能连目录。
+- **兼容检查**：`SKILL.md` frontmatter 的 `version` 变大 = 上游有结构性改动。这时 agent 要对照本文件与 `references/platforms.md`，检查 `rules.local.md` 的条目是否被上游新规则取代或冲突；**冲突以本地用户实测为准**，并在回复里明确提示。
+- 想把本地规则贡献回上游：把 `rules.local.md` 的条目整理成「规则 + 依据（日期/来源）」搬进 `rules.md` 再提交。
+
 ## 注意事项
 
-- `references/samples-db.md` 里的样本路径是 `${SAMPLES_ROOT}` 变量；取值见 `references/paths.md`（每台机器一行，首次由用户指定）。
+- `references/samples-db.md` 里的样本路径是 `${SAMPLES_ROOT}` 变量；本机取值见 `references/paths.local.md`（模板与说明见 `references/paths.md`）。
 - `tools/启动评分工具.bat` 无需改路径（自动探测 python/py；页面从 bat 所在目录提供）。
 - 若服务端口 8787 被占用：关掉旧「评价工坊服务」窗口后重开 bat，或改 bat 端口并同步改打开 URL。
 - **首次 push/pull 如弹出登录**：安装并启用 Git Credential Manager（Git for Windows 通常自带；`git config credential.helper manager` 后，git 会引导浏览器授权，帐号密码不用输入 git 命令行）。

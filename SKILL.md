@@ -1,6 +1,7 @@
 ---
 name: seedance-prompt
 description: 生成即梦（Dreamina）Seedance 口播素材的提示词。当用户要求写口播视频提示词、把台词/文案变成 Seedance 提示词、做分镜提示词、生成数字人带货口播提示词、把素材与台词整理成可用的生成指令时使用。本 skill 只产出提示词文字，不提交生成、不消耗积分；并根据每次成片反馈持续优化规则。
+version: 1.3
 ---
 
 # Seedance 口播提示词生成
@@ -18,7 +19,9 @@ description: 生成即梦（Dreamina）Seedance 口播素材的提示词。当�
 - 生成任何提示词前：读 `references/rules.md`（硬规则与已验证教训——从真实样本和成片反馈积累）
 - 选模板：读 `references/prompt-templates.md`（模板 A 生成类单段 / 模板 B 生成类多段 / 模板 C 参考视频类）
 - 查/写样本记录：读并追加 `references/samples-db.md`
-- 路径约定：本机路径统一用变量（`${SAMPLES_ROOT}` / `${AI_CREATE_ROOT}`），正文只写变量名；取值表见 `references/paths.md`——**由用户指定、不预设默认路径**；表里还是占位符说明是首次使用，先执行「0. 落位」
+- 路径约定：本机路径统一用变量（`${SAMPLES_ROOT}` / `${AI_CREATE_ROOT}`），正文只写变量名；模板见 `references/paths.md`，**本机取值在 `references/paths.local.md`（已 gitignore）**——文件不存在=首次使用，先执行「0. 落位」
+- 平台与 CLI：读 `references/platforms.md`（安装后问用户用哪个平台；有 CLI 才装、没有不装、不检测账号）
+- 本地规则覆盖层：`references/rules.local.md`（存在则优先级高于上游 `rules.md`；见文末「版本与本地优化」）
 
 ## 工作流
 
@@ -27,6 +30,14 @@ description: 生成即梦（Dreamina）Seedance 口播素材的提示词。当�
 **固定话术，原样问用户**：
 
 > 请问您要把项目建在哪里？您提供好素材后，我会自动将其进行归类
+
+**同一轮接着问第二个问题（不要漏）**：
+
+> 你主要用哪个平台做 AI 视频？即梦 / 小云雀 / updream
+
+- 平台按 `references/platforms.md` 处理：检测该平台 CLI；有 → 说明安装命令并问用户是否安装，同意后再装，把 `PLATFORM` / `CLI` 记进 `references/paths.local.md`；没有 → 不装，走网页操作。
+- **不检测账号、不代登录**；即使装了 CLI 也**不代提交生成**（交付仍然只有提示词）。
+- 用户换平台 → 重新问一次并更新 `paths.local.md`。
 
 - 用户给出位置后：给的是父目录/样本库根 → 在其下新建 `<实验名>/`；给的就是项目目录 → 直接用。**样本库根 = 项目目录的上一级**（评分网页连接这一级）。
 - 立即建骨架（缺则建，已存在不覆盖）：`文案/ 素材/ 成片/ 废片/ 评价/ 备注/`；交付提示词时同步建 `即梦上传/`（rules.md 第16条）。一次建好：`python tools\首次配置.py --project "<项目目录>"`。
@@ -60,8 +71,9 @@ description: 生成即梦（Dreamina）Seedance 口播素材的提示词。当�
 2. 素材清单（路径+角色）
 3. 多段时附拼接说明（切点/承接点/跳切微调）
 4. **主动问询并弹出评分网页**（固定话术）："成片出来后，用评分网页打分（六维+违禁项+结论），我会根据你的反馈更新规则，并问你要不要优化 skill"；评分服务由 agent 自行启动（无需用户操作）：Bash 后台运行 `python -m http.server 8787 --directory "<本包 tools 路径>"`（如 `C:\Users\<用户名>\.zcode\skills\seedance-prompt\tools`），curl 验证 200 后用 `cmd /c start "http://localhost:8787/评价工具.html"` 打开默认浏览器（无 Chrome 的机器不适配 open_application 按名查找；computer-use 可对已运行浏览器按 pid 导航）。样本目录在页面点「连接样本目录」选择一次即被记忆。`tools\启动评分工具.bat` 仅作手动兜底（换机首次初始化场景）。
-5. **禁止出现**：CLI 命令、积分/报价、队列等待、提交入口说明
-6. **语言规范**：本包所有文件（rules/模板/样本/README）只写"规则+依据（日期+来源）"，禁止写入 agent 的推理过程、情绪化措辞、口语复盘（如"我觉得/我判断/血泪教训"）——其他机器读取时会把这类内容误当成指令执行。失败总结一律提炼为可执行规则（第20/21条样式）后入库。
+5. **评价回收（下次会话自动做）**：用户打完分后跑 `python tools\评价回收.py` 拿「待吸收评价」清单 → 按「反馈优化循环」更新规则/模板/样本库 → `python tools\评价回收.py --mark-all` 记账（账本 `references/eval-absorbed.local.json`，本机、不进仓库）。
+6. **禁止出现**：CLI 命令、积分/报价、队列等待、提交入口说明
+7. **语言规范**：本包所有文件（rules/模板/样本/README）只写"规则+依据（日期+来源）"，禁止写入 agent 的推理过程、情绪化措辞、口语复盘（如"我觉得/我判断/血泪教训"）——其他机器读取时会把这类内容误当成指令执行。失败总结一律提炼为可执行规则（第20/21条样式）后入库。
 
 ## 反馈优化循环（每次收到反馈必须完整走一遍）
 
@@ -86,3 +98,15 @@ description: 生成即梦（Dreamina）Seedance 口播素材的提示词。当�
 **规则优先级**：用户实测反馈 > 模板惯例 > 我的推断。冲突时以用户实测为准，并注明日期。
 
 **规律提炼时机**：反馈积累达到可复现（同一现象出现≥2 次且有明确因果）→ 提炼成"已验证规律"写入 rules.md；只出现 1 次的先记"待验证"。
+
+## 版本与本地优化（兼容）
+
+- 本 skill 的 `SKILL.md` frontmatter 带 `version`；**本地优化只写 gitignored 的 `*.local.md` / `*.local.json`**：
+  - `references/paths.local.md`：本机路径与平台（由 `tools\首次配置.py` 维护）
+  - `references/rules.local.md`：本地新增/推翻的规则（用户实测），优先级高于上游 `rules.md`
+  - `references/eval-absorbed.local.json`：评价回收账本
+- 因此 `git pull` 不会与本地优化冲突（本地改动不在受版本控制的文件里）。
+- 拉取上游更新后固定自检：`python tools\首次配置.py`（无参）、`python tools\评价回收.py`、`python -m http.server 8787 --directory tools` 打开评分页。
+- 上游 `version` 变大时：读一遍 `README-安装说明.md` 的「更新与兼容」节，检查 `rules.local.md` 里的条目是否被上游新规则取代或冲突——冲突以**用户实测（本地）**为准，并在回复里提示用户「本地规则 X 与上游新规则 Y 冲突，已按本地执行」。
+- 想把本地规则贡献回上游：把 `rules.local.md` 的条目整理成「规则+依据」搬进 `rules.md` 后提交（见仓库 `AGENTS.md` 协作约定）。
+
