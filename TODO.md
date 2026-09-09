@@ -14,5 +14,5 @@ seedance-prompt skill（生成 Seedance 口播提示词）+ 六维评分工具�
 ## 关键约束
 - 交付物只出提示词：永不出现 CLI 命令/积分报价/队列信息（rules.md 第13条）。
 - 交付后由 agent 自动启动评分工具请用户打分（SKILL.md 交付节）；按「反馈优化循环」更新规则，并询问是否优化 skill。
-- 换机 = clone + 改 `references/paths.md` 两个变量 + 装 Python/Edge/Chrome/ffmpeg（README-安装说明.md）。
+- 换机 = clone + 首次使用按固定话术问用户项目位置（写入 `references/paths.md`）+ 装 Python/Edge/Chrome/ffmpeg（README-安装说明.md）。
 - 术语约定：规则文件只写「规则+依据（日期/来源）」，不写 agent 推理过程（SKILL.md 第6条）。
