@@ -11,3 +11,6 @@
 # 例外：samples/ 下的评价 json 属于规律数据，随仓库同步
 !samples/**/评价/
 !samples/**/评价/*.json
+# 本机私有取值/账本（不进仓库，避免多机冲突）
+references/*.local.md
+references/*.local.json

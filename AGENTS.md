@@ -18,6 +18,7 @@
    - `python -m http.server 8787 --directory tools` → `http://localhost:8787/评价工具.html` 能打开、能连目录
    - `SKILL.md` frontmatter 完整（`name` / `description`）、`references/paths.md` 取值表结构未被破坏
 8. **不要提交**：大视频（.gitignore 已挡）、超过 5MB 的二进制/模型权重；`tools/识别工具/` 的脚本与小模型（`face_detection_yunet_2023mar.onnx` 0.22MB）随仓库走，保证可复现。
+9. **本地优化只写 `references/*.local.md`（已 gitignore）**：`paths.local.md`（路径/平台）、`rules.local.md`（本地规则覆盖层，优先级高于上游 rules.md）、`eval-absorbed.local.json`（评价回收账本）。这样 `git pull` 永不冲突；上游改动保持向后兼容（`paths.md`/`platforms.md` 结构稳定，`SKILL.md` 的 `version` 递增）。
 
 ## 当前认领
 
