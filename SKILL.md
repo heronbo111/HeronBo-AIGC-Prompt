@@ -19,6 +19,7 @@ version: 1.3
 - 生成任何提示词前：读 `references/rules.md`（硬规则与已验证教训——从真实样本和成片反馈积累）
 - 选模板：读 `references/prompt-templates.md`（模板 A 生成类单段 / 模板 B 生成类多段 / 模板 C 参考视频类）
 - 查/写样本记录：读并追加 `references/samples-db.md`
+- 替换类任务（换人/换物/换装/复刻原片）：读 `references/replacement-playbook.md`（L1–L4 难易度分级与工具选型，配套 rules 第20/20b/21/22/23/24 条）
 - 路径约定：本机路径统一用变量（`${SAMPLES_ROOT}` / `${AI_CREATE_ROOT}`），正文只写变量名；模板见 `references/paths.md`，**本机取值在 `references/paths.local.md`（已 gitignore）**——文件不存在=首次使用，先执行「0. 落位」
 - 平台与 CLI：读 `references/platforms.md`（安装后问用户用哪个平台；有 CLI 才装、没有不装、不检测账号）
 - 本地规则覆盖层：`references/rules.local.md`（存在则优先级高于上游 `rules.md`；见文末「版本与本地优化」）
