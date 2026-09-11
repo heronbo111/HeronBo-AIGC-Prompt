@@ -24,6 +24,7 @@ agent_created: true
 | 写任何提示词前 | `references/rules.md` **顶部的规则索引** → 只读本次相关条目 |
 | 选模板、定段数 | `references/prompt-templates.md` |
 | 替换类任务（换人/换物/换装/复刻原片） | `references/replacement-playbook.md` + 规则索引「替换类」那组 |
+| 结构/节奏/微表情细化（15 秒竖版五段式、爆款骨架、情绪公式与三禁忌） | `references/platform-skills.md`（即梦探索平台技能提炼） |
 | 平台与 CLI | `references/platforms.md` |
 | 路径变量 | `references/paths.md`（模板）+ `references/paths.local.md`（本机取值） |
 | 本机个人经验 | `references/rules.local.md`（**优先级高于上游 rules.md**） |
