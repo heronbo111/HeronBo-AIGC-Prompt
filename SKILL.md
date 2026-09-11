@@ -1,7 +1,7 @@
 ---
 name: seedance-prompt
 description: 生成即梦（Dreamina）Seedance 口播素材的提示词。当用户要求写口播视频提示词、把台词/文案变成 Seedance 提示词、做分镜提示词、生成数字人带货口播提示词、把素材与台词整理成可用的生成指令时使用。本 skill 只产出提示词文字，不提交生成、不消耗积分；并根据每次成片反馈持续优化规则。
-version: 2.0
+version: 2.1
 agent_created: true
 ---
 
