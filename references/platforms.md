@@ -23,3 +23,11 @@
 ## 维护
 
 平台/CLI 有变动时只改本表；`SKILL.md` 只引用本文件，不写死命令。
+
+## 提交纪律（2026-09-11，含第三方 skill 印证）
+
+- **生成前**：先报价（入口/模型/时长/张数/分辨率/预计积分）→ 用户明确同意 → 执行 → 如实回报实际消耗（rules 第13条 + 工作区铁律）。
+- **提交后**：拿到的 `submit_id` / `taskId` 就**只轮询这一个任务**（`dreamina query_result --submit_id=<id>`）。
+- **本地超时 ≠ 生成失败**：超时不代表任务失败，**不要重复提交可能已经计费的任务**（来源：ModelScope 第三方 skill `BainWu/seedance-2-5-video-generation-and-editing`，2026-09-11 抄录）。
+- **本机还有一道硬闸门**：ZCode 的 `PreToolUse` 钩子 `${AI_CREATE_ROOT}\Ds挂件\tools\dreamina-submit-guard.mjs` 会拦 `dreamina` 生成类子命令；
+  用户确认后在命令前加 `DREAMINA_CONFIRMED=1` 放行（留痕），拦截记 `dreamina-guard.log`。

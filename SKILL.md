@@ -26,6 +26,7 @@ agent_created: true
 | 替换类任务（换人/换物/换装/复刻原片） | `references/replacement-playbook.md` + 规则索引「替换类」那组 |
 | 结构/节奏/微表情细化（15 秒竖版五段式、爆款骨架、情绪公式与三禁忌） | `references/platform-skills.md`（即梦探索平台技能提炼） |
 | 深度视频（L4 复刻动作的前置：转黑白深度视频） | `references/depth-video-setup.md` + `tools\深度视频.py` |
+| 改完规则做回归自检 | `references/eval-cases.md`（8 条用例 + 断言） |
 | 平台与 CLI | `references/platforms.md` |
 | 路径变量 | `references/paths.md`（模板）+ `references/paths.local.md`（本机取值） |
 | 本机个人经验 | `references/rules.local.md`（**优先级高于上游 rules.md**） |
@@ -102,6 +103,7 @@ python -m http.server 8787 --directory "<本包 tools 路径>"
 
 ## 兼容与维护
 
+- **改完规则先跑回归**：`references/eval-cases.md`（8 条真实用例 + 逐条断言，改 `rules*.md`/`prompt-templates.md` 后照它跑一遍；真实翻车就补一条用例）。方法学抄自 ModelScope《skill-creator》：**造测试题 → 跑一遍 → 逐条断言 → 按结果改**，不靠"我觉得这样写更好"。
 - 本机经验只写 gitignored 文件：`paths.local.md`（路径/平台）、`rules.local.md`（个人规则）、`eval-absorbed.local.json`（评价账本）→ `git pull` 永不与本地冲突。
 - 上游 `version` 变大：更新后自检 `python tools\首次配置.py`（无参）、`python tools\评价回收.py`、评分页能打开；`rules.local.md` 与上游新规则冲突时**以本机实测为准**并提示用户。
 - 文件写作规范：只写「规则 + 依据（日期/来源）」，不写推理过程、情绪化措辞或口语复盘。
