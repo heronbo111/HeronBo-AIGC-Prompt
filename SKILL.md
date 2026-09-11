@@ -1,7 +1,7 @@
 ---
 name: seedance-prompt
 description: 生成即梦（Dreamina）Seedance 口播素材的提示词。当用户要求写口播视频提示词、把台词/文案变成 Seedance 提示词、做分镜提示词、生成数字人带货口播提示词、把素材与台词整理成可用的生成指令时使用。本 skill 只产出提示词文字，不提交生成、不消耗积分；并根据每次成片反馈持续优化规则。
-version: 2.1
+version: 2.2
 agent_created: true
 ---
 
@@ -16,7 +16,7 @@ agent_created: true
 - 只有用户**明确要求代提交**时才执行：先报单价 → 用户确认 → 执行 → 如实报告消耗；这类内容不进常规交付（rules.md 第13条）。
 - 生成结果的评价与废片归档由用户/评分网页完成，本 skill 只回收这些反馈来更新规则。
 
-## 按需读取（别通读）
+## 按需读取（无需通读全文）
 
 | 场景 | 读什么 |
 |---|---|
@@ -43,7 +43,7 @@ agent_created: true
 
 拿到回答后：
 
-1. 建骨架：`文案/ 素材/ 成片/ 废片/ 评价/ 备注/`（交付提示词时再加 `即梦上传/`）；一条命令搞定：`python tools\首次配置.py --project "<项目目录>"`。
+1. 建骨架：`文案/ 素材/ 成片/ 废片/ 评价/ 备注/`（交付提示词时再加 `即梦上传/`）；一条命令完成：`python tools\首次配置.py --project "<项目目录>"`。
 2. 归类素材：口播稿→`文案/口播稿.txt`；提示词→`文案/提示词.txt`；参考图/产品图/音频/原片→`素材/`（保留原文件名）；并回报「文件名 → 去向」。
 3. 处理平台：按 `references/platforms.md` 检测该平台 CLI——**有 CLI 且用户同意才装，没有就不装**；不检测账号、不代登录。结果记进 `paths.local.md`（`python tools\首次配置.py --platform 即梦 --cli dreamina`）。
 4. 登记路径：样本库根 = 项目目录的上一级（评分网页连接这一级），写入 `paths.local.md`。
@@ -108,7 +108,7 @@ python -m http.server 8787 --directory "<本包 tools 路径>"
 
 ## 兼容与维护
 
-- **改完规则先跑回归**：`references/eval-cases.md`（8 条真实用例 + 逐条断言，改 `rules*.md`/`prompt-templates.md` 后照它跑一遍；真实翻车就补一条用例）。方法学抄自 ModelScope《skill-creator》：**造测试题 → 跑一遍 → 逐条断言 → 按结果改**，不靠"我觉得这样写更好"。
+- **改完规则先跑回归**：`references/eval-cases.md`（8 条真实用例 + 逐条断言，改 `rules*.md`/`prompt-templates.md` 后照它跑一遍；真实失败案例就补一条用例）。方法学抄自 ModelScope《skill-creator》：**造测试题 → 跑一遍 → 逐条断言 → 按结果改**，不靠"我觉得这样写更好"。
 - 本机经验只写 gitignored 文件：`paths.local.md`（路径/平台）、`rules.local.md`（个人规则）、`eval-absorbed.local.json`（评价账本）→ `git pull` 永不与本地冲突。
 - 上游 `version` 变大：更新后自检 `python tools\首次配置.py`（无参）、`python tools\评价回收.py`、评分页能打开；`rules.local.md` 与上游新规则冲突时**以本机实测为准**并提示用户。
 - 文件写作规范：只写「规则 + 依据（日期/来源）」，不写推理过程、情绪化措辞或口语复盘。
