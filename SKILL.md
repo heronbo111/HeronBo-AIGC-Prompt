@@ -27,7 +27,7 @@ agent_created: true
 | **用户发来成片要拆解/仿做（AI 二创、爆款复现）** | `references/parody-teardown.md` + `tools\成片拆解.py`（规则33–37「二创与拆解」组） |
 | 结构/节奏/微表情细化（15 秒竖版五段式、爆款骨架、情绪公式与三禁忌） | `references/platform-skills.md`（即梦探索平台技能提炼） |
 | 深度视频（L4 复刻动作的前置：转黑白深度视频） | `references/depth-video-setup.md` + `tools\深度视频.py` |
-| 改完规则做回归自检 | `references/eval-cases.md`（8 条用例 + 断言） |
+| 改完规则做回归自检 | `references/eval-cases.md`（10 条用例 + 断言） |
 | 平台与 CLI | `references/platforms.md` |
 | 路径变量 | `references/paths.md`（模板）+ `references/paths.local.md`（本机取值） |
 | 本机个人经验 | `references/rules.local.md`（**优先级高于上游 rules.md**） |
