@@ -158,6 +158,47 @@ def change_series(samples):
     return diffs, corrs
 
 
+def scene_blocks(path, win=0.5, k=4):
+    """大场景块检测：0.5s 窗签名 + KMeans 聚类 + 合并相邻同类。
+    用途：找"大场景变化的转场"（切段依据）；比 detect_cuts 的镜头级硬切更粗。"""
+    import cv2
+    import numpy as np
+    cap = cv2.VideoCapture(path)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    need = max(1, int(round(fps * win)))
+    feats, times, acc, i = [], [], [], 0
+    while True:
+        ok, fr = cap.read()
+        if not ok:
+            break
+        acc.append(cv2.cvtColor(cv2.resize(fr, (32, 18)), cv2.COLOR_BGR2GRAY).astype(np.float32))
+        if len(acc) == need:
+            feats.append(np.mean(acc, axis=0).ravel())
+            times.append(len(times) * win)
+            acc = []
+        i += 1
+    cap.release()
+    if len(feats) < k + 1:
+        return []
+    F = np.array(feats)
+    F = (F - F.mean(0)) / (F.std(0) + 1e-6)
+    rng = np.random.default_rng(0)
+    C = F[rng.choice(len(F), k, replace=False)]
+    lab = np.zeros(len(F), dtype=int)
+    for _ in range(60):
+        lab = ((F[:, None, :] - C[None, :, :]) ** 2).sum(-1).argmin(1)
+        for j in range(k):
+            if (lab == j).any():
+                C[j] = F[lab == j].mean(0)
+    blocks, s0 = [], 0
+    for t in range(1, len(lab) + 1):
+        if t == len(lab) or lab[t] != lab[s0]:
+            blocks.append({"start": round(times[s0], 2), "end": round(times[t - 1] + win, 2),
+                           "dur": round(times[t - 1] + win - times[s0], 2), "label": int(lab[s0])})
+            s0 = t
+    return blocks
+
+
 def detect_cuts(samples, min_shot=0.6):
     """双重判据找硬切点：①直方图相关性塌陷（低于局部中位 -0.18，且 <0.75）；②画面差相对局部中位数突增（>1.7× 且 >18，抗高运动误报）。
     min_shot：最短镜头长度（秒）——相邻采样点连触发时只保留第一个，避免切出 0.00s 伪镜头。"""
@@ -429,6 +470,7 @@ def main():
     ap.add_argument("--sample-fps", type=float, default=4.0, help="分析采样帧率，默认 4")
     ap.add_argument("--min-shot", type=float, default=0.6, help="最短镜头长度（秒），默认 0.6——抑制相邻点连触发的伪镜头")
     ap.add_argument("-o", "--out-prefix", help="报告输出前缀（默认 <源片>_拆解报告）")
+    ap.add_argument("--scene", action="store_true", help="只做「大场景块」检测（切段依据；0.5s 窗聚类）")
     ap.add_argument("--check", action="store_true", help="自检：合成测试片跑全流程")
     args = ap.parse_args()
 
@@ -439,6 +481,21 @@ def main():
     if not args.input:
         ap.error("给 -i 指定成片，或 --check 自检")
 
+    if args.scene:
+        if not args.input:
+            ap.error("--scene 需要 -i 指定视频")
+        blocks = scene_blocks(args.input)
+        print("大场景块（%d 块）——切段就切在这些转场处：" % len(blocks))
+        lines = ["# 大场景块表 · %s" % os.path.basename(args.input), "",
+                 "| # | 起止(s) | 时长 |", "|---|---|---|"]
+        for bi, b in enumerate(blocks, 1):
+            print("  %2d. %6.2f–%6.2f s  (%.2fs)" % (bi, b["start"], b["end"], b["dur"]))
+            lines.append("| %d | %.2f–%.2f | %.2fs |" % (bi, b["start"], b["end"], b["dur"]))
+        out = (args.out_prefix or os.path.splitext(args.input)[0]) + "_场景块.md"
+        with open(out, "w", encoding="utf-8") as f:
+            f.write(chr(10).join(lines) + chr(10))
+        print("场景块表：%s" % out)
+        return
     info = probe(args.input)
     print("源片：%d×%d / %.2ffps / %.2fs / 音轨 %s" % (
         info["w"], info["h"], info["fps"], info["duration"], "有" if info["has_audio"] else "无"))
