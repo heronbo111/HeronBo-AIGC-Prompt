@@ -1,5 +1,5 @@
 ---
-name: seedance-prompt
+name: HeronBo-AIGC-Prompt
 description: 生成即梦（Dreamina）Seedance 口播素材的提示词，也用于拆解 AI 二创/爆款成片（读片三问 + 机器证据 + 拆解报告）。当用户要求写口播视频提示词、把台词/文案变成 Seedance 提示词、做分镜提示词、生成数字人带货口播提示词、把素材与台词整理成可用的生成指令，或发来一条 AI 二创/成片要"拆解/仿做/复现"时使用。本 skill 只产出提示词文字与分析报告，不提交生成、不消耗积分；并根据每次成片反馈持续优化规则。
 version: 2.5
 agent_created: true

@@ -8,33 +8,33 @@
 **核心铁律：只生成提示词文字，不提交生成、不消耗任何积分；视频生成由你自己在即梦网页操作。本 skill 交付物中不会出现 CLI 命令/积分价格/队列信息。**
 
 里面包含：
-- `seedance-prompt/` —— 技能本体（SKILL.md + references/ 下的规则、模板、样本库、路径表）
+- `HeronBo-AIGC-Prompt/` —— 技能本体（SKILL.md + references/ 下的规则、模板、样本库、路径表）
 - `tools/评价工具.html` —— 成片六维评价网页（打分→存本地→统计），配套 `tools/启动评分工具.bat`（已通用化：用 PATH 里的 python 起服务，换机免改路径）
 
 ## 安装
 
 ### ZCode 客户端
-把 `seedance-prompt` 文件夹整个放到：
+把 `HeronBo-AIGC-Prompt` 文件夹整个放到：
 ```
-C:\Users\你的用户名\.zcode\skills\seedance-prompt\
+C:\Users\你的用户名\.zcode\skills\HeronBo-AIGC-Prompt\
 ```
 （或项目级 `.agents\skills\`）新对话即可自动识别。
 
 ### Codex CLI
 ```
-C:\Users\你的用户名\.codex\skills\seedance-prompt\
+C:\Users\你的用户名\.codex\skills\HeronBo-AIGC-Prompt\
 ```
 
 ### DeepSeek Harness（DSH）
 ```
-C:\Users\你的用户名\.dsh\skills\seedance-prompt\
+C:\Users\你的用户名\.dsh\skills\HeronBo-AIGC-Prompt\
 ```
 （用户级；也可项目级 `<项目>\.dsh\skills\`）新对话自动识别。
 
 ### 其他 agent harness（通用）
 对 agent 说：
 ```
-读取 <解压路径>\seedance-prompt\SKILL.md 并严格按其工作流执行
+读取 <解压路径>\HeronBo-AIGC-Prompt\SKILL.md 并严格按其工作流执行
 ```
 
 ### 换机四件套（必做，5 分钟）
@@ -51,10 +51,10 @@ C:\Users\你的用户名\.dsh\skills\seedance-prompt\
 ## 使用
 
 - **自然触发**：直接说"帮我写口播提示词 / 把这段台词变成 Seedance 提示词 / 做分镜提示词"
-- **显式调用**：`/seedance-prompt 把这段台词做成提示词：……`
+- **显式调用**：`/HeronBo-AIGC-Prompt 把这段台词做成提示词：……`
 - 提示词生成后，自己在即梦网页生成视频；生成完**由 agent 自动启动评分工具**打分（六维+违禁项+结论；agent 按 SKILL.md 交付节执行：Bash 后台起 `python -m http.server 8787 --directory <tools 目录>`，再用浏览器打开 `http://localhost:8787/评价工具.html`）。手动兜底：**双击 `tools\启动评分工具.bat`**（首次可传参：`启动评分工具.bat "<样本库根目录>"`）——① 校验样本库根（未指定时提示先问用户项目位置，不再自动乱建目录）→ ② 起服务 → ③ 自动打开页面 → ④ 浏览器首次点「连接样本目录」选样本库根后自动记忆，之后打开即用。
-- **给其他 agent 的自动化入口**：日常评分服务启动按 SKILL.md 交付节（Bash 后台+浏览器打开，无需人工）；建骨架可单独跑 `python seedance-prompt\tools\首次配置.py --project "<项目目录>"`（或 `--set "<样本库根>"` 只登记根目录）；bat 仅作手动兜底。
-- **评分自动回收**：用户打完分后，agent 跑 `python seedance-prompt\tools\评价回收.py` 拿「待吸收评价」清单（六维均分/结论/备注），按《反馈优化循环》写进规则/模板/样本库，再 `--mark-all` 记账（账本 `references/eval-absorbed.local.json`，本机、不进仓库）。
+- **给其他 agent 的自动化入口**：日常评分服务启动按 SKILL.md 交付节（Bash 后台+浏览器打开，无需人工）；建骨架可单独跑 `python HeronBo-AIGC-Prompt\tools\首次配置.py --project "<项目目录>"`（或 `--set "<样本库根>"` 只登记根目录）；bat 仅作手动兜底。
+- **评分自动回收**：用户打完分后，agent 跑 `python HeronBo-AIGC-Prompt\tools\评价回收.py` 拿「待吸收评价」清单（六维均分/结论/备注），按《反馈优化循环》写进规则/模板/样本库，再 `--mark-all` 记账（账本 `references/eval-absorbed.local.json`，本机、不进仓库）。
 - **给 agent 反馈**（"口型对不上""这条成了"）→ agent 会按 skill 的《反馈优化循环》自动把规律写进 rules.md，越用越准
 
 ## 必守铁律（已写入 skill，务必遵守）
@@ -71,7 +71,7 @@ C:\Users\你的用户名\.dsh\skills\seedance-prompt\
 - **同步节奏（2026-09-08 约定）**：作者端每周一 09:00 自动检查并推送（有无新提交均静默）；**各安装端不必跟着每次改动更新**——需要用到新规则、新模板或评分工具时，`git pull` 一次即可。
 - **按反馈更新规则后**：作者 `git push 双远程`；其他机器 `git pull` 即拿到最新规则——不存在"zip 快照过期"问题。
 - 大视频素材（成片/废片）不进仓库（.gitignore），各机样本库各自维护；**规律数据（评价 json、文案、备注）以仓库 `samples/` 为准**（结构与约定见 `samples/README.md`）。
-- 首次拉取：`git clone https://github.com/heronbo111/seedance-prompt.git C:\Users\你的用户名\.zcode\skills\seedance-prompt`（国内直连可用 Gitee 同构替换地址）
+- 首次拉取：`git clone https://github.com/heronbo111/seedance-prompt.git C:\Users\你的用户名\.zcode\skills\HeronBo-AIGC-Prompt`（国内直连可用 Gitee 同构替换地址）
 - 反馈给作者：把成片放入自己样本库 `成片/`，用评分工具打分，把 `评价/*.json` 结论更新进仓库 `samples/`（或合并进仓库后 push）。
 
 ## 更新与兼容（本地优化了 skill 怎么办）

@@ -1,4 +1,4 @@
-# AGENTS.md —— 多 agent 协作约定（seedance-prompt 仓库）
+# AGENTS.md —— 多 agent 协作约定（HeronBo-AIGC-Prompt 仓库）
 
 > 本仓库可能被多个 agent 同时操作（ZCode / Codex CLI / DeepSeek Harness）。三者读的是**同一份工作树**，
 > 所以「内容同步」不是问题，冲突来自**并发写入**和**未提交改动堆积**。动手前先读本节。

@@ -42,7 +42,7 @@ ls -la "$D"    # model.onnx 应约 99,060,839 字节
 ## 四、用法
 
 ```bash
-S="C:/Users/<用户名>/.zcode/skills/seedance-prompt"
+S="C:/Users/<用户名>/.zcode/skills/HeronBo-AIGC-Prompt"
 PY="C:/Users/<用户名>/AppData/Local/Programs/Python/Python312/python.exe"
 
 "$PY" "$S/tools/深度视频.py" --check "<参考视频>"          # 看参数 + 模型是否就位（不跑，秒出）
@@ -94,7 +94,7 @@ PY="C:/Users/<用户名>/AppData/Local/Programs/Python/Python312/python.exe"
 
 ```bash
 PY="C:/Users/<用户名>/AppData/Local/Programs/Python/Python312/python.exe"
-S="C:/Users/<用户名>/.zcode/skills/seedance-prompt"
+S="C:/Users/<用户名>/.zcode/skills/HeronBo-AIGC-Prompt"
 
 # 先出深度片（做掩膜用），再出遮罩片
 "$PY" "$S/tools/深度视频.py" -i "<源片>" --max-frames 30          # 可选：先短测

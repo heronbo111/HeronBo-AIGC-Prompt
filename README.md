@@ -1,4 +1,4 @@
-# seedance-prompt
+# HeronBo-AIGC-Prompt
 
 #### 介绍
 
@@ -10,7 +10,7 @@
 #### 软件架构
 
 ```
-seedance-prompt/
+HeronBo-AIGC-Prompt/
 ├── SKILL.md                       # 技能工作流（分类器→分段决策→模板→交付）
 ├── references/
 │   ├── rules.md                   # 硬规则与已验证规律（规范化经验表述，跨机读取）
@@ -34,14 +34,14 @@ seedance-prompt/
 #### 安装教程
 
 1. 克隆仓库（国内直连建议 Gitee：`git clone https://gitee.com/HeronBo/seedance-prompt.git`；作者主库为 GitHub 私有）。
-2. 把本目录放到 `~/.zcode/skills/seedance-prompt/`（ZCode）、`~/.codex/skills/`（Codex CLI）或 `~/.dsh/skills/`（DeepSeek Harness），新对话自动识别。
+2. 把本目录放到 `~/.zcode/skills/HeronBo-AIGC-Prompt/`（ZCode）、`~/.codex/skills/`（Codex CLI）或 `~/.dsh/skills/`（DeepSeek Harness），新对话自动识别。
 3. 首次使用 agent 问两句：①「请问您要把项目建在哪里？您提供好素材后，我会自动将其进行归类」②「你主要用哪个平台做 AI 视频？即梦 / 小云雀 / updream」→ 建骨架、自动归类素材、按 `references/platforms.md` 装对应 CLI（**有才装、没有不装**），取值写入 `references/paths.local.md`（已 gitignore，不进仓库）。
 4. 装依赖：Python 3、Edge/Chrome、ffmpeg（素材识别抽帧）。**不检测账号**，账号由你自己登录。
 5. 更新与兼容：本地优化只写 `references/*.local.md`（gitignored），`git pull` 永不冲突；详见 `README-安装说明.md`。
 
 #### 使用说明
 
-1. 触发：直接说「帮我写口播提示词 / 把这段台词变成 Seedance 提示词 / 做分镜提示词」，或 `/seedance-prompt <台词>`。
+1. 触发：直接说「帮我写口播提示词 / 把这段台词变成 Seedance 提示词 / 做分镜提示词」，或 `/HeronBo-AIGC-Prompt <台词>`。
 2. 交付物 = 提示词 + 素材清单（+ 拼接说明）；生成在即梦网页操作。
 3. 成片出来后：agent 按 SKILL.md「交付」节自动起评分服务并打开 `localhost:8787/评价工具.html`（手动兜底：双击 `tools\启动评分工具.bat`；首次点「连接样本目录」选样本库根，之后自动记忆）。
 4. **评分会被自动回收**：下次会话 agent 跑 `python tools\评价回收.py` 拿「待吸收评价」清单，按反馈循环写进规则/模板并记账（账本 `references/eval-absorbed.local.json`）。
