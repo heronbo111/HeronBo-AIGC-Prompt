@@ -159,7 +159,7 @@ def change_series(samples):
 
 
 def detect_cuts(samples, min_shot=0.6):
-    """双重判据找硬切点：①直方图相关性塌陷（<0.55）；②画面差相对局部中位数突增（>2× 且 >25，抗高运动误报）。
+    """双重判据找硬切点：①直方图相关性塌陷（低于局部中位 -0.18，且 <0.75）；②画面差相对局部中位数突增（>1.7× 且 >18，抗高运动误报）。
     min_shot：最短镜头长度（秒）——相邻采样点连触发时只保留第一个，避免切出 0.00s 伪镜头。"""
     import numpy as np
     if len(samples) < 3:
@@ -170,8 +170,9 @@ def detect_cuts(samples, min_shot=0.6):
     for i in range(n):
         lo, hi = max(0, i - 10), min(n, i + 10)
         local = float(np.median(diffs[lo:hi])) or 1.0
-        jump = diffs[i] > max(25.0, 2.0 * local)
-        collapse = corrs[i] < 0.55
+        local_corr = float(np.median(corrs[lo:hi]))
+        jump = diffs[i] > max(18.0, 1.7 * local)
+        collapse = corrs[i] < min(0.75, local_corr - 0.18)
         if jump or collapse:
             t = samples[i + 1]["t"]
             prev_t = samples[cuts[-1]]["t"] if cuts else 0.0

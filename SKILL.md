@@ -24,7 +24,7 @@ agent_created: true
 | 写任何提示词前 | `references/rules.md` **顶部的规则索引** → 只读本次相关条目 |
 | 选模板、定段数 | `references/prompt-templates.md` |
 | 替换类任务（换人/换物/换装/复刻原片） | `references/replacement-playbook.md` + 规则索引「替换类」那组 |
-| **用户发来成片要拆解/仿做（AI 二创、爆款复现）** | `references/parody-teardown.md` + `tools\成片拆解.py`（规则33–37「二创与拆解」组） |
+| **用户发来成片要拆解/仿做（AI 二创、爆款复现）** | `references/parody-teardown.md` + `tools\成片拆解.py`（机器证据）、`tools\成片对比.py`（二创 vs 原片：声音路线/画面同轴）（规则33–37「二创与拆解」组） |
 | 结构/节奏/微表情细化（15 秒竖版五段式、爆款骨架、情绪公式与三禁忌） | `references/platform-skills.md`（即梦探索平台技能提炼） |
 | 深度视频（L4 复刻动作的前置：转黑白深度视频） | `references/depth-video-setup.md` + `tools\深度视频.py` |
 | 改完规则做回归自检 | `references/eval-cases.md`（10 条用例 + 断言） |
