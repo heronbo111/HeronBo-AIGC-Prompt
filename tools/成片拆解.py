@@ -158,8 +158,9 @@ def change_series(samples):
     return diffs, corrs
 
 
-def detect_cuts(samples):
-    """双重判据找硬切点：①直方图相关性塌陷（<0.55）；②画面差相对局部中位数突增（>2× 且 >25，抗高运动误报）。"""
+def detect_cuts(samples, min_shot=0.6):
+    """双重判据找硬切点：①直方图相关性塌陷（<0.55）；②画面差相对局部中位数突增（>2× 且 >25，抗高运动误报）。
+    min_shot：最短镜头长度（秒）——相邻采样点连触发时只保留第一个，避免切出 0.00s 伪镜头。"""
     import numpy as np
     if len(samples) < 3:
         return []
@@ -173,7 +174,8 @@ def detect_cuts(samples):
         collapse = corrs[i] < 0.55
         if jump or collapse:
             t = samples[i + 1]["t"]
-            if not cuts or t - samples[cuts[-1]]["t"] > 0.15:
+            prev_t = samples[cuts[-1]]["t"] if cuts else 0.0
+            if t - prev_t >= min_shot:
                 cuts.append(i + 1)
     return cuts
 
@@ -352,8 +354,10 @@ def build_report(path, info, samples, shots, aud, asr, cands):
             ar = align_rate(cuts, aud["onsets"])
             lines.append("- 音频：平均 %.1f dB，静音占比 %.1f%%；起音点 %d 个，起音间隔中位数 %.2fs（±%.2f）" % (
                 aud["db_mean"], aud["silence_ratio"] * 100, len(aud["onsets"]), aud["ioi_median"], aud["ioi_std"]))
-            lines.append("- 切点与节拍对齐率：%s（±0.2s；高 = 节奏跟着音乐走）" % (
-                "%.0f%%" % (ar * 100) if ar is not None else "无法计算（缺起音点或切点）"))
+            density = len(aud["onsets"]) / max(1e-6, info["duration"])
+            caveat = ("（起音点密度 %.1f/s，偏密——对齐率会被抬高，仅作参考）" % density) if density > 1.0 else ""
+            lines.append("- 切点与节拍对齐率：%s（±0.2s；高 = 节奏跟着音乐走）%s" % (
+                "%.0f%%" % (ar * 100) if ar is not None else "无法计算（缺起音点或切点）", caveat))
     else:
         lines.append("- 音频：**无音轨**（口播/音乐类需先补声音；替换类可作为静音驱动片）")
     if asr:
@@ -422,6 +426,7 @@ def main():
     ap.add_argument("--asr", action="store_true", help="追加 faster-whisper 转写（判断口播/演唱/纯音乐）")
     ap.add_argument("--lang", default="zh", help="转写语言，默认 zh")
     ap.add_argument("--sample-fps", type=float, default=4.0, help="分析采样帧率，默认 4")
+    ap.add_argument("--min-shot", type=float, default=0.6, help="最短镜头长度（秒），默认 0.6——抑制相邻点连触发的伪镜头")
     ap.add_argument("-o", "--out-prefix", help="报告输出前缀（默认 <源片>_拆解报告）")
     ap.add_argument("--check", action="store_true", help="自检：合成测试片跑全流程")
     args = ap.parse_args()
@@ -441,7 +446,7 @@ def main():
         print("[提示] 缺 YuNet 模型，人脸列跳过（其余照出）")
     print("抽采样帧（%.1f 帧/秒）…" % args.sample_fps)
     samples = scan_video(args.input, tmp, args.sample_fps, det, info["fps"])
-    cuts = detect_cuts(samples)
+    cuts = detect_cuts(samples, args.min_shot)
     shots = shots_from(samples, cuts)
     cands = top_changes(samples)
     print("镜头 %d 个，切点 %d 处" % (len(shots), len(cuts)))
