@@ -1,7 +1,7 @@
 ---
 name: seedance-prompt
 description: 生成即梦（Dreamina）Seedance 口播素材的提示词，也用于拆解 AI 二创/爆款成片（读片三问 + 机器证据 + 拆解报告）。当用户要求写口播视频提示词、把台词/文案变成 Seedance 提示词、做分镜提示词、生成数字人带货口播提示词、把素材与台词整理成可用的生成指令，或发来一条 AI 二创/成片要"拆解/仿做/复现"时使用。本 skill 只产出提示词文字与分析报告，不提交生成、不消耗积分；并根据每次成片反馈持续优化规则。
-version: 2.3
+version: 2.4
 agent_created: true
 ---
 
@@ -27,7 +27,7 @@ agent_created: true
 | **用户发来成片要拆解/仿做（AI 二创、爆款复现）** | `references/parody-teardown.md` + `tools\成片拆解.py`（机器证据）、`tools\成片对比.py`（二创 vs 原片：声音路线/画面同轴）（规则33–37「二创与拆解」组） |
 | 结构/节奏/微表情细化（15 秒竖版五段式、爆款骨架、情绪公式与三禁忌） | `references/platform-skills.md`（即梦探索平台技能提炼） |
 | 深度视频（L4 复刻动作的前置：转黑白深度视频） | `references/depth-video-setup.md` + `tools\深度视频.py` |
-| 改完规则做回归自检 | `references/eval-cases.md`（10 条用例 + 断言） |
+| 改完规则做回归自检 | `references/eval-cases.md`（11 条用例 + 断言） |
 | 平台与 CLI | `references/platforms.md` |
 | 路径变量 | `references/paths.md`（模板）+ `references/paths.local.md`（本机取值） |
 | 本机个人经验 | `references/rules.local.md`（**优先级高于上游 rules.md**） |
