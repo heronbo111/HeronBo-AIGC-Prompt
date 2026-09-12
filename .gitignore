@@ -14,3 +14,5 @@
 # 本机私有取值/账本（不进仓库，避免多机冲突）
 references/*.local.md
 references/*.local.json
+# Python 缓存（诊断脚本 import 工具时会生成）
+__pycache__/
