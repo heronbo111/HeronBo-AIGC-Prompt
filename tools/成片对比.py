@@ -246,10 +246,10 @@ def compare(a_path, b_path, tmp):
         route = "原声照搬（人声+伴奏均同源）"
     elif ci > 0.7 and cv < 0.4:
         route = "保伴奏、换人声（伴奏同源、人声不同）"
-    elif cc < 0.6:
-        route = "整曲重制（和声序列也不同源）"
+    elif cc >= 0.6:
+        route = "同曲不同录音（和声同源、人声/伴奏波形都不同 → 翻唱或重录版）"
     else:
-        route = "需人工判断（证据不典型）"
+        route = "整曲重制/换曲（和声序列也不同源）"
     lines.append("- **声音**：人声段(2–6s) 相关 %.2f；伴奏段(尾段) 相关 %.2f；色度相关 %.2f（滞后 %+.1fs）→ **%s**" % (
         max(cv, 0), max(ci, 0), max(cc, 0), lc, route))
     lines.append("")
