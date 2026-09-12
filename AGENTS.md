@@ -24,7 +24,7 @@
 
 | agent | 文件范围 | 开始时间 |
 |---|---|---|
-| ZCode（吸收 B站 BV1kuKE66Eds 二创拆解经验） | `references/rules.md`、`references/prompt-templates.md`、`references/eval-cases.md`、`references/parody-teardown.md`（新增）、`tools/成片拆解.py`（新增）、`SKILL.md` | 2026-09-12 |
+| （空） | | |
 
 ## 分工建议（减少撞车）
 
