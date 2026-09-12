@@ -1,7 +1,7 @@
 ---
 name: seedance-prompt
 description: 生成即梦（Dreamina）Seedance 口播素材的提示词，也用于拆解 AI 二创/爆款成片（读片三问 + 机器证据 + 拆解报告）。当用户要求写口播视频提示词、把台词/文案变成 Seedance 提示词、做分镜提示词、生成数字人带货口播提示词、把素材与台词整理成可用的生成指令，或发来一条 AI 二创/成片要"拆解/仿做/复现"时使用。本 skill 只产出提示词文字与分析报告，不提交生成、不消耗积分；并根据每次成片反馈持续优化规则。
-version: 2.4
+version: 2.5
 agent_created: true
 ---
 
@@ -24,7 +24,8 @@ agent_created: true
 | 写任何提示词前 | `references/rules.md` **顶部的规则索引** → 只读本次相关条目 |
 | 选模板、定段数 | `references/prompt-templates.md` |
 | 替换类任务（换人/换物/换装/复刻原片） | `references/replacement-playbook.md` + 规则索引「替换类」那组 |
-| **用户发来成片要拆解/仿做（AI 二创、爆款复现）** | `references/parody-teardown.md` + `tools\成片拆解.py`（机器证据）、`tools\成片对比.py`（二创 vs 原片：声音路线/画面同轴）（规则33–37「二创与拆解」组） |
+| **用户发来成片要拆解/仿做（AI 二创、爆款复现）** | `references/parody-teardown.md` + `tools\成片拆解.py`（机器证据）、`tools\成片对比.py`（二创 vs 原片：声音路线/画面同轴）（规则33–38「二创与拆解」组）；**读片优先级：用户发文件 ＞ 不下载（平台接口/字幕）＞ 下载后本地读** |
+| 换机 / 换 agent / 工具报缺依赖 | `python tools\环境检查.py`（逐项自检 + 缺什么装什么；**装前先问用户**） |
 | 结构/节奏/微表情细化（15 秒竖版五段式、爆款骨架、情绪公式与三禁忌） | `references/platform-skills.md`（即梦探索平台技能提炼） |
 | 深度视频（L4 复刻动作的前置：转黑白深度视频） | `references/depth-video-setup.md` + `tools\深度视频.py` |
 | 改完规则做回归自检 | `references/eval-cases.md`（11 条用例 + 断言） |
@@ -36,6 +37,8 @@ agent_created: true
 ## 工作流
 
 ### 0. 落位（每个新项目先做：先问，再动手）
+
+**换机 / 换 agent / 第一次用：先跑 `python tools\环境检查.py`**（逐项自检 ffmpeg/ffprobe、numpy/opencv、faster-whisper、onnxruntime、Yunet/Depth 模型、系统 OCR）；缺项**先问用户**，同意后 `python tools\环境检查.py --install --yes`（`--models` 补深度模型、`--warm-asr` 预下转写模型）。**装软件必须用户同意，不许静默安装。**
 
 同一轮问两句（固定话术）：
 
