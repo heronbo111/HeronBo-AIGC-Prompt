@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HeronBo-AIGC-Prompt · 工作流程 / 新手教程 / 文件对照</title>
+<style>
+  :root{
+    --bg:#f4f6f9; --surface:#ffffff; --surface2:#fafbfd; --border:#e2e7ef;
+    --text:#1e2430; --muted:#7a8497; --accent:#2f6fed; --accent-soft:#e8f0fe;
+    --ok:#12a150; --ok-soft:#e6f6ee; --warn:#d98b1f; --warn-soft:#fdf3e3;
+    --bad:#e5484d; --bad-soft:#fdecec;
+    --r:12px; --sh:0 1px 2px rgba(16,24,40,.04), 0 8px 24px rgba(16,24,40,.06);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:15px/1.75 "Microsoft YaHei UI","PingFang SC","Hiragino Sans GB",system-ui,sans-serif;}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  code{background:#eef2f8;border:1px solid var(--border);border-radius:6px;padding:1px 6px;
+    font:13px/1.6 "Cascadia Mono",Consolas,monospace;color:#31405a}
+
+  /* 顶栏 */
+  header{position:sticky;top:0;z-index:20;background:rgba(255,255,255,.92);
+    backdrop-filter:blur(10px);border-bottom:1px solid var(--border)}
+  .nav{max-width:1080px;margin:0 auto;padding:12px 24px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .brand{font-weight:700;letter-spacing:.2px;margin-right:auto}
+  .brand small{color:var(--muted);font-weight:400;margin-left:8px}
+  .nav a{color:var(--muted);font-size:13px;padding:5px 10px;border-radius:8px}
+  .nav a:hover{background:var(--accent-soft);color:var(--accent);text-decoration:none}
+
+  main{max-width:1080px;margin:0 auto;padding:28px 24px 72px}
+  section{margin:0 0 40px}
+  h2{font-size:20px;margin:0 0 6px;display:flex;align-items:center;gap:10px}
+  h2 .no{display:inline-flex;width:28px;height:28px;border-radius:9px;background:var(--accent);
+    color:#fff;align-items:center;justify-content:center;font-size:14px}
+  .sub{color:var(--muted);font-size:13px;margin:0 0 18px}
+  h3{font-size:15px;margin:22px 0 8px}
+
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);
+    box-shadow:var(--sh);padding:20px 22px}
+  .card + .card{margin-top:14px}
+
+  /* Hero */
+  .hero{background:var(--surface);border:1px solid var(--border);border-radius:16px;
+    box-shadow:var(--sh);padding:26px 26px 22px;overflow:hidden;position:relative}
+  .hero:before{content:"";position:absolute;inset:-40% -10% auto -10%;height:220px;
+    background:radial-gradient(600px 160px at 20% 0%,#e8f0fe 0%,transparent 70%),
+               radial-gradient(500px 140px at 80% 0%,#e6f6ee 0%,transparent 70%);pointer-events:none}
+  .hero h1{font-size:26px;margin:0 0 6px;position:relative}
+  .hero p{margin:0 0 14px;color:var(--muted);position:relative}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;position:relative}
+  .chip{border:1px solid var(--border);background:var(--surface2);border-radius:999px;
+    padding:6px 12px;font-size:13px}
+  .chip b{color:var(--accent)}
+  .chip.g{border-color:#bfe3cf;background:var(--ok-soft)}
+  .chip.r{border-color:#f2c6c8;background:var(--bad-soft)}
+
+  /* 步骤流 */
+  .flow{display:grid;gap:12px}
+  .step{display:grid;grid-template-columns:44px 1fr;gap:14px;background:var(--surface);
+    border:1px solid var(--border);border-radius:var(--r);box-shadow:var(--sh);padding:16px 18px;
+    opacity:0;transform:translateY(10px);transition:opacity .5s ease,transform .5s ease}
+  .step.on{opacity:1;transform:none}
+  .step .n{width:44px;height:44px;border-radius:12px;background:var(--accent-soft);color:var(--accent);
+    display:flex;align-items:center;justify-content:center;font-weight:700;font-size:17px}
+  .step h4{margin:2px 0 4px;font-size:15px}
+  .step p{margin:0;color:#41506b;font-size:14px}
+  .who{display:inline-block;font-size:12px;border-radius:999px;padding:1px 9px;margin-left:8px;
+    vertical-align:1px;border:1px solid var(--border);background:var(--surface2);color:var(--muted)}
+  .who.u{border-color:#cfe0ff;background:var(--accent-soft);color:var(--accent)}
+  .who.a{border-color:#bfe3cf;background:var(--ok-soft);color:var(--ok)}
+  .who.t{border-color:#f2ddb4;background:var(--warn-soft);color:var(--warn)}
+  .arrow{height:16px;margin:-4px 0 -4px 30px;border-left:2px dashed #d7dee9}
+
+  /* 表格 */
+  table{width:100%;border-collapse:collapse;font-size:14px;background:var(--surface);
+    border:1px solid var(--border);border-radius:var(--r);overflow:hidden;box-shadow:var(--sh)}
+  th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{background:var(--surface2);font-size:13px;color:#41506b;font-weight:600}
+  tr:last-child td{border-bottom:none}
+  td.f{white-space:nowrap;font-weight:600}
+  td.f code{font-weight:400}
+  .tag{display:inline-block;font-size:12px;border-radius:6px;padding:1px 7px;margin-right:4px}
+  .tag.agent{background:var(--ok-soft);color:var(--ok)}
+  .tag.user{background:var(--accent-soft);color:var(--accent)}
+  .tag.both{background:var(--warn-soft);color:var(--warn)}
+
+  /* 闭环 */
+  .loop{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .loop .node{flex:1 1 130px;text-align:center;background:var(--surface);border:1px solid var(--border);
+    border-radius:var(--r);padding:14px 10px;box-shadow:var(--sh);font-size:13px}
+  .loop .node b{display:block;font-size:14px;margin-bottom:2px}
+  .loop .to{color:#b9c3d2;font-weight:700}
+  .pulse{animation:pulse 2.4s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
+  @keyframes float{from{transform:translateY(0)}to{transform:translateY(-4px)}}
+  .float{animation:float 3s ease-in-out infinite alternate}
+
+  /* 图例 */
+  .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:13px;color:var(--muted);margin:0 0 12px}
+  .legend span b{color:var(--text)}
+
+  .note{border-left:3px solid var(--warn);background:var(--warn-soft);border-radius:8px;
+    padding:10px 14px;font-size:13.5px;color:#6b4c12}
+  .note.bad{border-color:var(--bad);background:var(--bad-soft);color:#7a2226}
+  .note.ok{border-color:var(--ok);background:var(--ok-soft);color:#14532d}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:820px){.grid2{grid-template-columns:1fr}}
+  footer{max-width:1080px;margin:0 auto;padding:0 24px 48px;color:var(--muted);font-size:13px}
+</style>
+</head>
+<body>
+
+<header>
+  <nav class="nav">
+    <div class="brand">HeronBo-AIGC-Prompt <small>工作流程 · 新手教程 · 文件对照</small></div>
+    <a href="#what">这是什么</a>
+    <a href="#flow">工作流程</a>
+    <a href="#start">新手教程</a>
+    <a href="#files">文件对照</a>
+    <a href="#loop">反馈闭环</a>
+    <a href="#quick">速查</a>
+  </nav>
+</header>
+
+<main>
+
+  <!-- 0 是什么 -->
+  <section id="what">
+    <div class="hero">
+      <h1>AI 视频提示词生成与拆解</h1>
+      <p>输入「文案 / 台词 + 素材（图片 · 视频 · 音频）」→ 输出可直接粘贴到生成平台的提示词；每次成片反馈都沉淀成规则，越用越准。</p>
+      <div class="chips">
+        <span class="chip">① 图生视频 <b>含道具替换</b></span>
+        <span class="chip">② 文生视频 <b>纯文字</b></span>
+        <span class="chip">③ 参考视频生视频</span>
+        <span class="chip">④ 参考视频替换生视频</span>
+        <span class="chip g">只出提示词，不代提交、不消耗积分</span>
+        <span class="chip r">口播只是其中一种形态</span>
+      </div>
+    </div>
+
+    <h3>第一步永远是"定类型"：按需求走，不按素材走</h3>
+    <table>
+      <thead><tr><th>大类</th><th>判定信号（用户给什么 / 要什么）</th><th>模板</th><th>关键差异</th></tr></thead>
+      <tbody>
+        <tr><td class="f">图生视频</td><td>给图（形象图 / 首帧 / 尾帧 / 四视图），无参考视频；要"让它动起来"</td><td>A · C2b</td><td>图片是唯一锚；<b>道具替换</b>（换掉手里那本书）走这条</td></tr>
+        <tr><td class="f">文生视频</td><td>什么都不给，只有一段文字</td><td>F</td><td>全部靠文字描述，一致性靠描述词逐字复用（模板 F 尚未验证）</td></tr>
+        <tr><td class="f">参考视频生视频</td><td>给参考视频，要"照它的运镜 / 动作 / 节奏"生成新画面</td><td>C</td><td>@视频1 = 运镜 · 动作 · 节奏；画面内容自己写</td></tr>
+        <tr><td class="f">参考视频替换生视频</td><td>给原片 + 要"把里面的人 / 物换掉"，保留动作构图</td><td>C1 · C2 · E</td><td>锁机位构图与镜头节奏，只换表现层</td></tr>
+        <tr><td class="f">音乐二创 / 翻唱</td><td>给音乐，要卡点 / 配口型</td><td>D</td><td>参考视频类的特例：声音先行</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- 1 工作流程 -->
+  <section id="flow">
+    <h2><span class="no">1</span>整条工作流程</h2>
+    <p class="sub">从收到需求到规则更新，一共 7 步。绿色是 agent 干的，蓝色是你干的，橙色是工具。</p>
+    <div class="legend">
+      <span><b>角色</b></span>
+      <span><span class="who a">agent</span> 自动完成</span>
+      <span><span class="who u">用户</span> 只需回答 / 打分</span>
+      <span><span class="who t">工具</span> 脚本或窗口</span>
+    </div>
+
+    <div class="flow">
+      <div class="step"><div class="n">1</div><div>
+        <h4>落位：先判断是新项目还是沿用<span class="who t">工具</span></h4>
+        <p>新项目 → 建骨架 <code>文案/ 素材/ 成片/ 废片/ 评价/ 备注/</code>（交付时再加 <code>即梦上传/</code>），一条命令 <code>python tools\首次配置.py --project "&lt;项目目录&gt;"</code>；沿用 → 不加目录，只追加版本与素材。命名不带日期戳，同主题重开依次加 1、2、3。</p>
+      </div></div>
+      <div class="arrow"></div>
+
+      <div class="step"><div class="n">2</div><div>
+        <h4>分类：走哪条路线，取哪套模板<span class="who a">agent</span></h4>
+        <p>看<b>需求</b>（要换人？要复刻动作？只要动起来？）定四大类。注意一件事：<b>分类由需求定，写什么由素材定</b>——不看素材既归不了类，也写不出提示词。</p>
+      </div></div>
+      <div class="arrow"></div>
+
+      <div class="step"><div class="n">3</div><div>
+        <h4>素材逐项过一遍，归纳职责<span class="who a">agent</span></h4>
+        <p>每份素材管什么：形象 / 台词 / 音色 / 动作 / 环境。传了视频就逐帧看；提示词里写到的每个 <code>@图片N</code>、<code>@视频N</code> 都必须是真实上传过的。</p>
+      </div></div>
+      <div class="arrow"></div>
+
+      <div class="step"><div class="n">4</div><div>
+        <h4>写提示词：模板骨架 + 五条硬项<span class="who a">agent</span></h4>
+        <p>负面词每段写死（不要有任何字幕 / 全程绝对无运镜 / 无AI畸变）· 引用一致 · 动作与台词一一对应且每行标时间区间 · 多段只写承接点 · 每段标预计时长。模型档位由你选，agent 只估时长。</p>
+      </div></div>
+      <div class="arrow"></div>
+
+      <div class="step"><div class="n">5</div><div>
+        <h4>交付三件套 + 一句提醒<span class="who a">agent</span></h4>
+        <p>① 提示词正文（代码块，可直接粘贴）② 素材清单（每个文件 + 它的角色）③ 多段时的拼接说明（切点 / 承接点）。<b>并提醒你：比例手选 9:16</b>——提示词里的画幅句不决定成片画幅。</p>
+      </div></div>
+      <div class="arrow"></div>
+
+      <div class="step"><div class="n">6</div><div>
+        <h4>交付后自动弹出评分窗口<span class="who t">工具</span></h4>
+        <p>这是硬性动作，不是可选项。窗口版评分工具 <code>tools\score_gui.cmd</code>（优先用打包好的 <code>dist\score-tool.exe</code>）。<b>没保存就关窗会被拦一下</b>。</p>
+      </div></div>
+      <div class="arrow"></div>
+
+      <div class="step"><div class="n">7</div><div>
+        <h4>回收反馈，更新规则<span class="who t">工具</span><span class="who a">agent</span></h4>
+        <p>你保存的评分 json → <code>python tools\评价回收.py</code> → agent 按《反馈优化循环》更新 <code>rules.md</code> / 模板 / 样本库，并回报这次改了什么。</p>
+      </div></div>
+    </div>
+  </section>
+
+  <!-- 2 新手教程 -->
+  <section id="start">
+    <h2><span class="no">2</span>新手教程（第一次用，6 步）</h2>
+    <p class="sub">只有第 2、4、5 步需要你动手，其余都是 agent 或工具在做。</p>
+
+    <div class="grid2">
+      <div class="card">
+        <h3>第 0 步 · 装好（约 5 分钟）</h3>
+        <p>把仓库克隆到你的 agent 技能目录（ZCode 是 <code>~\.zcode\skills\</code>，Codex 是 <code>~\.codex\skills\</code>，DSH 是 <code>~\.dsh\skills\</code>）：</p>
+        <p><code>git clone https://gitee.com/HeronBo/seedance-prompt.git</code></p>
+        <p>然后跑环境自检：<code>python tools\环境检查.py</code>。缺什么它会打印装法——<b>装之前会先问你</b>，不会静默安装。</p>
+      </div>
+
+      <div class="card">
+        <h3>第 1 步 · 第一次对话，回答两句话</h3>
+        <p>agent 会固定问两句：</p>
+        <p>① 「请问您要把项目建在哪里？您提供好素材后，我会自动将其进行归类」<br>
+           ② 「你主要用哪个平台做 AI 视频？即梦 / 小云雀 / updream」</p>
+        <p>回答完，它建骨架并把路径记进本机配置（<code>references\paths.local.md</code>，不进仓库）。</p>
+      </div>
+
+      <div class="card">
+        <h3>第 2 步 · 把素材丢进项目文件夹</h3>
+        <p>文案 / 台词、形象图、产品图、音频、要复刻的原片——都放进项目文件夹。agent 会自动归类并<b>回报每个文件去了哪</b>（<code>文案/</code>、<code>素材/</code>…）。</p>
+        <p class="note">不用手动整理；但<b>素材要在对话里给 agent 说清楚</b>，它才能判断每份素材的职责。</p>
+      </div>
+
+      <div class="card">
+        <h3>第 3 步 · 拿到提示词</h3>
+        <p>agent 给你三样：提示词正文、素材清单、拼接说明。提示词里出现的 <code>@图片1 / @视频1 / @音频1</code> 就是待会儿要上传的那几个文件。</p>
+      </div>
+
+      <div class="card">
+        <h3>第 4 步 · 去平台生成</h3>
+        <p>① 复制提示词 ② <b>上传提示词里写到的每个素材</b>（没写进提示词的别传）③ <b>比例手选 9:16</b> ④ 选好模型档位再生成。</p>
+        <p class="note bad">最常见翻车：画幅没手选、或素材没传全——都会让成片"完全对不上"。</p>
+      </div>
+
+      <div class="card">
+        <h3>第 5 步 · 成片出来打分</h3>
+        <p>交付时弹出的评分窗口里：选样本 → 选成片 → 六维逐项点分（口型 / 动作 / 形象 / 语速 / 节奏 + 违禁项）→ 五星 + 结论 + 备注 → <b>保存评分</b>（快捷键 <code>Ctrl+S</code>）。</p>
+        <p>保存的 json 就是下一轮规则的依据；不保存就关窗会弹窗拦你一下。</p>
+      </div>
+
+      <div class="card">
+        <h3>第 6 步 · 越用越准</h3>
+        <p>agent 回收这份评分 → 更新规则与模板 → 下一批提示词就更贴合你的实际成片效果。<b>反馈越多，规则越准</b>，这也是这个 skill 与"通用提示词教程"最大的区别。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3 文件对照 -->
+  <section id="files">
+    <h2><span class="no">3</span>文件对照：哪个文件、是什么、什么时候读</h2>
+    <p class="sub">agent 不需要通读全文——按"按需读取"表，只读当下相关的那一份。</p>
+
+    <h3>根目录</h3>
+    <table>
+      <thead><tr><th>文件</th><th>是什么</th><th>谁 · 什么时候读</th></tr></thead>
+      <tbody>
+        <tr><td class="f"><code>SKILL.md</code></td><td>入口说明书：能力边界、四大类判定表、工作流、交付要求、按需读取表</td><td><span class="tag agent">agent</span>每次任务开头</td></tr>
+        <tr><td class="f"><code>README.md</code></td><td>给人看的总说明：定位 / 安装 / 换机 / 目录结构 / 贡献</td><td><span class="tag user">用户</span>第一次安装时</td></tr>
+        <tr><td class="f"><code>AGENTS.md</code></td><td>多 agent 协作约定：认领、只提交自己改的文件、禁止危险 git 操作</td><td><span class="tag agent">agent</span>要改仓库之前</td></tr>
+        <tr><td class="f"><code>TODO.md</code></td><td>交接入口 + 待办（换 agent / 换机看这里）</td><td><span class="tag both">交接时</span></td></tr>
+      </tbody>
+    </table>
+
+    <h3>references/（知识层）</h3>
+    <table>
+      <thead><tr><th>文件</th><th>是什么</th><th>谁 · 什么时候读</th></tr></thead>
+      <tbody>
+        <tr><td class="f"><code>rules.md</code></td><td>硬规则与已验证规律；<b>顶部有规则索引</b>，按组只读相关条目</td><td><span class="tag agent">agent</span>写任何提示词前</td></tr>
+        <tr><td class="f"><code>rules.local.md</code></td><td>本机个人规则覆盖层，<b>优先级高于</b> <code>rules.md</code>（不进仓库）</td><td><span class="tag both">本机优先</span></td></tr>
+        <tr><td class="f"><code>prompt-templates.md</code></td><td>模板 A–F（开头有"四大类 ↔ 模板"总表）</td><td><span class="tag agent">agent</span>选模板时</td></tr>
+        <tr><td class="f"><code>playbooks.md</code></td><td>实战手册：一、替换类（分级 / 路线 / 失败模式）二、二创拆解三、深度视频与环境</td><td><span class="tag agent">agent</span>做替换、拆解、深度片时</td></tr>
+        <tr><td class="f"><code>platforms.md</code></td><td>平台与 CLI + <b>模型与限额（唯一真相源）</b> + 平台玩法提炼</td><td><span class="tag agent">agent</span>定模型 / 查限额时</td></tr>
+        <tr><td class="f"><code>samples-db.md</code></td><td>样本库：提示词 → 成片 → 评价 → 规则产出</td><td><span class="tag agent">agent</span>找同类先例时</td></tr>
+        <tr><td class="f"><code>paths.md</code> / <code>paths.local.md</code></td><td>路径变量模板 / 本机实际取值</td><td><span class="tag both">定位项目时</span></td></tr>
+        <tr><td class="f"><code>eval-cases.md</code></td><td>回归用例与逐条断言</td><td><span class="tag agent">agent</span>改完规则自检</td></tr>
+        <tr><td class="f"><code>eval-absorbed.local.json</code></td><td>评价回收账本（不进仓库）</td><td><span class="tag t">工具</span>回收评价时</td></tr>
+      </tbody>
+    </table>
+
+    <h3>tools/（工具层）</h3>
+    <table>
+      <thead><tr><th>文件</th><th>干什么</th><th>谁 · 什么时候用</th></tr></thead>
+      <tbody>
+        <tr><td class="f"><code>环境检查.py</code> · <code>首次配置.py</code></td><td>环境自检与安装 · 建项目骨架并归类素材</td><td><span class="tag both">装好第一次 + 换机</span></td></tr>
+        <tr><td class="f"><code>score_gui.pyw</code> · <code>score_gui.cmd</code> · <code>dist\score-tool.exe</code></td><td>窗口版评分工具（六维 + 违禁项 + 结论，可换主题；没保存关窗会拦）</td><td><span class="tag user">用户</span>每次成片出来后</td></tr>
+        <tr><td class="f"><code>评分.py</code> · <code>评价回收.py</code></td><td>命令行评分（无图形环境）· 回收评分账本</td><td><span class="tag t">工具</span>回收时</td></tr>
+        <tr><td class="f"><code>成片拆解.py</code> · <code>成片对比.py</code></td><td>拆解机器证据（切点 / 人脸 / 音轨）· 二创 vs 原片对照</td><td><span class="tag agent">agent</span>拿到成片要拆解时</td></tr>
+        <tr><td class="f"><code>深度视频.py</code> · <code>人物遮罩.py</code> · <code>竖版画布.py</code></td><td>转黑白深度片 · 人物遮罩片 · 横版转竖版</td><td><span class="tag agent">agent</span>做替换类预处理时</td></tr>
+        <tr><td class="f"><code>下载B站成片.py</code></td><td>把 B站链接变成本地 mp4（仅拆解分析用）</td><td><span class="tag agent">agent</span>拆解 B站成片时</td></tr>
+        <tr><td class="f"><code>识别工具/</code></td><td>人脸检测与系统 OCR 小脚本 + 小模型</td><td><span class="tag t">工具</span>素材识别时</td></tr>
+      </tbody>
+    </table>
+    <p class="note ok" style="margin-top:12px">一句话记法：<b>根目录看入口、references 是知识、tools 是手脚</b>。你只需要认识 <code>README.md</code> 和评分工具，其余交给 agent。</p>
+  </section>
+
+  <!-- 4 闭环 -->
+  <section id="loop">
+    <h2><span class="no">4</span>为什么它越用越准：反馈闭环</h2>
+    <p class="sub">和"通用提示词教程"最大的区别——你的每一次成片评价都会变成下一条规则。</p>
+    <div class="loop">
+      <div class="node"><b>写提示词</b>按模板 + 硬项</div>
+      <div class="to pulse">→</div>
+      <div class="node"><b>平台生成</b>你复制粘贴 + 手选 9:16</div>
+      <div class="to pulse">→</div>
+      <div class="node"><b>成片</b>可用 / 可改 / 作废</div>
+      <div class="to pulse">→</div>
+      <div class="node"><b>评分</b>六维 + 违禁项 + 结论 → json</div>
+      <div class="to pulse">→</div>
+      <div class="node"><b>回收</b><code>评价回收.py</code></div>
+      <div class="to pulse">→</div>
+      <div class="node"><b>更新规则</b>rules / 模板 / 样本库</div>
+    </div>
+    <p class="note" style="margin-top:14px">规则只写「规则 + 依据（日期 / 来源）」：同一现象出现 ≥2 次且因果明确才升为"已验证"，只出现 1 次先记"待验证"。</p>
+  </section>
+
+  <!-- 5 速查 -->
+  <section id="quick">
+    <h2><span class="no">5</span>速查</h2>
+
+    <h3>模型与限额（唯一真相源：<code>references\platforms.md</code>）</h3>
+    <table>
+      <thead><tr><th>模型</th><th>运行方式</th><th>输出上限</th><th>输入上限</th><th>备注</th></tr></thead>
+      <tbody>
+        <tr><td class="f">seedance 2.0 fast</td><td>即梦</td><td>≤15s</td><td>≤15s（图≤9 / 视频≤3 / 音频≤3）</td><td>「参考视频≥12s」与「整条台词配音≥12s」互斥</td></tr>
+        <tr><td class="f">seedance 2.5</td><td>即梦</td><td>≤30s</td><td>≤30s（视频≤15s + 音频≤15s）</td><td>支持 4K；成本高，按成本策略选</td></tr>
+        <tr><td class="f">MiniMax H3</td><td>开源 · 本地 / 云</td><td>分片推理 60s+</td><td>参考视频建议 ≤10s</td><td>支持首尾帧与全能参考；3D 类用三视图固定角色</td></tr>
+      </tbody>
+    </table>
+    <p class="sub" style="margin-top:8px">模型或限额有变动时<b>只改这张表</b>，rules 与模板只引用、不写死数字。</p>
+
+    <h3>写提示词的五条硬项（一条都不能省）</h3>
+    <div class="card">
+      <p>① <b>负面词每段写死</b>：不要有任何字幕 / 全程绝对无运镜 / 无AI畸变<br>
+         ② <b>引用一致</b>：出现的 <code>@图片N/@视频N/@音频N</code> 必须真实上传过<br>
+         ③ <b>动作-台词一一对应</b>：动作前置、台词加引号、一行一组、每行标时间区间（连续不跳变）<br>
+         ④ <b>多段只写承接点</b>：形象 / 背景 / 位置 / 持物；描述句逐字复用第一段<br>
+         ⑤ <b>每段标预计时长</b>（只估算，模型档位由你选）</p>
+    </div>
+
+    <h3>替换类动作戏：六步流水线（<code>playbooks.md</code> 1.2）</h3>
+    <div class="card">
+      <p>备三视图 → <b>先去水印</b>（不去会被模型学进画面）→ 拆镜 + 单人物化（双人同框会被合成一个人）→ 过渡帧划归对应角色段（防漏换）→ 逐段替换（2.0 / 2.0 fast 够用）→ 按原序接回并<b>记录每段衔接方式</b>。</p>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  本页为 HeronBo-AIGC-Prompt 的图文说明，内容与仓库文档同步（SKILL.md / README.md / references/*.md）。修改规则请改仓库文件，不要只改本页。
+</footer>
+
+<script>
+  // 滚动渐入
+  const io = new IntersectionObserver((es) => {
+    es.forEach(e => { if (e.isIntersecting) { e.target.classList.add('on'); io.unobserve(e.target); } });
+  }, { threshold: 0.12 });
+  document.querySelectorAll('.step').forEach((el, i) => {
+    el.style.transitionDelay = (i % 3) * 60 + 'ms';
+    io.observe(el);
+  });
+  // 平滑锚点
+  document.querySelectorAll('a[href^="#"]').forEach(a => {
+    a.addEventListener('click', ev => {
+      const t = document.querySelector(a.getAttribute('href'));
+      if (t) { ev.preventDefault(); t.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+    });
+  });
+</script>
+</body>
+</html>
