@@ -32,6 +32,7 @@ agent_created: true
 | 换机 / 换 agent / 工具报缺依赖 | `python tools\环境检查.py`（逐项自检 + 缺什么装什么；**装前先问用户**） |
 | 结构/节奏/微表情/平台玩法细化 | `references/platforms.md` 第三部分（15 秒五段式、爆款骨架、微表情三禁忌、分镜注入纪律、角色设定图） |
 | 成片打分（**交付后必弹**） | `tools\score_gui.cmd`（优先 `dist\score-tool.exe`，没有则 pythonw 兜底）；无图形环境用 `tools\评分.py`。旧网页版 `评价工具.html` 已降级为兜底 |
+| 收素材 / 建项目骨架（**出提示词后自动调**） | `tools\dist\score-tool.exe --material`（同一个 exe 的第二个用途）；无图形环境用 `python tools\project_core.py --root "<样本库根>" --name "<实验名>" --add "<素材路径>"` |
 | 改完规则做回归自检 | `references/eval-cases.md`（用例 + 断言） |
 | 平台与 CLI、提交纪律 | `references/platforms.md` 第一、二部分 |
 | 路径变量 | `references/paths.md`（模板）+ `references/paths.local.md`（本机取值） |
@@ -119,6 +120,14 @@ agent_created: true
    - 固定话术：「成片出来后，用刚弹出的评分窗口打一下分（六维+违禁项+结论），保存后我会读这份 json 更新规则，并问你要不要继续优化 skill」
    - 命令行版（备选，无图形环境时用）：`python tools\评分.py`（`--list` 清单 / 问答式打分 / `--show` 看历史）。
    - 旧网页版 `评价工具.html` **不再作为常规路径**（已被 exe 取代），仅在图形界面完全起不来时兜底。
+4b. **硬性要求：提示词一出来，先把「素材投放 · 建骨架」弹出来**——收素材与建骨架已从"agent 手工 mkdir + 聊天来回确认"搬进工具（同一个 exe 的第二个用途）。
+   - 起法：`tools\dist\score-tool.exe --material`；双击 `tools\score_gui.cmd` 后点左下角「素材/骨架」等价。
+   - 一步到位带参：`--root "<样本库根>" --name "<实验名>" --add "<素材1>" "<素材2>"` → 自动建骨架（同名自动加序号 1/2/3）并把素材归类进 `<项目>/素材/`。
+   - 无图形界面时的等价命令行：`python tools\project_core.py --root "…" --name "…" --add "…" --json`（可解析输出）。
+   - 它产出 `<项目>/骨架.json`（机器读）+ `<项目>/骨架.md`（人读）：字段含 相对路径 / 类型 / 宽高 / 时长 / 体积 / hash / 备注，**agent 后续直接读它，不要再逐个问用户"这是什么素材"**。
+   - **不要让用户手选分类**：落进「素材/」即归类（rules.md 第264–272 条）；要细分就加备注，别加目录。
+   - 素材是**复制**进项目（不是引用），便于整包发给同事；同名不覆盖、按 hash 判重。
+
 5. **回收与优化（保存后必做）**：跑 `python tools\评价回收.py` → 有新的就按《反馈优化循环》更新 `rules.md`/模板/`samples-db.md` → `--mark-all` 记账，并回报改了什么、问用户要不要继续优化。
 
 ## 反馈优化循环（每次拿到反馈完整走一遍）
