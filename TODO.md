@@ -1,18 +1,17 @@
-# 仓库项目交接（2026-09-08 建立）
+# TODO
 
-> 本文件是 HeronBo-AIGC-Prompt skill 仓库的交接入口。新会话开始：先读 `README-安装说明.md`、`references/paths.md`、`TODO.md`，再按 `SKILL.md` 工作流执行。
+> 交接入口：新会话先读 `README.md` → `references/paths.md` → 本文件 → `SKILL.md`。
 
-## 项目
-HeronBo-AIGC-Prompt skill（生成 Seedance 口播提示词）+ 六维评分工具，git 仓库跨机/团队使用。
-仓库根：`C:\Users\<用户名>\.zcode\skills\HeronBo-AIGC-Prompt\`（git init，main；规则截至第21条，2026-09-08）。
+## 待办
 
-## 远程与同步
-- **双远程**：GitHub 私有 `heronbo111/HeronBo-AIGC-Prompt`（作者主库）；Gitee 公开 `HeronBo/HeronBo-AIGC-Prompt`（国内直连；公开版已脱敏，真实数据只存各机本机样本库）。
-- **同步节奏（2026-09-08 用户定）**：每周一 09:00 自动推送双远程（cron 已建，automation-45fe6fb0）；平时改动只提交不推送；急更新可手动 push。
-- Gitee 推送凭据=私人令牌，已存本机 GCM（`credential.helper=manager`，repo 级已配）。令牌值由用户自行保管；如需撤销重建：平台令牌页删除→新建后重新授权。
+- **L4「换人＋保原片」路线跑通**：三条老路（通用模型单步替换 / 深度片·遮罩片 / 外部付费工具）已实测否定，现走替代方向（只换台词、只换物件、目标图驱动、换素材）。免费路线入口见 `references/playbooks.md` 第一部分「外部工具」。**装任何软件前先问用户**，未跑通前一律标「待验证」。
+- **文生视频模板补样本**：`references/prompt-templates.md` 模板 F 目前**未验证**（本机暂无文生视频样本），第一条真实需求进来后补样本并转正。
+- **MiniMax H3 落地方式确认**：本地 ComfyUI 分片推理 / 云端 API 二选一，定了再补 `references/platforms.md` 的写法差异。**外部平台先核价、软件先问用户。**
+- **样本参数补全**：生成参数（模型版本/入口/分辨率/抽卡次数）缺失 = 信息丢失，收集新样本时优先补；样本2「神临 vs 天降.mp4」名字待归一。
+- **规则转正**：`rules.md` 中带「待验证」的条目，等成片验证后转正或推翻；真实失败案例同步补进 `references/eval-cases.md`。
 
-## 关键约束
-- 交付物只出提示词：永不出现 CLI 命令/积分报价/队列信息（rules.md 第13条）。
-- 交付后由 agent 自动启动评分工具请用户打分（SKILL.md 交付节）；按「反馈优化循环」更新规则，并询问是否优化 skill。
-- 换机 = clone + 首次使用按固定话术问用户项目位置（写入 `references/paths.md`）+ 装 Python/Edge/Chrome/ffmpeg（README-安装说明.md）。
-- 术语约定：规则文件只写「规则+依据（日期/来源）」，不写 agent 推理过程（SKILL.md 第6条）。
+## 维护约定
+
+- 改完 `rules.md` / `prompt-templates.md` → 跑 `references/eval-cases.md` 回归；再跑 `python tools\评价回收.py` 收评价。
+- 模型或限额有变动 → 只改 `references/platforms.md` 的「模型与限额」表。
+- 协作写前规则见 `AGENTS.md`；本机取值只写 `references/*.local.md`（gitignored）。

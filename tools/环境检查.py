@@ -114,7 +114,7 @@ def probe():
     ok = os.path.isfile(model) and os.path.getsize(model) > 90 * 1024 * 1024
     add("Depth-Anything-V2-Small", "深度视频", ok,
         ("%.0f MB" % (os.path.getsize(model) / 1048576)) if os.path.isfile(model) else "未下载",
-        "" if ok else "python tools\\环境检查.py --models（HF 需代理，见 depth-video-setup.md）")
+        "" if ok else "python tools\\环境检查.py --models（HF 需代理，见 playbooks.md 第三部分）")
     return items
 
 
