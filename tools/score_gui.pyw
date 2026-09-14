@@ -5,6 +5,10 @@
 与命令行版/网页版**同一套口径、同一份 json 结构**，`评价回收.py` 照常回收。
 """
 import importlib.util
+import os
+import sys
+import tkinter as tk
+from tkinter import ttk, messagebox
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BASE = getattr(sys, "_MEIPASS", HERE)          # PyInstaller 打包后资源在 _MEIPASS
