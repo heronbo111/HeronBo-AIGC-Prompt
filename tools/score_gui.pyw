@@ -5,7 +5,7 @@
 所以 `tools\\评价回收.py` 照常回收。
 
 用法：
-    双击 tools\\score_gui.cmd                 # 优先起 dist\\score-tool.exe，没有则 pythonw 起本脚本
+    双击 tools\\score_gui.cmd                 # 优先起 dist\\score-tool.exe，没有则挑带 tkinter 的 Python
     dist\\score-tool.exe --sample 三本书       # 打开即定位到名字含该关键词的样本
     pythonw tools\\score_gui.pyw
 """
@@ -19,12 +19,85 @@ import os
 import re
 import struct
 import sys
-import tkinter as tk
-import tkinter.font as tkfont
 import zlib
-from tkinter import filedialog
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _find_tk_python():
+    """找一个「带 tkinter」的解释器；找不到返回 None。
+
+    本机 PATH 上的 python/pythonw 可能是没带 tcl/tk 的绿色版，直接 import 会崩，
+    所以这里主动探测：先问 py 启动器，再扫常见安装目录。
+    """
+    import glob
+    import subprocess
+    cands = []
+    launcher = os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                            "Programs", "Python", "Launcher", "py.exe")
+    if os.path.isfile(launcher):
+        for ver in ("-3.12", "-3.13", "-3.11", "-3.10", "-3"):
+            try:
+                r = subprocess.run([launcher, ver, "-c",
+                                    "import sys,tkinter;print(sys.executable)"],
+                                   capture_output=True, text=True, timeout=20)
+                if r.returncode == 0 and r.stdout.strip():
+                    cands.append(r.stdout.strip())
+            except Exception:                              # noqa: BLE001
+                pass
+    for root in (os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Python"),
+                 os.environ.get("ProgramFiles", r"C:\Program Files"), "C:\\"):
+        if root and os.path.isdir(root):
+            cands += sorted(glob.glob(os.path.join(root, "Python3*", "python.exe")))
+    seen = set()
+    for p in cands:
+        try:
+            rp = os.path.realpath(p)
+        except OSError:
+            continue
+        if rp in seen or not os.path.isfile(p):
+            continue
+        seen.add(rp)
+        try:
+            r = subprocess.run([p, "-c", "import tkinter"], capture_output=True, timeout=20)
+            if r.returncode == 0:
+                return p
+        except Exception:                                  # noqa: BLE001
+            pass
+    return None
+
+
+try:
+    import tkinter as tk
+except ModuleNotFoundError:                # 当前解释器没带 tkinter → 换一个再起自己
+    import subprocess
+    if os.environ.get("HERONBO_TK_RELAUNCH") != "1":
+        _py = _find_tk_python()
+        if _py:
+            _exe = _py
+            _w = os.path.join(os.path.dirname(_py), "pythonw.exe")
+            if os.name == "nt" and os.path.isfile(_w):
+                _exe = _w
+            _env = dict(os.environ, HERONBO_TK_RELAUNCH="1")
+            subprocess.Popen([_exe, os.path.abspath(__file__)] + sys.argv[1:],
+                             cwd=os.path.dirname(os.path.abspath(__file__)), env=_env)
+            sys.exit(0)
+    try:                                                   # 真找不到 → 弹窗说清楚，别静默消失
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(
+            None,
+            "当前 Python 没有 tkinter，本机也没找到带 tkinter 的 Python。\n\n"
+            "两种情况都能解决：\n"
+            "1) 直接运行 tools\\dist\\score-tool.exe（已打包好，不依赖本机 Python）；\n"
+            "2) 安装 Python 3 时勾上 “tcl/tk and IDLE”。",
+            "评分工具 · 环境不完整", 0x10)
+    except Exception:                                      # noqa: BLE001
+        pass
+    sys.exit(1)
+
+import tkinter.font as tkfont
+from tkinter import filedialog
+
 BASE = getattr(sys, "_MEIPASS", HERE)          # PyInstaller 打包后资源在 _MEIPASS
 
 # ── 主题 ────────────────────────────────────────────────────────────────────
@@ -49,6 +122,20 @@ THEMES = {
                  text="#E6EDF7", muted="#8AA0C0", accent="#4F8CFF", accent_text="#08122A",
                  accent_soft="#1C2C4C", header="#15203A", star_empty="#33436A",
                  ok="#35C48F", warn="#E0B34C", bad="#F27272"),
+
+    # ── 游戏皮肤：game=True 会额外启用「渐变 + 外发光 + 顶部高光」──
+    "霓虹": dict(bg="#080C16", surface="#131C2E", surface_hover="#1B2740", border="#28354F",
+                 text="#E8EFFC", muted="#8A9CBC", accent="#38BDF8", accent_text="#04202F",
+                 accent_soft="#12314A", header="#0C1424", star_empty="#33405C",
+                 ok="#34D399", warn="#FBBF24", bad="#F87171", game=True),
+    "熔金": dict(bg="#17100A", surface="#2A1D11", surface_hover="#3A2816", border="#4A351C",
+                 text="#F8F0DE", muted="#BC9E73", accent="#F0A22E", accent_text="#2A1A02",
+                 accent_soft="#3E2C12", header="#1F150C", star_empty="#4E3A21",
+                 ok="#4ADE80", warn="#FBBF24", bad="#F87171", game=True),
+    "极光": dict(bg="#EEF3FF", surface="#FFFFFF", surface_hover="#F4F6FF", border="#D3DEF6",
+                 text="#1B2438", muted="#6B7A99", accent="#6366F1", accent_text="#FFFFFF",
+                 accent_soft="#E6E8FF", header="#E4EBFF", star_empty="#D5DDF0",
+                 ok="#10B981", warn="#F59E0B", bad="#EF4444", game=True),
 }
 DEFAULT_THEME = "浅色"
 
@@ -406,8 +493,11 @@ class Segmented(_Slider, tk.Canvas):
         self.delete("all")
         self.configure(width=self._cw, height=self._ch)
         t = self.theme
-        track = _rr_photo(self._cw, self._ch, self._ch / 2.0, fill=self._track_color(),
-                          bg=t[self.bg_key], border=t["border"], border_w=1.0)
+        game = bool(t.get("game"))
+        tc = self._track_color()
+        track = _rr_photo(self._cw, self._ch, self._ch / 2.0, fill=tc,
+                          bg=t[self.bg_key], border=t["border"], border_w=1.0,
+                          fill2=_mix(tc, t["text"], 0.06) if game else None)
         if track is not None:
             self._track_img = track
             self.create_image(0, 0, anchor="nw", image=track)
@@ -430,8 +520,12 @@ class Segmented(_Slider, tk.Canvas):
         t = self.theme
         x1, y1, x2, y2 = self._thumb_box()
         col = t.get(self.colors[self._index()] or self.thumb_key, t["accent"])
+        game = bool(t.get("game"))
         return _rr_photo(self._ow, self._ch, (y2 - y1) / 2.0, fill=col,
-                         bg=self._track_color(), shadow=_dim(col, 0.45),
+                         bg=self._track_color(),
+                         fill2=_dim(col, 0.18) if game else None,
+                         glow=col if game else None, glow_blur=6.0, glow_alpha=0.45,
+                         shadow=_dim(col, 0.45),
                          shadow_dy=self.SH_DY, shadow_blur=self.SH_BLUR,
                          shadow_alpha=0.32, box=(x1, y1, x2, y2))
 
@@ -557,7 +651,9 @@ class Switch(_Slider, tk.Canvas):
         self.delete("all")
         t = self.theme
         col = self._cur_color()
-        img = _rr_photo(self.tw, self.th, self.th / 2.0, fill=col, bg=t[self.bg_key],
+        game = bool(t.get("game"))
+        img = _rr_photo(self.tw, self.th, self.th / 2.0, fill=_lit(col, 0.08) if game else col,
+                        bg=t[self.bg_key], fill2=_dim(col, 0.16) if game else None,
                         border=_mix(col, "#000000", 0.10), border_w=1.0)
         if img is not None:
             self._track_img = img
@@ -635,8 +731,25 @@ class Stars(tk.Canvas):
     def _build(self):
         self.delete("all")
         self._items = []
+        self._glow_items = []
         w = self.font.measure("★") + self.gap
         h = self.font.metrics("linespace") + 4
+        t = self.theme
+        if t.get("game"):                       # 游戏皮肤：星标下垫一层柔光
+            gs = int(h * 2.3)
+            c0 = gs * 0.48                      # 核极小；填充用底色，只留光晕
+            blob = _rr_photo(gs, gs, gs * 0.04, fill=t[self.bg_key], bg=t[self.bg_key],
+                             glow=t["accent"], glow_blur=gs * 0.42, glow_alpha=0.62,
+                             box=(c0, c0, gs - c0, gs - c0))
+            self._glow_img = blob
+            for i in range(5):
+                if blob is not None:
+                    self._glow_items.append(self.create_image(w * i + w / 2.0, h / 2.0,
+                                                              image=blob, state="hidden"))
+                else:
+                    self._glow_items.append(None)
+        else:
+            self._glow_items = [None] * 5
         for i in range(5):
             self._items.append(self.create_text(w * i + w / 2.0, h / 2.0, text="★",
                                                 font=self.font, anchor="center"))
@@ -650,6 +763,9 @@ class Stars(tk.Canvas):
         for i in range(5):
             self.itemconfig(self._items[i],
                             fill=t["accent"] if i < shown else t["star_empty"])
+            g = self._glow_items[i] if getattr(self, "_glow_items", None) else None
+            if g is not None:
+                self.itemconfig(g, state="normal" if i < shown else "hidden")
 
     def _on_motion(self, e):
         i = int(e.x // max(1, self.font.measure("★") + self.gap)) + 1
@@ -708,15 +824,17 @@ class Pill(tk.Canvas):
 
     # ---- 几何（注意：不能用 self._w / self._h，那是 tkinter 内部属性）----
     def _build(self):
+        game = bool(self.theme.get("game"))
+        self._M = 14 if game else 0            # 游戏皮肤需要留白容纳外发光
         self._bw = self.font.measure(self.text) + self.padx * 2
         self._bh = self.font.metrics("linespace") + self.pady * 2
-        self._cw = self._bw
-        self._ch = self._bh + (self.shadow + 2 if self.shadow else 0)
+        self._cw = self._bw + self._M * 2
+        self._ch = self._bh + self._M * 2 + (self.shadow + 2 if self.shadow else 0)
         self.configure(width=self._cw, height=self._ch)
         self.delete("all")
         self._img_i = self.create_image(0, 0, anchor="nw")
-        self._txt_i = self.create_text(self._bw / 2.0, self._bh / 2.0, text=self.text,
-                                       font=self.font, anchor="center")
+        self._txt_i = self.create_text(self._bw / 2.0 + self._M, self._bh / 2.0 + self._M,
+                                       text=self.text, font=self.font, anchor="center")
         self._draw()
 
     def _colors(self):
@@ -742,19 +860,30 @@ class Pill(tk.Canvas):
         t = self.theme
         bg = t[self.bg_key]
         fill, fg, border, sh, alpha = self._colors()
+        game = bool(t.get("game"))
+        M = getattr(self, "_M", 0)
+        glow = None
+        if game:
+            glow = t["accent"] if self.kind == "primary" else (
+                t["bad"] if self.kind == "danger" else None)
         img = _rr_photo(self._cw, self._ch, self.radius, fill=fill, bg=bg,
                         border=border, border_w=1.0,
+                        fill2=_dim(fill, 0.22) if game else None,
+                        glow=glow, glow_blur=11.0,
+                        glow_alpha=(0.20 if self._press else 0.40) if game else 0.0,
+                        inner_top=_lit(fill, 0.40) if game else None,
+                        inner_alpha=0.55,
                         shadow=sh if self.shadow else None,
                         shadow_dy=1.0 if self._press else 2.0,
                         shadow_blur=float(self.shadow), shadow_alpha=alpha,
-                        box=(0, 0, self._cw, self._bh))
-        self.configure(bg=bg)
+                        box=(M, M, M + self._bw, M + self._bh))
+        self.configure(bg=bg, height=self._ch)
         if img is not None:
             self._img = img
             self.itemconfig(self._img_i, image=img)
         else:                                    # 贴图失败 → 退化直绘
-            _rr(self, 0.5, 0.5, self._cw - 0.5, self._bh - 0.5, self.radius,
-                outline=border or "", fill=fill)
+            _rr(self, M + 0.5, M + 0.5, M + self._bw - 0.5, M + self._bh - 0.5,
+                self.radius, outline=border or "", fill=fill)
         self.itemconfig(self._txt_i, fill=fg)
 
     def _set(self, hover=None, press=None):
