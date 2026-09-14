@@ -141,11 +141,15 @@ def _clamp8(v):
 
 def _rr_photo(w, h, r, fill, bg, border=None, border_w=1.0,
               shadow=None, shadow_dy=2.0, shadow_blur=6.0, shadow_alpha=0.28,
-              box=None):
+              box=None, fill2=None, glow=None, glow_blur=9.0, glow_alpha=0.55,
+              inner_top=None, inner_alpha=0.5):
     """生成「抗锯齿圆角矩形 + 柔和外投影」贴图。
 
     贴图已按 `bg` 合成、完全不透明，所以直接铺在 Canvas 上即可，不需要 alpha。
     `box=(x1,y1,x2,y2)` 指定矩形在贴图内的位置（默认铺满），留白用来容纳投影。
+    `fill2` 给竖向渐变（上 fill → 下 fill2）。
+    `glow` 给彩色外发光（游戏感来源：同色相、无偏移、大范围低透明）。
+    `inner_top` 给顶部内高光（模拟受光的立体面）。
     返回 tk.PhotoImage；生成失败返回 None（调用方回退到 Canvas 直绘）。
     """
     w, h = int(round(w)), int(round(h))
@@ -158,14 +162,20 @@ def _rr_photo(w, h, r, fill, bg, border=None, border_w=1.0,
     r = max(0.0, min(float(r), (x2 - x1) / 2.0, (y2 - y1) / 2.0))
     key = (w, h, round(r, 2), fill, bg, border, round(border_w, 2), shadow,
            round(shadow_dy, 2), round(shadow_blur, 2), round(shadow_alpha, 3),
-           round(x1, 1), round(y1, 1), round(x2, 1), round(y2, 1))
+           round(x1, 1), round(y1, 1), round(x2, 1), round(y2, 1),
+           fill2, glow, round(glow_blur, 2), round(glow_alpha, 3),
+           inner_top, round(inner_alpha, 3))
     if key in _IMG_CACHE:
         return _IMG_CACHE[key]
     img = None
     try:
         bgc, fillc = _hx(bg), _hx(fill)
+        fill2c = _hx(fill2) if fill2 else None
         bdc = _hx(border) if border else None
         shc = _hx(shadow) if shadow else None
+        glc = _hx(glow) if glow else None
+        itc = _hx(inner_top) if inner_top else None
+        span = max(1.0, y2 - y1)
         rows = []
         for y in range(h):
             row = bytearray()
@@ -173,6 +183,14 @@ def _rr_photo(w, h, r, fill, bg, border=None, border_w=1.0,
                 px, py = x + 0.5, y + 0.5
                 a_sh = min(1.0, max(0.0, _AA - _sdf_rr(px, py, x1, y1, x2, y2, r)))
                 cr, cg, cb = bgc
+                if glc:                      # 彩色外发光：无偏移、大范围、低透明
+                    gd = _sdf_rr(px, py, x1, y1, x2, y2, r)
+                    a = max(0.0, min(1.0, (glow_blur - gd) / glow_blur))
+                    a = a * a * (3 - 2 * a) * glow_alpha
+                    if a > 0.002:
+                        cr += (glc[0] - cr) * a
+                        cg += (glc[1] - cg) * a
+                        cb += (glc[2] - cb) * a
                 if shc:                      # 柔和投影：SDF 距离做平滑衰减
                     sd = _sdf_rr(px, py - shadow_dy, x1, y1, x2, y2, r)
                     a = max(0.0, min(1.0, (shadow_blur - sd) / shadow_blur))
@@ -182,9 +200,22 @@ def _rr_photo(w, h, r, fill, bg, border=None, border_w=1.0,
                         cg += (shc[1] - cg) * a
                         cb += (shc[2] - cb) * a
                 if a_sh > 0.002:
-                    cr += (fillc[0] - cr) * a_sh
-                    cg += (fillc[1] - cg) * a_sh
-                    cb += (fillc[2] - cb) * a_sh
+                    if fill2c:               # 竖向渐变
+                        k = max(0.0, min(1.0, (py - y1) / span))
+                        fc = (fillc[0] + (fill2c[0] - fillc[0]) * k,
+                              fillc[1] + (fill2c[1] - fillc[1]) * k,
+                              fillc[2] + (fill2c[2] - fillc[2]) * k)
+                    else:
+                        fc = fillc
+                    cr += (fc[0] - cr) * a_sh
+                    cg += (fc[1] - cg) * a_sh
+                    cb += (fc[2] - cb) * a_sh
+                    if itc:                  # 顶部内高光：只在上缘 2px 内叠加
+                        tt = max(0.0, 1.0 - (py - y1) / 2.0) * inner_alpha
+                        if tt > 0.002:
+                            cr += (itc[0] - cr) * tt * a_sh
+                            cg += (itc[1] - cg) * tt * a_sh
+                            cb += (itc[2] - cb) * tt * a_sh
                 if bdc and border_w > 0:
                     bw = float(border_w)
                     a_in = min(1.0, max(0.0, _AA - _sdf_rr(
@@ -253,6 +284,33 @@ def save_theme_name(name):
         return
     try:
         open(p, "w", encoding="utf-8").write(name)
+    except OSError:
+        pass
+
+
+LEFT_MIN, LEFT_MAX = 210, 560          # 样本栏可拖范围
+
+
+def load_left_width():
+    """样本栏宽度（记忆到 layout.txt，与 theme.txt 同目录）。"""
+    p = _theme_file()
+    if p:
+        lp = os.path.join(os.path.dirname(p), "layout.txt")
+        try:
+            if os.path.isfile(lp):
+                return max(LEFT_MIN, min(LEFT_MAX, int(open(lp, encoding="utf-8").read().strip())))
+        except (OSError, ValueError):
+            pass
+    return 300
+
+
+def save_left_width(w):
+    p = _theme_file()
+    if not p:
+        return
+    try:
+        open(os.path.join(os.path.dirname(p), "layout.txt"), "w",
+             encoding="utf-8").write(str(int(w)))
     except OSError:
         pass
 
@@ -910,10 +968,13 @@ class App:
         body.pack(fill="both", expand=True, padx=20, pady=12)
         self._frames.append((body, "bg", "bg"))
 
-        # 左：样本列表
-        leftcard = tk.Frame(body, bg=t["border"])
+        # 左：样本列表（宽度可拖；宽度记忆到 layout.txt）
+        self._left_w = load_left_width()
+        leftcard = tk.Frame(body, bg=t["border"], width=self._left_w)
         leftcard.pack(side="left", fill="y")
+        leftcard.pack_propagate(False)
         self._frames.append((leftcard, "border", "bg"))
+        self._leftcard = leftcard
         left = tk.Frame(leftcard, bg=t["surface"])
         left.pack(fill="both", expand=True, padx=1, pady=1)
         self._frames.append((left, "surface", "bg"))
@@ -944,10 +1005,27 @@ class App:
         self.refresh_pill.pack(side="left")
         self._dyn.append(self.refresh_pill)
 
+        # 隐形可拖分隔条（视觉上只是一枚小药丸，命中区 8px）
+        self._split = tk.Frame(body, bg=t["bg"], width=8, cursor="sb_h_double_arrow")
+        self._split.pack(side="left", fill="y")
+        self._split.pack_propagate(False)
+        self._frames.append((self._split, "bg", "bg"))
+        self._grip = tk.Canvas(self._split, width=8, bg=t["bg"], highlightthickness=0, bd=0)
+        self._grip.pack(fill="y", expand=True)
+        self._frames.append((self._grip, "bg", "bg"))
+        self._grip_pill = self._grip.create_rectangle(3, 0, 5, 0, fill=t["border"], outline="")
+        self._grip.bind("<Button-1>", self._split_press)
+        self._grip.bind("<B1-Motion>", self._split_drag)
+        self._grip.bind("<ButtonRelease-1>", self._split_release)
+        self._grip.bind("<Enter>", lambda e: self._split_hover(True))
+        self._grip.bind("<Leave>", lambda e: self._split_hover(False))
+        self._grip.bind("<Configure>", self._split_configure)
+
         # 右：评分表单
         rightcard = tk.Frame(body, bg=t["border"])
-        rightcard.pack(side="left", fill="both", expand=True, padx=(14, 0))
+        rightcard.pack(side="left", fill="both", expand=True)
         self._frames.append((rightcard, "border", "bg"))
+        self._body = body
         right = tk.Frame(rightcard, bg=t["surface"])
         right.pack(fill="both", expand=True, padx=1, pady=1)
         self._frames.append((right, "surface", "bg"))
@@ -1063,6 +1141,8 @@ class App:
             pass
         self._sb.config(bg=t["surface"], troughcolor=t["bg"], activebackground=t["muted"],
                         highlightbackground=t["surface"])
+        self._grip.configure(bg=t["bg"])
+        self._grip.itemconfig(self._grip_pill, fill=t["border"])
         self.video_menu.config(bg=t["surface"], fg=t["text"], highlightbackground=t["border"],
                                activebackground=t["surface_hover"], activeforeground=t["text"])
         self.video_menu["menu"].config(bg=t["surface"], fg=t["text"],
@@ -1099,6 +1179,37 @@ class App:
             self._hover_idx = idx
             self._recolor_list()
             self.lb.config(cursor="hand2" if idx is not None else "")
+
+    # ---- 分隔条（拖拽调整样本栏宽度）-------------------------------------
+    def _split_hover(self, on):
+        t = self.theme
+        self._grip.configure(bg=t["bg"], cursor="sb_h_double_arrow" if on else "")
+        self._grip.itemconfig(self._grip_pill,
+                              fill=t["accent"] if on else t["border"])
+
+    def _split_configure(self, _e=None):
+        """把中央药丸画成竖直短条（高度自适应，居中）。"""
+        h = self._grip.winfo_height()
+        y1 = max(0, h // 2 - 26)
+        y2 = min(h, h // 2 + 26)
+        self._grip.coords(self._grip_pill, 3, y1, 5, y2)
+
+    def _split_press(self, e):
+        self._split_drag(e)
+
+    def _split_drag(self, e):
+        try:
+            x0 = self._body.winfo_rootx()
+        except tk.TclError:
+            return
+        w = max(LEFT_MIN, min(LEFT_MAX, int(e.x_root - x0)))
+        if w != self._left_w:
+            self._left_w = w
+            self._leftcard.configure(width=w)
+
+    def _split_release(self, _e=None):
+        save_left_width(self._left_w)
+        self.status.config(text="样本栏宽度已保存（%d px）" % self._left_w)
 
     # ---- 数据 -------------------------------------------------------------
     def reload(self):
