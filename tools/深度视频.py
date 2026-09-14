@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""参考视频 → 黑白深度视频（L4「复刻动作/换人换环境」的预处理，对应 rules.md 第30条 + playbook 第二节）。
+"""参考视频 → 黑白深度视频（L4「复刻动作/换人换环境」的预处理，对应 rules.md 第30条 + playbooks.md 第一部分）。
 
 设计（2026-09-11 v1.0）：
 - **为什么要做**：原参考视频自带模特的脸、服装、背景、灯光与整体风格；直接当 @视频1 时模型会把这些
   一起照抄，替换指令被"视频锚定"压制（规则20b，三本书 B 版实证：书和衣服都没换）。
   转成深度视频＝做一次**信息过滤**，只保留人物动作姿态与前后空间关系。
 - **模型**：Depth-Anything-V2-Small（ONNX，fp32），输入 518×518，输出**相对深度**（数值越大=离镜头越近）。
-  灰度规则：近处亮（可用 --invert 反过来）。模型文件不进仓库，见 references/depth-video-setup.md。
+  灰度规则：近处亮（可用 --invert 反过来）。模型文件不进仓库，见 references/playbooks.md 第三部分。
 - **归一化**：默认先抽 N 帧估出全片 2%/98% 分位，再做**全片统一拉伸**——逐帧 min-max 会闪、深度也会跳。
 - **输出**：8bit 灰度、libx264/yuv420p；`--segment N` 按 ≤N 秒自动分段（配合规则17/30 的 15 秒切分习惯）。
 - **边界**：只做本地预处理，不提交任何生成平台、不消耗积分、不碰 dreamina CLI。
@@ -104,7 +104,7 @@ def resolve_model(explicit=None):
 
 def load_session(model_path, size):
     if not os.path.isfile(model_path):
-        sys.exit("[错误] 找不到深度模型：%s\n       下载方式见 references/depth-video-setup.md（一次性，约 100MB）。"
+        sys.exit("[错误] 找不到深度模型：%s\n       下载方式见 references/playbooks.md 第三部分（一次性，约 100MB）。"
                  % model_path)
     try:
         import onnxruntime as ort

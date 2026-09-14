@@ -1,7 +1,6 @@
 # AGENTS.md —— 多 agent 协作约定（HeronBo-AIGC-Prompt 仓库）
 
-> 本仓库可能被多个 agent 同时操作（ZCode / Codex CLI / DeepSeek Harness）。三者读的是**同一份工作树**，
-> 所以「内容同步」不是问题，冲突来自**并发写入**和**未提交改动堆积**。动手前先读本节。
+> 本仓库可能被多个 agent 同时操作（ZCode / Codex CLI / DeepSeek Harness）。三者读的是**同一份工作树**，所以「内容同步」不是问题，冲突来自**并发写入**和**未提交改动堆积**。动手前先读本节。
 
 ## 铁律
 
@@ -19,6 +18,8 @@
    - `SKILL.md` frontmatter 完整（`name` / `description` / `version`）、`references/paths.md` 保持模板（本机取值只在 `paths.local.md`）
 8. **不要提交**：大视频（.gitignore 已挡）、超过 5MB 的二进制/模型权重；`tools/识别工具/` 的脚本与小模型（`face_detection_yunet_2023mar.onnx` 0.22MB）随仓库走，保证可复现。
 9. **本地优化只写 `references/*.local.md`（已 gitignore）**：`paths.local.md`（路径/平台）、`rules.local.md`（本地规则覆盖层，优先级高于上游 rules.md）、`eval-absorbed.local.json`（评价回收账本）。这样 `git pull` 永不冲突；上游改动保持向后兼容（`paths.md`/`platforms.md` 结构稳定，`SKILL.md` 的 `version` 递增）。
+10. **改 `references/rules.md` 前先读顶部规则索引**；只追加或修订自己的条目，不重排/改写别人的规则。跨机通用的写 `rules.md`，本机个人经验写 `rules.local.md`。
+11. **模型与限额只改一处**：模型或限额有变动时，只改 `references/platforms.md` 的「模型与限额」表；`rules.md` 与模板只引用，不写死数字。
 
 ## 当前认领
 
@@ -29,10 +30,9 @@
 ## 分工建议（减少撞车）
 
 - **ZCode**：规则/模板/样本库内容（`references/rules.md`、`references/prompt-templates.md`、`references/samples-db.md`）
-- **Codex / DSH**：工具链与文档（`tools/`、`SKILL.md` 流程节、`README*.md`、`TODO.md`、本文件）
+- **Codex / DSH**：工具链与文档（`tools/`、`SKILL.md` 流程节、`README.md`、`TODO.md`、本文件）
 - 跨范围改动先在「当前认领」登记再动手；同一文件两人都要改时，一人改完提交、另一人 `git pull --rebase` 后再改。
-- 改 `references/rules.md` 前先读顶部「规则索引」；只追加或修订自己的条目，不重排/改写别人的规则。跨机通用的写 `rules.md`，本机个人经验写 `rules.local.md`。
 
 ## 安装/换机入口
 
-新会话先读：`README-安装说明.md` → `references/paths.md` → `TODO.md` → `SKILL.md`。
+新会话先读：`README.md` → `references/paths.md` → `TODO.md` → `SKILL.md`。
