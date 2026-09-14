@@ -19,8 +19,10 @@ HeronBo-AIGC-Prompt/
 │   ├── platforms.md               # 平台与 CLI（即梦/小云雀/updream；有才装）
 │   └── paths.md                   # 路径表模板（本机取值在 paths.local.md，gitignored）
 ├── tools/
-│   ├── 评价工具.html              # 六维评分网页（口型/动作/形象/语速/节奏/违禁项）
-│   ├── 启动评分工具.bat           # 一键起服务（localhost:8787，免改路径）
+│   ├── score_gui.pyw              # 六维评分窗口（可换主题；未保存关窗会拦）
+│   ├── score_core.py              # 评分核心（窗口版与命令行版共用同一套 json）
+│   ├── score_gui.cmd              # 一键启动（优先 tools/dist/score-tool.exe）
+│   ├── build_exe.cmd              # 首次打包 exe（产物 tools/dist/score-tool.exe）
 │   ├── 首次配置.py                # 落位/平台登记（写 paths.local.md）
 │   └── 评价回收.py                # 待吸收评价清单 + 记账
 ├── samples/                       # 规律数据（口播稿/提示词/评价json/备注，大视频不进仓）
@@ -43,7 +45,7 @@ HeronBo-AIGC-Prompt/
 
 1. 触发：直接说「帮我写口播提示词 / 把这段台词变成 Seedance 提示词 / 做分镜提示词」，或 `/HeronBo-AIGC-Prompt <台词>`。
 2. 交付物 = 提示词 + 素材清单（+ 拼接说明）；生成在即梦网页操作。
-3. 成片出来后：agent 按 SKILL.md「交付」节自动起评分服务并打开 `localhost:8787/评价工具.html`（手动兜底：双击 `tools\启动评分工具.bat`；首次点「连接样本目录」选样本库根，之后自动记忆）。
+3. 成片出来后：agent 按 SKILL.md「交付」节**必须弹出评价窗口**（`tools\score_gui.cmd`，可带 `--sample` 直接定位项目）；手动兜底就双击同一个 `tools\score_gui.cmd`。窗口里选样本 → 选成片 → 点分 → 保存。
 4. **评分会被自动回收**：下次会话 agent 跑 `python tools\评价回收.py` 拿「待吸收评价」清单，按反馈循环写进规则/模板并记账（账本 `references/eval-absorbed.local.json`）。
 5. 给 agent 反馈（"口型对不上""这条成了"）→ 按反馈循环自动更新规则，越用越准。
 

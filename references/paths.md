@@ -17,7 +17,7 @@ agent 按顺序问两个问题（同一轮问完）：
 ## paths.local.md 格式
 
 ```
-SAMPLES_ROOT=<样本库根目录：各项目目录的上一级，评分网页连接这一级>
+SAMPLES_ROOT=<样本库根目录：各项目目录的上一级，评价工具连接这一级>
 AI_CREATE_ROOT=<参考素材/来源素材根目录>
 PLATFORM=<即梦|小云雀|updream>
 CLI=<CLI 命令名，没有就留空>
@@ -35,7 +35,7 @@ ${SAMPLES_ROOT}/
     ├── 即梦上传/  交付提示词时同步生成的副本 + 上传说明.txt
     ├── 成片/      验收成片
     ├── 废片/      作废抽卡（文件名=日期-废因）
-    ├── 评价/      评分网页产出的 *.json（用 tools/评价回收.py 回收）
+    ├── 评价/      评价工具产出的 *.json（用 tools/评价回收.py 回收）
     └── 备注/      备注.txt（主观备注 + 生成参数）
 ```
 
@@ -43,6 +43,6 @@ ${SAMPLES_ROOT}/
 
 1. 安装 skill：ZCode `~/.zcode/skills/`；Codex CLI `~/.codex/skills/`；DeepSeek Harness `~/.dsh/skills/`（也可项目级 `.dsh/skills/`）。新对话自动识别。
 2. agent 问位置 + 问平台 → 建骨架 + 归类素材 + 按 `platforms.md` 装 CLI（可选）+ 写 `paths.local.md`。
-3. 评分工具：双击 `tools\启动评分工具.bat`（首次点「连接样本目录」选中 `${SAMPLES_ROOT}`，之后自动记忆）。依赖 Python 3（在 PATH）。
+3. 评价工具：双击 `tools\score_gui.cmd`（优先 `dist\score-tool.exe`）；找不到样本库根时会弹目录选择框，选 `${SAMPLES_ROOT}` 后自动写回 `paths.local.md`。exe 自带运行时、不需要装 Python；要自行打包才需要 Python 3 + PyInstaller。
 4. 环境：Python 3、Edge/Chrome、ffmpeg（素材识别抽帧）；**不检测即梦账号**，账号由用户自行登录。
-5. 自检：`python tools\首次配置.py`（无参：已配置 exit 0 / 未配置 exit 1 并打印问句）、`python tools\评价回收.py`、`python -m http.server 8787 --directory <本包 tools 路径>` → `http://localhost:8787/评价工具.html`。
+5. 自检：`python tools\首次配置.py`（无参：已配置 exit 0 / 未配置 exit 1 并打印问句）、`python tools\评价回收.py`、`tools\score_gui.cmd` 能弹出评分窗口。
