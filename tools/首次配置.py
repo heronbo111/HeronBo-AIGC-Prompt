@@ -12,7 +12,7 @@
     python 首次配置.py --set "<样本库根>"                 # 只登记样本库根
     python 首次配置.py --platform 即梦 --cli dreamina     # 登记平台与 CLI 命令
 
-由 启动评分工具.bat 开头调用；agent 也可直接运行。
+供启动器与 agent 调用；也可直接运行。
 """
 import os
 import sys

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""评价回收：找出评分网页新产出、还没被吸收进规则的评价。
+"""评价回收：找出评价工具新产出、还没被吸收进规则的评价。
 
 用法：
     python 评价回收.py                          # 列出待吸收评价（六维/结论/备注摘要）
@@ -128,7 +128,7 @@ def main(argv):
         return 1
     items = scan(root)
     if not items:
-        print("[评价回收] %s 下没有找到 评价/*.json —— 先让用户用评分网页打分。" % root)
+        print("[评价回收] %s 下没有找到 评价/*.json —— 先让用户用评价工具打分。" % root)
         return 0
     ledger = load_ledger()
     absorbed = set(ledger["absorbed"])

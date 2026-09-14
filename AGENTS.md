@@ -15,7 +15,7 @@
 6. **禁止**在共享克隆里执行 `git checkout .`、`git stash`、`git reset --hard`、`git clean -fd`——会清掉另一方的未提交改动；确需丢弃改动先问用户。
 7. **冲突裁决**：以「用户实测反馈 > 模板惯例 > 推断」为准；合并后必须自检：
    - `python tools/首次配置.py` 无参运行：已配置 exit 0；未配置 exit 1 并打印「请问您要把项目建在哪里？您提供好素材后，我会自动将其进行归类」
-   - `python -m http.server 8787 --directory tools` → `http://localhost:8787/评价工具.html` 能打开、能连目录
+   - `tools\score_gui.cmd` 能弹出评分窗口（或直接跑 `tools\dist\score-tool.exe`）
    - `SKILL.md` frontmatter 完整（`name` / `description` / `version`）、`references/paths.md` 保持模板（本机取值只在 `paths.local.md`）
 8. **不要提交**：大视频（.gitignore 已挡）、超过 5MB 的二进制/模型权重；`tools/识别工具/` 的脚本与小模型（`face_detection_yunet_2023mar.onnx` 0.22MB）随仓库走，保证可复现。
 9. **本地优化只写 `references/*.local.md`（已 gitignore）**：`paths.local.md`（路径/平台）、`rules.local.md`（本地规则覆盖层，优先级高于上游 rules.md）、`eval-absorbed.local.json`（评价回收账本）。这样 `git pull` 永不冲突；上游改动保持向后兼容（`paths.md`/`platforms.md` 结构稳定，`SKILL.md` 的 `version` 递增）。

@@ -9,7 +9,7 @@
 
 里面包含：
 - `HeronBo-AIGC-Prompt/` —— 技能本体（SKILL.md + references/ 下的规则、模板、样本库、路径表）
-- `tools/评价工具.html` —— 成片六维评价网页（打分→存本地→统计），配套 `tools/启动评分工具.bat`（已通用化：用 PATH 里的 python 起服务，换机免改路径）
+- `tools/dist/score-tool.exe` —— 成片六维评价窗口（打分→存本地→统计，可换主题；**没保存就关窗会拦一下**）。源码 `tools/score_gui.pyw` + 共用核心 `tools/score_core.py`；要 exe 先跑一次 `tools/build_exe.cmd`，没打包的机器双击 `tools/score_gui.cmd` 会自动用 pythonw 起
 
 ## 安装
 
@@ -52,7 +52,7 @@ C:\Users\你的用户名\.dsh\skills\HeronBo-AIGC-Prompt\
 
 - **自然触发**：直接说"帮我写口播提示词 / 把这段台词变成 Seedance 提示词 / 做分镜提示词"
 - **显式调用**：`/HeronBo-AIGC-Prompt 把这段台词做成提示词：……`
-- 提示词生成后，自己在即梦网页生成视频；生成完**由 agent 自动启动评分工具**打分（六维+违禁项+结论；agent 按 SKILL.md 交付节执行：Bash 后台起 `python -m http.server 8787 --directory <tools 目录>`，再用浏览器打开 `http://localhost:8787/评价工具.html`）。手动兜底：**双击 `tools\启动评分工具.bat`**（首次可传参：`启动评分工具.bat "<样本库根目录>"`）——① 校验样本库根（未指定时提示先问用户项目位置，不再自动乱建目录）→ ② 起服务 → ③ 自动打开页面 → ④ 浏览器首次点「连接样本目录」选样本库根后自动记忆，之后打开即用。
+- 提示词生成后，自己在即梦网页生成视频；生成完**由 agent 弹出评价窗口**打分（六维+违禁项+结论；agent 按 SKILL.md 交付节执行 `tools\score_gui.cmd`，可带 `--sample "<项目名关键词>"` 直接定位到该项目）。手动兜底：**双击 `tools\score_gui.cmd`**（优先 `dist\score-tool.exe`，没有则 pythonw 起 `.pyw`；找不到样本库根时会弹目录选择框，选完自动写回 `references\paths.local.md`）。窗口里选样本 → 选成片 → 逐项点分 → 保存（`Ctrl+S` 同效）；没保存就关窗会拦一下，可选「保存并关闭」。
 - **给其他 agent 的自动化入口**：日常评分服务启动按 SKILL.md 交付节（Bash 后台+浏览器打开，无需人工）；建骨架可单独跑 `python HeronBo-AIGC-Prompt\tools\首次配置.py --project "<项目目录>"`（或 `--set "<样本库根>"` 只登记根目录）；bat 仅作手动兜底。
 - **评分自动回收**：用户打完分后，agent 跑 `python HeronBo-AIGC-Prompt\tools\评价回收.py` 拿「待吸收评价」清单（六维均分/结论/备注），按《反馈优化循环》写进规则/模板/样本库，再 `--mark-all` 记账（账本 `references/eval-absorbed.local.json`，本机、不进仓库）。
 - **给 agent 反馈**（"口型对不上""这条成了"）→ agent 会按 skill 的《反馈优化循环》自动把规律写进 rules.md，越用越准
@@ -88,6 +88,6 @@ C:\Users\你的用户名\.dsh\skills\HeronBo-AIGC-Prompt\
 ## 注意事项
 
 - `references/samples-db.md` 里的样本路径是 `${SAMPLES_ROOT}` 变量；本机取值见 `references/paths.local.md`（模板与说明见 `references/paths.md`）。
-- `tools/启动评分工具.bat` 无需改路径（自动探测 python/py；页面从 bat 所在目录提供）。
-- 若服务端口 8787 被占用：关掉旧「评价工坊服务」窗口后重开 bat，或改 bat 端口并同步改打开 URL。
+- `tools/score_gui.cmd` 无需改路径（自动优先 `dist\score-tool.exe`，否则探测 pythonw / python）。
+- 窗口版不占端口、不起本地服务；若 exe 起不来，去看 `%TEMP%\score_gui_crash.log`。
 - **首次 push/pull 如弹出登录**：安装并启用 Git Credential Manager（Git for Windows 通常自带；`git config credential.helper manager` 后，git 会引导浏览器授权，帐号密码不用输入 git 命令行）。
