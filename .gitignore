@@ -17,7 +17,10 @@ references/*.local.json
 # Python 缓存（诊断脚本 import 工具时会生成）
 __pycache__/
 
-# exe 打包产物（每台机器本地 build，不进仓库）
-tools/dist/
+# exe 打包中间产物（不进仓库）
 tools/build/
 tools/*.spec
+# 例外：dist 里的成品 exe 随仓库分发 —— 用户 clone/pull 即有可用工具，
+# 不必在每台机器上装 Python + PyInstaller 再打包。
+!tools/dist/
+!tools/dist/score-tool.exe
