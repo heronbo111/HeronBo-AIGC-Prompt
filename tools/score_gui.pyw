@@ -9,6 +9,9 @@ import os
 import sys
 import tkinter as tk
 from tkinter import ttk, messagebox
+import argparse   # noqa: F401  仅供动态加载的 score_core 用，PyInstaller 需要能静态看到
+import datetime   # noqa: F401
+import json       # noqa: F401
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BASE = getattr(sys, "_MEIPASS", HERE)          # PyInstaller 打包后资源在 _MEIPASS
@@ -26,6 +29,11 @@ def _load_core():
 
 
 core = _load_core()
+try:
+    _log = os.path.join(os.environ.get('TEMP', '.'), 'score_gui.log')
+    open(_log, 'w', encoding='utf-8').write('core loaded ok: ' + str(getattr(core, '__file__', '?')) + chr(10))
+except Exception:
+    pass
 
 DIMS = [(k, opts) for k, opts, _s in core.DIMS]
 FORBID = [k for k, _s in core.FORBID]
@@ -43,7 +51,7 @@ class App:
         except Exception:
             pass
 
-        self.samples_root = core.detect_root(None)
+        self.samples_root = self._find_root()
         self.samples = core.scan(self.samples_root)
 
         top = ttk.Frame(root, padding=8)
@@ -109,6 +117,26 @@ class App:
         ttk.Button(bar, text="保存评分", command=self.save).pack(side="right")
 
         self.reload()
+
+    def _find_root(self):
+        """找样本库根：核心逻辑 → 环境变量 → exe/脚本同级的 references/paths.local.md"""
+        try:
+            return core.detect_root(None)
+        except SystemExit:
+            pass
+        import re
+        cands = [os.path.join(HERE, "references", "paths.local.md"),
+                 os.path.join(os.path.dirname(HERE), "references", "paths.local.md"),
+                 os.path.join(BASE, "references", "paths.local.md")]
+        for c in cands:
+            if os.path.isfile(c):
+                txt = open(c, encoding="utf-8").read()
+                m = re.search(r"[A-Za-z]:[\/][^\s`\"']+", txt)
+                if m and os.path.isdir(m.group(0)):
+                    return m.group(0)
+        messagebox.showerror("找不到样本库", "请在技能包 references/paths.local.md 里配置样本库根目录，"
+                                              "或把 exe 放到技能包 tools\ 目录下再运行。")
+        raise SystemExit(1)
 
     def reload(self):
         self.samples = core.scan(self.samples_root)
