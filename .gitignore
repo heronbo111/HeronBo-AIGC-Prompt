@@ -16,3 +16,8 @@ references/*.local.md
 references/*.local.json
 # Python 缓存（诊断脚本 import 工具时会生成）
 __pycache__/
+
+# exe 打包产物（每台机器本地 build，不进仓库）
+tools/dist/
+tools/build/
+tools/*.spec
