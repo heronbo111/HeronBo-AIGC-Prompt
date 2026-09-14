@@ -9,17 +9,20 @@
     dist\\score-tool.exe --sample 三本书       # 打开即定位到名字含该关键词的样本
     pythonw tools\\score_gui.pyw
 """
+import argparse     # noqa: F401  （score_core 静态依赖，PyInstaller 需要看得见）
+import base64
+import datetime     # noqa: F401
 import importlib.util
-import json         # noqa: F401  （score_core 静态依赖，PyInstaller 需要看得见）
+import json         # noqa: F401
 import math
 import os
 import re
+import struct
 import sys
 import tkinter as tk
 import tkinter.font as tkfont
+import zlib
 from tkinter import filedialog
-import argparse     # noqa: F401
-import datetime     # noqa: F401
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BASE = getattr(sys, "_MEIPASS", HERE)          # PyInstaller 打包后资源在 _MEIPASS
@@ -103,27 +106,106 @@ def _is_dark(color):
     return _lum(color) < 0.5
 
 
-def _rr_vgrad(cv, x1, y1, x2, y2, r, top, bottom, tag="grad", steps=0):
-    """竖向渐变的圆角矩形：逐行画短线，圆角处按半径公式内缩。
+# ── 抗锯齿圆角贴图（纯 Python 生成 PNG，零第三方依赖）─────────────────────────
+# 为什么要自己画：Tk 的**文字**走系统渲染、本来就抗锯齿，但 Canvas 画出来的
+# 圆角、圆形是硬锯齿——这正是"不像网页"的根因。这里用 SDF 距离场算 1px 边缘
+# 过渡（抗锯齿），把柔和投影一起按背景色合成好，再编码成 PNG 交给 PhotoImage。
+_IMG_CACHE = {}
+_AA = 0.5          # 边缘过渡宽度（像素）
 
-    tkinter 的 Canvas 没有渐变填充，用「一行一色 + 圆角内缩」逼近，
-    视觉上与真渐变几乎无差，且填充边界仍然圆角。
+
+def _sdf_rr(px, py, x1, y1, x2, y2, r):
+    """点到圆角矩形边界的距离（矩形内部为负、外部为正）。"""
+    dx = max(x1 + r - px, 0.0, px - (x2 - r))
+    dy = max(y1 + r - py, 0.0, py - (y2 - r))
+    return math.hypot(dx, dy) - r
+
+
+def _png_bytes(w, h, rows):
+    """RGB 行数据 → PNG 字节流（8bit truecolor）。"""
+    raw = b"".join(b"\x00" + bytes(r) for r in rows)
+
+    def chunk(tag, data):
+        body = tag + data
+        return (struct.pack(">I", len(data)) + body
+                + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF))
+
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
+            + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
+
+
+def _clamp8(v):
+    return 0 if v < 0 else (255 if v > 255 else int(v + 0.5))
+
+
+def _rr_photo(w, h, r, fill, bg, border=None, border_w=1.0,
+              shadow=None, shadow_dy=2.0, shadow_blur=6.0, shadow_alpha=0.28,
+              box=None):
+    """生成「抗锯齿圆角矩形 + 柔和外投影」贴图。
+
+    贴图已按 `bg` 合成、完全不透明，所以直接铺在 Canvas 上即可，不需要 alpha。
+    `box=(x1,y1,x2,y2)` 指定矩形在贴图内的位置（默认铺满），留白用来容纳投影。
+    返回 tk.PhotoImage；生成失败返回 None（调用方回退到 Canvas 直绘）。
     """
-    hh, ww = y2 - y1, x2 - x1
-    if hh <= 0 or ww <= 0:
-        return
-    steps = steps or max(3, int(hh))
-    step_h = hh / float(steps)
-    r = max(0.0, min(r, ww / 2.0, hh / 2.0))
-    for i in range(steps):
-        yc = y1 + step_h * (i + 0.5)
-        inset = 0.0
-        for d in (yc - y1, y2 - yc):                 # 上圆角 / 下圆角
-            if d < r:
-                inset = max(inset, r - math.sqrt(max(0.0, r * r - (r - d) ** 2)))
-        cv.create_line(x1 + inset, yc, x2 - inset, yc,
-                       fill=_mix(top, bottom, (i + 0.5) / float(steps)),
-                       width=step_h + 1.2, tags=tag)
+    w, h = int(round(w)), int(round(h))
+    if w <= 0 or h <= 0:
+        return None
+    if box is None:
+        x1, y1, x2, y2 = 0.0, 0.0, float(w), float(h)
+    else:
+        x1, y1, x2, y2 = [float(v) for v in box]
+    r = max(0.0, min(float(r), (x2 - x1) / 2.0, (y2 - y1) / 2.0))
+    key = (w, h, round(r, 2), fill, bg, border, round(border_w, 2), shadow,
+           round(shadow_dy, 2), round(shadow_blur, 2), round(shadow_alpha, 3),
+           round(x1, 1), round(y1, 1), round(x2, 1), round(y2, 1))
+    if key in _IMG_CACHE:
+        return _IMG_CACHE[key]
+    img = None
+    try:
+        bgc, fillc = _hx(bg), _hx(fill)
+        bdc = _hx(border) if border else None
+        shc = _hx(shadow) if shadow else None
+        rows = []
+        for y in range(h):
+            row = bytearray()
+            for x in range(w):
+                px, py = x + 0.5, y + 0.5
+                a_sh = min(1.0, max(0.0, _AA - _sdf_rr(px, py, x1, y1, x2, y2, r)))
+                cr, cg, cb = bgc
+                if shc:                      # 柔和投影：SDF 距离做平滑衰减
+                    sd = _sdf_rr(px, py - shadow_dy, x1, y1, x2, y2, r)
+                    a = max(0.0, min(1.0, (shadow_blur - sd) / shadow_blur))
+                    a = a * a * (3 - 2 * a) * shadow_alpha
+                    if a > 0.002:
+                        cr += (shc[0] - cr) * a
+                        cg += (shc[1] - cg) * a
+                        cb += (shc[2] - cb) * a
+                if a_sh > 0.002:
+                    cr += (fillc[0] - cr) * a_sh
+                    cg += (fillc[1] - cg) * a_sh
+                    cb += (fillc[2] - cb) * a_sh
+                if bdc and border_w > 0:
+                    bw = float(border_w)
+                    a_in = min(1.0, max(0.0, _AA - _sdf_rr(
+                        px, py, x1 + bw, y1 + bw, x2 - bw, y2 - bw, max(0.0, r - bw))))
+                    a_bd = max(0.0, a_sh - a_in)
+                    if a_bd > 0.002:
+                        cr += (bdc[0] - cr) * a_bd
+                        cg += (bdc[1] - cg) * a_bd
+                        cb += (bdc[2] - cb) * a_bd
+                row += bytes((_clamp8(cr), _clamp8(cg), _clamp8(cb)))
+            rows.append(row)
+        img = tk.PhotoImage(data=base64.b64encode(_png_bytes(w, h, rows)).decode("ascii"))
+    except Exception:                                    # noqa: BLE001
+        img = None
+    _IMG_CACHE[key] = img
+    return img
+
+
+def _ease(t):
+    """ease-out cubic：滑条/开关的缓动，比线性"贵"一点但更像网页。"""
+    return 1 - (1 - t) ** 3
 
 
 def _load_core():
@@ -176,127 +258,313 @@ def save_theme_name(name):
 
 
 # ── 自绘控件 ────────────────────────────────────────────────────────────────
-class Segmented(tk.Canvas):
-    """分段选择器（立体：投影 + 渐变 + 悬停 / 选中高亮）。"""
+class _Slider:
+    """给 Canvas 控件复用的「滑块平移动画」。要求宿主已有 self._anim / self._tx。"""
+
+    def _animate_to(self, target, setter, animate=True, steps=9, ms=12):
+        if self._anim:
+            try:
+                self.after_cancel(self._anim)
+            except tk.TclError:
+                pass
+            self._anim = None
+        if not animate:
+            self._tx = target
+            setter(target)
+            return
+        start = self._tx
+
+        def step(i):
+            if not self.winfo_exists():
+                return
+            self._tx = start + (target - start) * _ease(min(1.0, i / float(steps)))
+            setter(self._tx)
+            self._anim = self.after(ms, lambda: step(i + 1)) if i < steps else None
+
+        self._anim = self.after(ms, lambda: step(1))
+
+
+class Segmented(_Slider, tk.Canvas):
+    """分段滑条（Web 风：一条轨道 + 会滑过去的指示块）。
+
+    - 选项等宽（像 iOS 分段控件），指示块按选项语义着色（好=绿 / 中=黄 / 差=红）。
+    - 悬停为文字高亮，点击滑动带缓动动画。
+    """
+
+    M = 6                      # 贴图给投影留的边距；必须 >= 阴影模糊半径
+    SH_DY, SH_BLUR = 1.0, 5.0
 
     def __init__(self, master, options, value=None, on_change=None, theme=None,
-                 font=None, padx=14, pady=6, gap=6, radius=9, bg_key="surface", depth=3):
+                 font=None, padx=14, height=32, bg_key="surface", colors=None,
+                 thumb_key="accent"):
         super().__init__(master, highlightthickness=0, bd=0, takefocus=0)
         self.options = list(options)
         self.value = value if value in self.options else (self.options[0] if self.options else None)
         self.on_change = on_change
         self.theme = theme
         self.font = font or F("body")
-        self.padx, self.pady, self.gap, self.radius = padx, pady, gap, radius
-        self.bg_key = bg_key
-        self.depth = max(2, int(depth))
-        self._boxes, self._hover, self._press_i = [], None, None
-        self.bind("<ButtonPress-1>", self._on_press)
-        self.bind("<ButtonRelease-1>", self._on_release)
+        self.padx, self.h, self.bg_key = padx, int(height), bg_key
+        self.colors = list(colors or [])
+        while len(self.colors) < len(self.options):
+            self.colors.append(None)
+        self.thumb_key = thumb_key
+        self._hover, self._anim = None, None
+        self._tx = None
+        self._track_img = self._thumb_img = None
+        self._thumb_i = None
+        self._texts = []
+        self.bind("<Button-1>", self._on_click)
         self.bind("<Motion>", self._on_motion)
         self.bind("<Leave>", self._on_leave)
+        self._measure()
         self._build()
 
+    # ---- 几何 -------------------------------------------------------------
+    def _measure(self):
+        w0 = max([self.font.measure(o) for o in self.options] or [10])
+        self._ow = w0 + self.padx * 2                       # 每个选项等宽
+        self._cw = self._ow * max(1, len(self.options))
+        self._ch = self.h
+
+    def _index(self):
+        try:
+            return self.options.index(self.value)
+        except ValueError:
+            return 0
+
+    def _track_color(self):
+        t = self.theme
+        return _mix(t[self.bg_key], t["text"], 0.07)
+
+    def _thumb_box(self):
+        m = self.M
+        return (m, m, self._ow - m, self._ch - m)
+
+    def _target_x(self):
+        return float(self._index() * self._ow)
+
+    # ---- 绘制 -------------------------------------------------------------
     def _build(self):
-        self._boxes = []
-        x = 2
-        h = self.font.metrics("linespace") + self.pady * 2 + 6 + self.depth
-        for opt in self.options:
-            w = self.font.measure(opt) + self.padx * 2
-            self._boxes.append((x, w))
-            x += w + self.gap
-        self._cw = max(0, x - self.gap - 2) + 2
-        self._ch = h
-        self.configure(width=self._cw, height=h)
+        self.delete("all")
+        self.configure(width=self._cw, height=self._ch)
+        t = self.theme
+        track = _rr_photo(self._cw, self._ch, self._ch / 2.0, fill=self._track_color(),
+                          bg=t[self.bg_key], border=t["border"], border_w=1.0)
+        if track is not None:
+            self._track_img = track
+            self.create_image(0, 0, anchor="nw", image=track)
+        else:                                               # 贴图失败 → 退化直绘
+            _rr(self, 0.5, 0.5, self._cw - 0.5, self._ch - 0.5, self._ch / 2.0,
+                outline=t["border"], fill=self._track_color())
+        self._thumb_img = self._thumb_photo()
+        if self._tx is None:
+            self._tx = self._target_x()
+        x1, y1, x2, y2 = self._thumb_box()
+        self._thumb_i = self.create_image(self._tx, 0, anchor="nw", image=self._thumb_img)
+        self._texts = []
+        for i, opt in enumerate(self.options):
+            self._texts.append(self.create_text(i * self._ow + self._ow / 2.0,
+                                                self._ch / 2.0, text=opt,
+                                                font=self.font, anchor="center"))
         self._recolor()
+
+    def _thumb_photo(self):
+        t = self.theme
+        x1, y1, x2, y2 = self._thumb_box()
+        col = t.get(self.colors[self._index()] or self.thumb_key, t["accent"])
+        return _rr_photo(self._ow, self._ch, (y2 - y1) / 2.0, fill=col,
+                         bg=self._track_color(), shadow=_dim(col, 0.45),
+                         shadow_dy=self.SH_DY, shadow_blur=self.SH_BLUR,
+                         shadow_alpha=0.32, box=(x1, y1, x2, y2))
 
     def _recolor(self):
         t = self.theme
-        dark = _is_dark(t[self.bg_key])
-        self.delete("all")
-        self.configure(bg=t[self.bg_key])
-        sh = _dim(t[self.bg_key], 0.60) if dark else _dim(t[self.bg_key], 0.24)
-        for i, (x, w) in enumerate(self._boxes):
-            sel = self.options[i] == self.value
-            d = self.depth - 2 if i == self._press_i else self.depth
-            y0 = 1.5 + (self.depth - d)
-            y1 = self._ch - 1.5 - d
-            if sel:
-                base, fg = t["accent"], t["accent_text"]
-                top = _lit(base, 0.22 if not dark else 0.15)
-                bottom = _dim(base, 0.18 if not dark else 0.24)
-                edge = _mix(bottom, "#000000", 0.20)
+        i = self._index()
+        for j, item in enumerate(self._texts):
+            if j == i:
+                self.itemconfig(item, fill=t["accent_text"])
             else:
-                base = t["surface_hover"] if i == self._hover else t["surface"]
-                fg, edge = t["text"], t["border"]
-                top = _lit(base, 0.14) if dark else _lit(base, 0.20)
-                bottom = _dim(base, 0.22) if dark else _dim(base, 0.15)
-                if i == self._hover:
-                    top = _lit(top, 0.06)
-            _rr(self, x, y0 + d, x + w, self._ch - 1.5, self.radius, outline="", fill=sh)
-            _rr_vgrad(self, x, y0, x + w, y1, self.radius, top, bottom)
-            _rr(self, x, y0, x + w, y1, self.radius, outline=edge, fill="", width=1)
-            self.create_line(x + self.radius + 1.5, y0 + 1.6, x + w - self.radius - 1.5, y0 + 1.6,
-                             fill=_lit(top, 0.30 if dark else 0.55), width=1.3)
-            self.create_text(x + w / 2.0, (y0 + y1) / 2.0, text=self.options[i],
-                             font=self.font, anchor="center", fill=fg)
+                self.itemconfig(item, fill=t["accent"] if j == self._hover else t["muted"])
 
-    def _hit(self, x, y):
-        if y > self._ch - 1.5:
+    def _refresh_thumb(self):
+        self._thumb_img = self._thumb_photo()
+        if self._thumb_i is not None and self._thumb_img is not None:
+            self.itemconfig(self._thumb_i, image=self._thumb_img)
+
+    # ---- 交互 -------------------------------------------------------------
+    def _hit(self, x):
+        n = len(self.options)
+        if n == 0 or self._ow <= 0:
             return None
-        for i, (bx, w) in enumerate(self._boxes):
-            if bx <= x <= bx + w:
-                return i
-        return None
+        i = int(x // self._ow)
+        return i if 0 <= i < n else None
 
     def _on_motion(self, e):
-        i = self._hit(e.x, e.y)
+        i = self._hit(e.x)
         self.configure(cursor="hand2" if i is not None else "")
-        self._set_hover(i)
-
-    def _on_leave(self, _e):
-        self._press_i = None
-        self._set_hover(None)
-
-    def _set_hover(self, i):
         if i != self._hover:
             self._hover = i
             self._recolor()
 
-    def _on_press(self, e):
-        self._press_i = self._hit(e.x, e.y)
+    def _on_leave(self, _e):
+        self._hover = None
         self._recolor()
 
-    def _on_release(self, e):
-        i = self._hit(e.x, e.y)
-        was, self._press_i = self._press_i, None
-        self._recolor()
-        if i is None or i != was:
+    def _on_click(self, e):
+        i = self._hit(e.x)
+        if i is None:
             return
         v = self.options[i]
-        if v != self.value:
-            self.value = v
-            self._recolor()
-            if self.on_change:
-                self.on_change(v)
+        if v == self.value:
+            return
+        self.value = v
+        self._refresh_thumb()
+        self._recolor()
+        self._animate_to(self._target_x(), lambda x: self.coords(self._thumb_i, x, 0), True)
+        if self.on_change:
+            self.on_change(v)
 
+    # ---- 取值 -------------------------------------------------------------
     def get(self):
         return self.value
 
     def set(self, v):
         if v in self.options and v != self.value:
             self.value = v
+            self._refresh_thumb()
             self._recolor()
+            if self._thumb_i is not None:
+                self._animate_to(self._target_x(),
+                                 lambda x: self.coords(self._thumb_i, x, 0), False)
 
     def apply_theme(self, theme):
         self.theme = theme
+        self._build()
+
+
+class Switch(_Slider, tk.Canvas):
+    """开关（Web 风：iOS 式滑轨 + 圆形滑块 + 缓动动画）。
+
+    对外仍用字符串取值（默认 off="无" / on="有"），上层表单代码不用改。
+    """
+
+    TR_M = 4                   # 滑块距轨道边的内缩
+
+    def __init__(self, master, value=None, on_change=None, theme=None, font=None,
+                 on_value="有", off_value="无", on_key="bad", bg_key="surface",
+                 track_w=46, track_h=26, show_text=True):
+        super().__init__(master, highlightthickness=0, bd=0, takefocus=0)
+        self.theme = theme
+        self.on_change = on_change
+        self.font = font or F("small")
+        self.on_value, self.off_value, self.on_key = on_value, off_value, on_key
+        self.bg_key = bg_key
+        self.tw, self.th, self.show_text = int(track_w), int(track_h), show_text
+        self._on = value in (True, on_value)
+        self._hover, self._anim = False, None
+        self._tx = None
+        lw = max(self.font.measure(on_value), self.font.measure(off_value)) + 2
+        self._text_w = (lw + 10) if show_text else 0
+        self._tr = self.th / 2.0
+        self._thr = self._tr - self.TR_M
+        self._track_img = self._thumb_img = None
+        self._thumb_i = None
+        self.configure(width=self.tw + self._text_w, height=self.th)
+        self.bind("<Button-1>", self._click)
+        self.bind("<Enter>", lambda e: self._set_hover(True))
+        self.bind("<Leave>", lambda e: self._set_hover(False))
+        self._build()
+
+    # ---- 几何 -------------------------------------------------------------
+    def _off_color(self):
+        t = self.theme
+        return _mix(t[self.bg_key], t["text"], 0.24)
+
+    def _on_color(self):
+        return self.theme[self.on_key]
+
+    def _cur_color(self):
+        return self._on_color() if self._on else self._off_color()
+
+    def _target_x(self):
+        """滑块贴图左上角 x（贴图边长 = th）。"""
+        return float(self._tr if self._on else self.TR_M)
+
+    def _thumb_box(self):
+        r, tr = self._tr, self._thr
+        return (r - tr, r - tr, r + tr, r + tr)
+
+    # ---- 绘制 -------------------------------------------------------------
+    def _build(self):
+        self.delete("all")
+        t = self.theme
+        col = self._cur_color()
+        img = _rr_photo(self.tw, self.th, self.th / 2.0, fill=col, bg=t[self.bg_key],
+                        border=_mix(col, "#000000", 0.10), border_w=1.0)
+        if img is not None:
+            self._track_img = img
+            self.create_image(0, 0, anchor="nw", image=img)
+        else:
+            _rr(self, 0.5, 0.5, self.tw - 0.5, self.th - 0.5, self.th / 2.0,
+                outline="", fill=col)
+        self._thumb_img = self._thumb_photo()
+        if self._tx is None:
+            self._tx = self._target_x()
+        self._thumb_i = self.create_image(self._tx, 0, anchor="nw", image=self._thumb_img)
+        if self.show_text:
+            self._label_i = self.create_text(self.tw + 10, self.th / 2.0,
+                                             text=self.get(), font=self.font, anchor="w")
         self._recolor()
+
+    def _thumb_photo(self):
+        r, tr = self._tr, self._thr
+        knob = "#FFFFFF"
+        return _rr_photo(int(2 * r), int(2 * r), tr, fill=knob, bg=self._cur_color(),
+                         shadow=_dim(self._cur_color(), 0.5), shadow_dy=1.0,
+                         shadow_blur=3.0, shadow_alpha=0.38, box=self._thumb_box())
+
+    def _recolor(self):
+        t = self.theme
+        self.configure(bg=t[self.bg_key])
+        if self.show_text and getattr(self, "_label_i", None) is not None:
+            self.itemconfig(self._label_i,
+                            fill=t[self.on_key] if self._on else t["muted"])
+        if getattr(self, "_track_img", None) is not None and self._hover:
+            pass                      # 悬停不改轨道色，保持克制（Web 里的开关都很安静）
+
+    # ---- 交互 -------------------------------------------------------------
+    def _set_hover(self, on):
+        self._hover = on
+        self.configure(cursor="hand2" if on else "")
+
+    def _click(self, _e):
+        self._on = not self._on
+        self._build()                 # 只重画颜色，位置沿用 self._tx（动画起点）
+        self._animate_to(self._target_x(),
+                         lambda x: self.coords(self._thumb_i, x, 0), True)
+        if self.on_change:
+            self.on_change(self.get())
+
+    def get(self):
+        return self.on_value if self._on else self.off_value
+
+    def set(self, v):
+        on = v in (True, self.on_value)
+        if on != self._on:
+            self._on = on
+            self._build()
+            self._animate_to(self._target_x(),
+                             lambda x: self.coords(self._thumb_i, x, 0), False)
+
+    def apply_theme(self, theme):
+        self.theme = theme
+        self._build()
 
 
 class Stars(tk.Canvas):
-    """五星评分（点击、hover 预览）。"""
+    """五星评分（点击 / 悬停预览；扁平配色）。"""
 
-    def __init__(self, master, value=4, on_change=None, theme=None, gap=4, bg_key="surface"):
+    def __init__(self, master, value=4, on_change=None, theme=None, gap=5, bg_key="surface"):
         super().__init__(master, highlightthickness=0, bd=0, takefocus=0)
         self.value, self.on_change, self.theme = value, on_change, theme
         self.gap, self.bg_key, self._hover, self._items = gap, bg_key, None, []
@@ -308,14 +576,11 @@ class Stars(tk.Canvas):
 
     def _build(self):
         self.delete("all")
-        self._items, self._shadows = [], []
+        self._items = []
         w = self.font.measure("★") + self.gap
-        h = self.font.metrics("linespace") + 7
+        h = self.font.metrics("linespace") + 4
         for i in range(5):
-            cx, cy = w * i + w / 2.0, h / 2.0
-            self._shadows.append(self.create_text(cx + 1.0, cy + 1.5, text="★",
-                                                  font=self.font, anchor="center"))
-            self._items.append(self.create_text(cx, cy - 0.5, text="★",
+            self._items.append(self.create_text(w * i + w / 2.0, h / 2.0, text="★",
                                                 font=self.font, anchor="center"))
         self.configure(width=w * 5, height=h)
         self._recolor()
@@ -323,11 +588,10 @@ class Stars(tk.Canvas):
     def _recolor(self):
         t = self.theme
         self.configure(bg=t[self.bg_key])
-        sh = _dim(t[self.bg_key], 0.55) if _is_dark(t[self.bg_key]) else _dim(t[self.bg_key], 0.30)
         shown = self._hover if self._hover else self.value
         for i in range(5):
-            self.itemconfig(self._shadows[i], fill=sh)
-            self.itemconfig(self._items[i], fill=t["accent"] if i < shown else t["star_empty"])
+            self.itemconfig(self._items[i],
+                            fill=t["accent"] if i < shown else t["star_empty"])
 
     def _on_motion(self, e):
         i = int(e.x // max(1, self.font.measure("★") + self.gap)) + 1
@@ -358,103 +622,82 @@ class Stars(tk.Canvas):
 
     def apply_theme(self, theme):
         self.theme = theme
-        self._recolor()
+        self._build()
 
 
 class Pill(tk.Canvas):
-    """立体圆角按钮。kind: primary / ghost / danger。
+    """扁平按钮（Web 风：纯色 / 描边 + 柔和投影；悬停变色、按下轻微下沉）。
 
-    立体感是四层叠出来的：①投影 → ②竖向渐变主体 → ③顶部高光 → ④描边；
-    按下时主体下沉、投影变薄，做出"按进去"的手感。
+    kind: primary / ghost / danger。depth 参数保留兼容（越大投影越厚）。
     """
 
     def __init__(self, master, text, command=None, theme=None, font=None,
-                 kind="primary", padx=18, pady=8, radius=9, bg_key="bg", depth=4):
+                 kind="primary", padx=20, pady=10, radius=10, bg_key="bg",
+                 shadow=6, depth=None):
         super().__init__(master, highlightthickness=0, bd=0, takefocus=0)
         self.text, self.command, self.theme = text, command, theme
         self.font = font or F("body")
-        self.kind, self.padx, self.pady, self.radius, self.bg_key = kind, padx, pady, radius, bg_key
-        self.depth = max(2, int(depth))
+        self.kind, self.padx, self.pady, self.radius, self.bg_key = (
+            kind, padx, pady, radius, bg_key)
+        self.shadow = max(3, int(depth) + 2) if depth else int(shadow)
         self._hover = self._press = False
+        self._img = None
         self.bind("<Enter>", lambda e: self._set(hover=True))
         self.bind("<Leave>", lambda e: self._set(hover=False))
         self.bind("<Button-1>", lambda e: self._set(press=True))
         self.bind("<ButtonRelease-1>", self._release)
         self._build()
 
-    # ---- 几何 -------------------------------------------------------------
-    # 注意：不能用 self._w / self._h —— _w 是 tkinter 内部存 Tcl 控件名的属性，
-    #       覆盖它会让控件直接失效（invalid command name）。
+    # ---- 几何（注意：不能用 self._w / self._h，那是 tkinter 内部属性）----
     def _build(self):
-        self._cw = self.font.measure(self.text) + self.padx * 2
-        # 高度要多留 depth 给投影，否则阴影会被 canvas 裁掉
-        self._ch = self.font.metrics("linespace") + self.pady * 2 + 6 + self.depth
+        self._bw = self.font.measure(self.text) + self.padx * 2
+        self._bh = self.font.metrics("linespace") + self.pady * 2
+        self._cw = self._bw
+        self._ch = self._bh + (self.shadow + 2 if self.shadow else 0)
         self.configure(width=self._cw, height=self._ch)
-        self._draw()
-
-    def _draw(self):
         self.delete("all")
-        w, h = self._cw, self._ch
-        d = self.depth - 2 if self._press else self.depth
-        y0 = 1.5 + (self.depth - d)             # 主体顶（按下时下移）
-        y1 = h - 1.5 - d                        # 主体底
-        top, bottom, edge, fg = self._colors()
-        # ① 投影
-        _rr(self, 1.5, y0 + d, w - 1.5, h - 1.5, self.radius, outline="", fill=self._shadow())
-        # ② 渐变主体
-        _rr_vgrad(self, 1.5, y0, w - 1.5, y1, self.radius, top, bottom)
-        # ③ 描边（补回渐变行在圆角处内缩留下的毛边）
-        _rr(self, 1.5, y0, w - 1.5, y1, self.radius, outline=edge, fill="", width=1)
-        # ④ 顶部高光——"凸起"的关键一笔
-        self.create_line(2.5 + self.radius, y0 + 1.7, w - 2.5 - self.radius, y0 + 1.7,
-                         fill=self._gloss(top), width=1.4)
-        # ⑤ 文字（彩色按钮加一层淡投影，字更"浮"得起来）
-        cy = (y0 + y1) / 2.0
-        if self.kind in ("primary", "danger") and not self._press:
-            self.create_text(w / 2.0 + 1, cy + 1.2, text=self.text, font=self.font,
-                             anchor="center", fill=self._shadow())
-        self.create_text(w / 2.0, cy, text=self.text, font=self.font,
-                         anchor="center", fill=fg)
+        self._img_i = self.create_image(0, 0, anchor="nw")
+        self._txt_i = self.create_text(self._bw / 2.0, self._bh / 2.0, text=self.text,
+                                       font=self.font, anchor="center")
+        self._draw()
 
     def _colors(self):
         t = self.theme
-        dark = _is_dark(t[self.bg_key])
         if self.kind == "primary":
             base, fg = t["accent"], t["accent_text"]
         elif self.kind == "danger":
             base, fg = t["bad"], t["accent_text"]
         else:
             base, fg = t["surface"], t["text"]
-            if self._hover and not self._press:
-                base = t["surface_hover"]
-        if self._press:                                  # 按下：整体压暗、上下反差收紧
-            top, bottom = _dim(base, 0.08), _dim(base, 0.22)
-        elif dark:
-            top, bottom = _lit(base, 0.14), _dim(base, 0.22)
+        if self._press:
+            fill = _dim(base, 0.10)
+        elif self._hover:
+            fill = _mix(base, t["text"], 0.06) if self.kind == "ghost" else _lit(base, 0.10)
         else:
-            top, bottom = _lit(base, 0.20), _dim(base, 0.15)
-            if self.kind == "ghost":                     # 白底按钮：顶部略灰才看得出渐变
-                top = _mix(base, t["border"], 0.32)
-                bottom = _mix(base, t["border"], 1.0)
-        if self._hover and not self._press:
-            top = _lit(top, 0.07)
-        if self.kind == "ghost":
-            edge = t["accent"] if self._hover else t["border"]
-        else:
-            edge = _mix(bottom, "#000000", 0.16)
-        return top, bottom, edge, fg
+            fill = base
+        border = t["border"] if self.kind == "ghost" else None
+        shadow = t["text"] if self.kind == "ghost" else _dim(base, 0.55)
+        alpha = 0.16 if self.kind == "ghost" else 0.30
+        return fill, fg, border, shadow, alpha
 
-    def _shadow(self):
-        bg = self.theme[self.bg_key]
-        return _dim(bg, 0.60) if _is_dark(bg) else _dim(bg, 0.26)
-
-    def _gloss(self, top):
-        bg = self.theme[self.bg_key]
-        return _lit(top, 0.30 if _is_dark(bg) else 0.55)
-
-    def _recolor(self):
-        self.configure(bg=self.theme[self.bg_key])
-        self._draw()
+    def _draw(self):
+        t = self.theme
+        bg = t[self.bg_key]
+        fill, fg, border, sh, alpha = self._colors()
+        img = _rr_photo(self._cw, self._ch, self.radius, fill=fill, bg=bg,
+                        border=border, border_w=1.0,
+                        shadow=sh if self.shadow else None,
+                        shadow_dy=1.0 if self._press else 2.0,
+                        shadow_blur=float(self.shadow), shadow_alpha=alpha,
+                        box=(0, 0, self._cw, self._bh))
+        self.configure(bg=bg)
+        if img is not None:
+            self._img = img
+            self.itemconfig(self._img_i, image=img)
+        else:                                    # 贴图失败 → 退化直绘
+            _rr(self, 0.5, 0.5, self._cw - 0.5, self._bh - 0.5, self.radius,
+                outline=border or "", fill=fill)
+        self.itemconfig(self._txt_i, fill=fg)
 
     def _set(self, hover=None, press=None):
         if hover is not None:
@@ -462,19 +705,19 @@ class Pill(tk.Canvas):
             self.configure(cursor="hand2" if hover else "")
         if press is not None:
             self._press = press
-        self._recolor()
+        self._draw()
 
     def _release(self, e):
         was = self._press
         self._press = False
-        self._recolor()
-        if was and 0 <= e.x <= self.winfo_width() and 0 <= e.y <= self.winfo_height():
+        self._draw()
+        if was and 0 <= e.x <= self._cw and 0 <= e.y <= self._ch:
             if self.command:
                 self.command()
 
     def apply_theme(self, theme):
         self.theme = theme
-        self._recolor()
+        self._build()
 
 
 class Modal(tk.Toplevel):
@@ -656,7 +899,7 @@ class App:
         self._lab(hr, "主题", "small", "muted").pack(side="left", padx=(0, 8))
         self.theme_seg = Segmented(hr, list(THEMES.keys()), value=load_theme_name(),
                                    on_change=self.apply_theme, theme=t, font=F("small"),
-                                   padx=11, pady=5, bg_key="header", depth=3)
+                                   padx=12, height=26, bg_key="header")
         self.theme_seg.pack(side="left")
         self._dyn.append(self.theme_seg)
 
@@ -696,7 +939,8 @@ class App:
         rrow.pack(fill="x", padx=12, pady=(0, 12))
         self._frames.append((rrow, "surface", "bg"))
         self.refresh_pill = Pill(rrow, "刷新样本", self.reload, theme=t, font=F("small"),
-                                 kind="ghost", padx=12, pady=6, bg_key="surface", depth=3)
+                                 kind="ghost", padx=14, pady=8, radius=10,
+                                 bg_key="surface", depth=3)
         self.refresh_pill.pack(side="left")
         self._dyn.append(self.refresh_pill)
 
@@ -719,7 +963,7 @@ class App:
         self.video_menu = tk.OptionMenu(form, self.video_var, "")
         self.video_menu.config(anchor="w", relief="flat", bd=0, highlightthickness=1, width=46,
                                font=F("body"), activebackground=t["surface_hover"])
-        self.video_menu.grid(row=self._row, column=1, sticky="w", pady=(0, 10))
+        self.video_menu.grid(row=self._row, column=1, sticky="w", pady=(0, 12), ipady=4)
         self.video_menu["menu"].config(bd=0, activeborderwidth=0, font=F("body"))
         self._row += 1
 
@@ -727,7 +971,8 @@ class App:
         for key, opts in DIMS:
             self._lab(form, key, "body").grid(row=self._row, column=0, sticky="w", pady=5)
             seg = Segmented(form, opts, value=opts[0], on_change=lambda v: self._touch(),
-                            theme=t, font=F("body"))
+                            theme=t, font=F("body"), height=32,
+                            colors=["ok", "warn", "bad"])
             seg.grid(row=self._row, column=1, sticky="w", pady=5)
             self.vars[key] = seg
             self._dyn.append(seg)
@@ -742,11 +987,11 @@ class App:
             cell.pack(side="left", padx=(0, 18))
             self._frames.append((cell, "surface", "bg"))
             self._lab(cell, key, "small", "muted").pack(anchor="w")
-            seg = Segmented(cell, ["无", "有"], value="无", on_change=lambda v: self._touch(),
-                            theme=t, font=F("small"), padx=11, pady=4)
-            seg.pack(anchor="w")
-            self.vars[key] = seg
-            self._dyn.append(seg)
+            sw = Switch(cell, value="无", on_change=lambda v: self._touch(),
+                        theme=t, font=F("small"), bg_key="surface")
+            sw.pack(anchor="w", pady=(3, 0))
+            self.vars[key] = sw
+            self._dyn.append(sw)
         self._row += 1
 
         self._lab(form, "整体评分", "body").grid(row=self._row, column=0, sticky="w", pady=8)
@@ -757,7 +1002,8 @@ class App:
 
         self._lab(form, "结论", "body").grid(row=self._row, column=0, sticky="w", pady=6)
         self.concl = Segmented(form, CONCL, value="可改", on_change=lambda v: self._touch(),
-                               theme=t, font=F("body"))
+                               theme=t, font=F("body"), height=32,
+                               colors=["ok", "warn", "bad"])
         self.concl.grid(row=self._row, column=1, sticky="w", pady=6)
         self.vars["结论"] = self.concl
         self._dyn.append(self.concl)
@@ -766,7 +1012,7 @@ class App:
         self._lab(form, "备注", "body").grid(row=self._row, column=0, sticky="w", pady=(8, 0))
         self.note = tk.Entry(form, relief="flat", bd=0, highlightthickness=1, font=F("body"),
                              insertwidth=2)
-        self.note.grid(row=self._row, column=1, sticky="ew", ipady=6, pady=(8, 0))
+        self.note.grid(row=self._row, column=1, sticky="ew", ipady=8, pady=(8, 0))
         self.note.bind("<KeyRelease>", lambda e: self._touch())
         self._row += 1
 
@@ -777,7 +1023,8 @@ class App:
         self.status = self._lab(footer, "选一个样本 → 逐项点分 → 保存", "small", "muted")
         self.status.pack(side="left")
         self.save_pill = Pill(footer, "保存评分", self.save, theme=t, font=F("h2"),
-                              kind="primary", padx=24, pady=9, bg_key="bg", depth=5)
+                              kind="primary", padx=26, pady=11, radius=11,
+                              bg_key="bg", depth=4)
         self.save_pill.pack(side="right")
         self._dyn.append(self.save_pill)
 
