@@ -34,6 +34,7 @@ if errorlevel 1 (
 %PYEXE% -m PyInstaller --noconfirm --onefile --windowed --name score-tool ^
   --hidden-import json --hidden-import datetime --hidden-import argparse ^
   --add-data "score_core.py;." ^
+  --add-data "project_core.py;." ^
   score_gui.pyw
 if errorlevel 1 (
   echo.

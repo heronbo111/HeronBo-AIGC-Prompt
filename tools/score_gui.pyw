@@ -326,18 +326,25 @@ def _ease(t):
     return 1 - (1 - t) ** 3
 
 
-def _load_core():
+def _load_core(fname, modname):
+    """按名字加载同目录（或 PyInstaller 解包目录）里的模块。"""
     for d in (BASE, HERE):
-        p = os.path.join(d, "score_core.py")
+        p = os.path.join(d, fname)
         if os.path.isfile(p):
-            spec = importlib.util.spec_from_file_location("score_core", p)
+            spec = importlib.util.spec_from_file_location(modname, p)
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
             return mod
+    return None
+
+
+core = _load_core("score_core.py", "score_core")
+if core is None:
     raise RuntimeError("找不到 score_core.py（应与本脚本同在 tools\\ 目录）")
 
+# 项目骨架 / 素材投放核心（缺了不影响评分功能，只是「素材/骨架」不可用）
+pcore = _load_core("project_core.py", "project_core")
 
-core = _load_core()
 DIMS = [(k, opts) for k, opts, _s in core.DIMS]
 FORBID = [k for k, _s in core.FORBID]
 CONCL = ["可用", "可改", "作废"]
@@ -957,6 +964,261 @@ class Modal(tk.Toplevel):
         self.destroy()
 
 
+# ── 素材投放 / 建骨架 ───────────────────────────────────────────────────────
+def app_root_hint():
+    """样本库根的默认值：先问 project_core，再退回评分工具自己的探测结果。"""
+    if pcore is not None:
+        try:
+            r = pcore.detect_root()
+            if r:
+                return r
+        except Exception:                                     # noqa: BLE001
+            pass
+    return ""
+
+
+class MaterialPanel(tk.Toplevel):
+    """素材投放箱：建项目骨架 + 把用户给的素材归类进 <项目>/素材/。
+
+    对应 rules.md 第 264-272 条：骨架 <SAMPLES_ROOT>/<实验名>/{文案,素材,成片,废片,评价,备注}/。
+    与命令行 `python tools/project_core.py` 共用同一份实现（project_core.py）。
+    """
+
+    def __init__(self, master, app, project=None):
+        super().__init__(master)
+        self.app = app
+        self.theme = app.theme
+        t = self.theme
+        self.title("素材投放 · 建骨架")
+        self.configure(bg=t["bg"])
+        self.geometry("860x640")
+        self.minsize(720, 520)
+        self.transient(master)
+        self._pending = []                    # 待投放的文件/文件夹
+        self._build()
+        self.apply_theme(t)
+        if project:
+            self.proj_var.set(project)
+
+    # ---- 界面 -------------------------------------------------------------
+    def _row(self, parent):
+        f = tk.Frame(parent, bg=self.theme["surface"])
+        f.pack(fill="x", padx=16, pady=(0, 8))
+        return f
+
+    def _build(self):
+        t = self.theme
+        self._labels = []                       # 必须在建控件之前就绪（_lab 会往里塞）
+        head = tk.Frame(self, bg=t["header"])
+        self._frames = [(head, "header")]
+        head.pack(fill="x")
+        self._lab(head, "素材投放 · 建骨架", "title").pack(anchor="w", padx=18, pady=(12, 0))
+        self._lab(head, "选位置 → 建骨架 → 把素材拖进来（或用下面两个按钮）→ 自动归类并写清单",
+                  "small", "muted").pack(anchor="w", padx=18, pady=(2, 12))
+
+        body = tk.Frame(self, bg=t["surface"])
+        body.pack(fill="both", expand=True, padx=14, pady=12)
+        self._frames.append((body, "surface"))
+
+        # ① 位置与项目名
+        r1 = self._row(body)
+        self._lab(r1, "样本库根", "small", "muted").pack(side="left")
+        self.root_var = tk.StringVar(value=(app_root_hint()))
+        tk.Entry(r1, textvariable=self.root_var, font=F("small"), width=44,
+                 relief="flat", highlightthickness=1).pack(side="left", padx=6)
+        Pill(r1, "换位置", self._pick_root, theme=t, font=F("small"), kind="ghost",
+             padx=10, pady=5, radius=8, bg_key="surface", depth=2).pack(side="left")
+
+        r2 = self._row(body)
+        self._lab(r2, "项目名", "small", "muted").pack(side="left", padx=(0, 10))
+        self.name_var = tk.StringVar()
+        tk.Entry(r2, textvariable=self.name_var, font=F("small"), width=28,
+                 relief="flat", highlightthickness=1).pack(side="left")
+        self._lab(r2, "（不带日期戳；重名会自动加序号）", "small", "muted").pack(side="left", padx=8)
+        Pill(r2, "建骨架", self._make_skeleton, theme=t, font=F("small"), kind="primary",
+             padx=14, pady=6, radius=9, bg_key="surface", depth=3).pack(side="right")
+
+        r3 = self._row(body)
+        self._lab(r3, "项目目录", "small", "muted").pack(side="left", padx=(0, 10))
+        self.proj_var = tk.StringVar()
+        tk.Entry(r3, textvariable=self.proj_var, font=F("small"),
+                 relief="flat", highlightthickness=1).pack(side="left", fill="x",
+                                                          expand=True)
+
+        # ② 素材
+        self._lab(body, "待投放素材", "h2").pack(anchor="w", pady=(10, 4))
+        lrow = tk.Frame(body, bg=t["surface"])
+        lrow.pack(fill="x")                       # 不抢高度，给下面的「执行记录」留位置
+        self.lb = tk.Listbox(lrow, height=6, activestyle="none", bd=0, highlightthickness=1,
+                             font=F("small"), exportselection=False)
+        self.lb.pack(side="left", fill="x", expand=True)
+        sb = tk.Scrollbar(lrow, orient="vertical", command=self.lb.yview, width=10,
+                          bd=0, relief="flat", elementborderwidth=0)
+        sb.pack(side="right", fill="y", padx=(3, 0))
+        self.lb.config(yscrollcommand=sb.set)
+        self._sb = sb
+
+        r4 = self._row(body)
+        Pill(r4, "选文件", lambda: self._pick(False), theme=t, font=F("small"),
+             kind="ghost", padx=12, pady=6, radius=8, bg_key="surface", depth=2).pack(side="left")
+        Pill(r4, "选文件夹", lambda: self._pick(True), theme=t, font=F("small"),
+             kind="ghost", padx=12, pady=6, radius=8, bg_key="surface", depth=2).pack(
+                 side="left", padx=6)
+        Pill(r4, "清空", self._clear, theme=t, font=F("small"), kind="ghost",
+             padx=12, pady=6, radius=8, bg_key="surface", depth=2).pack(side="left")
+        self._lab(r4, "备注", "small", "muted").pack(side="left", padx=(16, 4))
+        self.note_var = tk.StringVar()
+        tk.Entry(r4, textvariable=self.note_var, font=F("small"), width=14,
+                 relief="flat", highlightthickness=1).pack(side="left")
+        Pill(r4, "开始投放", self._drop, theme=t, font=F("small"), kind="primary",
+             padx=16, pady=7, radius=9, bg_key="surface", depth=3).pack(side="right")
+
+        # ③ 日志
+        self._lab(body, "执行记录", "h2").pack(anchor="w", pady=(10, 4))
+        self.log = tk.Text(body, height=9, font=F("small"), bd=0, relief="flat",
+                           highlightthickness=1, wrap="word")
+        self.log.pack(fill="both", expand=True)
+        self.log.configure(state="disabled")
+
+    def _lab(self, parent, text, font="body", color="text"):
+        w = tk.Label(parent, text=text, font=F(font), anchor="w", justify="left")
+        self._labels.append((w, color, parent))
+        return w
+
+    # ---- 主题 -------------------------------------------------------------
+    def apply_theme(self, theme):
+        self.theme = theme
+        t = theme
+        for w, key in getattr(self, "_frames", []):
+            try:
+                w.config(bg=t[key])
+            except tk.TclError:
+                pass
+        for w, color, parent in getattr(self, "_labels", []):
+            key = "header"
+            for pw, pk in getattr(self, "_frames", []):
+                if pw is parent:
+                    key = pk
+                    break
+            try:
+                w.config(bg=t[key], fg=t[color])
+            except tk.TclError:
+                pass
+        self.configure(bg=t["bg"])
+        for w in self.winfo_children():
+            self._recolor_tree(w)
+        try:
+            self.lb.config(bg=t["surface"], fg=t["text"],
+                           selectbackground=t["accent_soft"], selectforeground=t["text"])
+            self._sb.config(bg=t["surface"], troughcolor=t["bg"], relief="flat")
+            self.log.config(bg=t["surface"], fg=t["text"], insertbackground=t["accent"])
+        except tk.TclError:
+            pass
+
+    def _recolor_tree(self, w):
+        """把 Entry / Frame 这类没登记进 _frames 的也刷一遍底色。"""
+        t = self.theme
+        try:
+            if isinstance(w, tk.Entry):
+                w.config(bg=t["surface"], fg=t["text"], insertbackground=t["accent"],
+                         highlightbackground=t["border"], highlightcolor=t["accent"],
+                         disabledbackground=t["surface"])
+            elif isinstance(w, tk.Frame) and w is not self:
+                w.config(bg=self._bg_of(w))
+        except tk.TclError:
+            pass
+        for c in w.winfo_children():
+            self._recolor_tree(c)
+
+    def _bg_of(self, w):
+        t = self.theme
+        try:
+            parent = w.master
+            for pw, pk in getattr(self, "_frames", []):
+                if pw is parent:
+                    return t[pk]
+        except Exception:                                     # noqa: BLE001
+            pass
+        return t["surface"]
+
+    # ---- 动作 -------------------------------------------------------------
+    def _log(self, msg):
+        self.log.configure(state="normal")
+        self.log.insert("end", msg + "\n")
+        self.log.see("end")
+        self.log.configure(state="disabled")
+
+    def _pick_root(self):
+        d = filedialog.askdirectory(title="选样本库根目录")
+        if d:
+            self.root_var.set(os.path.normpath(d))
+
+    def _pick(self, folder):
+        if folder:
+            p = filedialog.askdirectory(title="选要投放的文件夹")
+            if p:
+                self._pending.append(os.path.normpath(p))
+        else:
+            ps = filedialog.askopenfilenames(title="选要投放的文件")
+            for p in ps or ():
+                self._pending.append(os.path.normpath(p))
+        self._refresh_pending()
+
+    def _clear(self):
+        self._pending = []
+        self._refresh_pending()
+
+    def _refresh_pending(self):
+        self.lb.delete(0, "end")
+        for p in self._pending:
+            n = len(pcore.collect_files([p])) if pcore else 0
+            self.lb.insert("end", "%s  （%d 个文件）" % (p, n))
+
+    def _make_skeleton(self):
+        if not pcore:
+            self._log("!! 找不到 project_core.py，功能不可用")
+            return
+        root = self.root_var.get().strip()
+        name = self.name_var.get().strip()
+        if not root or not name:
+            self._log("请先填「样本库根」和「项目名」")
+            return
+        try:
+            final = pcore.next_project_name(root, name)
+            if final != name:
+                self._log("同名已存在 → 这次用 %s" % final)
+            pdir, sk, log = pcore.build_skeleton(root, final, project_dir=None)
+            for l in log:
+                self._log("· " + l)
+            self.proj_var.set(pdir)
+            self._log("✅ 骨架就绪：%s" % pdir)
+            if self.app:
+                self.app.reload()                     # 评分工具那边同步看到新项目
+        except Exception as e:                        # noqa: BLE001
+            self._log("!! 建骨架失败：%s" % e)
+
+    def _drop(self):
+        if not pcore:
+            self._log("!! 找不到 project_core.py，功能不可用")
+            return
+        proj = self.proj_var.get().strip()
+        if not proj:
+            self._log("请先建骨架，或直接填「项目目录」")
+            return
+        if not self._pending:
+            self._log("还没有选任何素材")
+            return
+        try:
+            added, skipped, log = pcore.add_materials(
+                proj, list(self._pending), copy=True, note=self.note_var.get().strip(),
+                on_log=self._log)
+            self._log("---- 完成：投放 %d，跳过 %d ----" % (len(added), len(skipped)))
+            self._pending = []
+            self._refresh_pending()
+        except Exception as e:                        # noqa: BLE001
+            self._log("!! 投放失败：%s" % e)
+
+
 # ── 主界面 ──────────────────────────────────────────────────────────────────
 class App:
     def __init__(self, root, preselect=None):
@@ -1134,6 +1396,13 @@ class App:
         self.refresh_pill.pack(side="left")
         self._dyn.append(self.refresh_pill)
 
+        # 素材投放 / 建骨架（rules.md 第 264-272 条的骨架与归类，搬进工具）
+        self.mat_pill = Pill(rrow, "素材/骨架", self.open_material, theme=t, font=F("small"),
+                             kind="primary", padx=14, pady=8, radius=10,
+                             bg_key="surface", depth=3)
+        self.mat_pill.pack(side="right")
+        self._dyn.append(self.mat_pill)
+
         # 隐形可拖分隔条（视觉上只是一枚小药丸，命中区 8px）
         self._split = tk.Frame(body, bg=t["bg"], width=8, cursor="sb_h_double_arrow")
         self._split.pack(side="left", fill="y")
@@ -1283,6 +1552,13 @@ class App:
         for d in self._dyn:
             d.apply_theme(t)
         self.theme_seg.set(name)
+        wp = getattr(self, "_mat_win", None)                # 素材窗口跟着换肤
+        if wp is not None:
+            try:
+                if wp.winfo_exists():
+                    wp.apply_theme(t)
+            except tk.TclError:
+                pass
         self._recolor_list()
         if not first:
             save_theme_name(name)
@@ -1339,6 +1615,34 @@ class App:
     def _split_release(self, _e=None):
         save_left_width(self._left_w)
         self.status.config(text="样本栏宽度已保存（%d px）" % self._left_w)
+
+    # ---- 素材投放 / 建骨架 ------------------------------------------------
+    def open_material(self, project=None):
+        """打开「素材投放 · 建骨架」窗口（单实例）。"""
+        if not pcore:
+            self.status.config(text="找不到 project_core.py，「素材/骨架」暂不可用")
+            return None
+        win = getattr(self, "_mat_win", None)
+        try:
+            alive = win is not None and win.winfo_exists()
+        except tk.TclError:
+            alive = False
+        if alive:
+            if project:
+                win.proj_var.set(project)
+            win.deiconify()
+            win.lift()
+            win.focus_force()
+            return win
+        win = MaterialPanel(self.root, self, project=project)
+        self._mat_win = win
+
+        def _gone(_e, w=win):
+            if getattr(self, "_mat_win", None) is w:
+                self._mat_win = None
+
+        win.bind("<Destroy>", _gone)
+        return win
 
     # ---- 数据 -------------------------------------------------------------
     def reload(self):
@@ -1496,13 +1800,72 @@ class App:
 
 
 def _parse_args():
-    a, out = sys.argv[1:], None
-    for i, x in enumerate(a):
+    """命令行参数。
+
+    评分用途：
+        --sample <关键词> / -s <关键词>        打开就定位到名字含该关键词的样本
+    素材与骨架用途（rules.md 第 264-272 条）：
+        --material                            直接打开「素材投放 · 建骨架」窗口
+        --root <目录> --name <实验名>          建骨架（自动避让重名，加序号）
+        --project <目录>                      指定项目目录
+        --add <路径> [<路径> ...]             投放素材（文件或文件夹，可跟多个）
+        --note <文字>                         给这批素材记一句备注
+        --platform <名>                       平台（即梦 / 小云雀 / updream）
+    """
+    a, o = sys.argv[1:], {"sample": None, "material": False, "root": None, "name": None,
+                          "project": None, "add": [], "note": "", "platform": ""}
+    i = 0
+    while i < len(a):
+        x = a[i]
         if x in ("--sample", "-s") and i + 1 < len(a):
-            out = a[i + 1]
+            o["sample"] = a[i + 1]
+            i += 2
         elif x.startswith("--sample="):
-            out = x.split("=", 1)[1]
-    return out
+            o["sample"] = x.split("=", 1)[1]
+            i += 1
+        elif x == "--material":
+            o["material"] = True
+            i += 1
+        elif x in ("--root", "--name", "--project", "--note", "--platform") and i + 1 < len(a):
+            o[x[2:]] = a[i + 1]
+            i += 2
+        elif x == "--add":
+            i += 1
+            while i < len(a) and not a[i].startswith("--"):
+                o["add"].append(a[i])
+                i += 1
+            o["material"] = True
+        else:
+            i += 1
+    return o
+
+
+def _run_material_actions(app, opt):
+    """按命令行把「建骨架 / 投素材」跑掉，结果写进素材窗口的记录区。"""
+    if not pcore:
+        return
+    win = app.open_material(project=opt.get("project") or None)
+    if win is None:
+        return
+    if opt.get("root"):
+        win.root_var.set(opt["root"])
+    try:
+        if opt.get("name"):
+            win.name_var.set(opt["name"])
+        if opt.get("add"):
+            for p in opt["add"]:
+                win._pending.append(os.path.normpath(p))
+            if opt.get("note"):
+                win.note_var.set(opt["note"])
+            win._refresh_pending()
+    except Exception:                                            # noqa: BLE001
+        pass
+    if opt.get("name") or (opt.get("project") and not win.proj_var.get()):
+        win._make_skeleton()
+    if opt.get("add"):
+        if opt.get("note"):
+            win.note_var.set(opt["note"])
+        win._drop()
 
 
 def main():
@@ -1511,6 +1874,7 @@ def main():
         windll.shcore.SetProcessDpiAwareness(1)
     except Exception:                                            # noqa: BLE001
         pass
+    opt = _parse_args()
     root = tk.Tk()
     try:
         dpi = root.winfo_fpixels("1i")
@@ -1518,7 +1882,9 @@ def main():
     except tk.TclError:
         pass
     try:
-        App(root, _parse_args())
+        app = App(root, opt.get("sample"))
+        if opt.get("material") or opt.get("add") or opt.get("name"):
+            root.after(120, lambda: _run_material_actions(app, opt))
     except Exception:                                            # noqa: BLE001
         import traceback
         detail = traceback.format_exc()

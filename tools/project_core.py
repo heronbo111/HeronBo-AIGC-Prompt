@@ -1,0 +1,653 @@
+# -*- coding: utf-8 -*-
+"""项目骨架 / 素材投放核心（评分窗口版与命令行版共用，也被 agent 直接调用）。
+
+约定来源：`references/rules.md` 第 264-272 条
+    骨架：<SAMPLES_ROOT>/<实验名>/{文案,素材,成片,废片,评价,备注}/
+    实验名一律不带日期戳；同一主题重开依次加序号 1、2、3（「0」就是第一个，不写 0）。
+    根目录由用户指定，登记进 `references/paths.local.md`（已 gitignore）。
+
+设计取舍（对照 `_StoryVia拆解/02_素材管理与落盘.md`）：
+- 骨架文件跟素材同目录、只写**相对项目根的 POSIX 路径** → 整包拷给别人/换盘符都不炸。
+- 清单是缓存、磁盘是真相：提供 `rescan()` 全量重扫 + 按相对路径合并 + 保留原 id 的自愈逻辑。
+- 素材字段比 StoryVia 厚：除 path/fileName/type/addedAt 外，补 size / hash / width / height /
+  duration / category / tags / note（它只有 5 个字段，agent 拿不到这些）。
+- 同名不覆盖：`name_1.ext`、`name_2.ext`；并用 hash 判定内容是否其实是同一个文件。
+- 支持音频与文本（StoryVia 完全没有 audio 逻辑）。
+"""
+import datetime
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SKILL_ROOT = os.path.normpath(os.path.join(HERE, ".."))
+LOCAL_MD = os.path.join(SKILL_ROOT, "references", "paths.local.md")
+PATHS_MD = os.path.join(SKILL_ROOT, "references", "paths.md")
+
+PROJECT_DIRS = ["文案", "素材", "成片", "废片", "评价", "备注"]
+MATERIAL_DIR = "素材"
+SKELETON_JSON = "骨架.json"
+SKELETON_MD = "骨架.md"
+SCHEMA = "heronbo.project/1"
+
+IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".heic"}
+VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".flv", ".m4v", ".wmv", ".mpg", ".mpeg"}
+AUDIO_EXT = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".wma"}
+TEXT_EXT = {".txt", ".md", ".json", ".csv", ".srt", ".ass"}
+
+BIG_FILE_MB = 500                 # 超过这个体积给警告（不硬拒绝，用户可能就是要投大视频）
+HASH_LIMIT_MB = 256               # 小于此体积算全量 sha1；更大的只算「首尾 1MB + 体积」的快指纹
+
+ASK_PLACE = "请问您要把项目建在哪里？您提供好素材后，我会自动将其进行归类"
+
+
+# ── paths.local.md（本机取值，已 gitignore）────────────────────────────────
+HEADER = "# 本机取值（不提交仓库；由首次使用时的用户回答写入）\n"
+ORDER = ["SAMPLES_ROOT", "AI_CREATE_ROOT", "PLATFORM", "CLI"]
+
+
+def read_local(local_md=None):
+    vals = {}
+    try:
+        with open(local_md or LOCAL_MD, encoding="utf-8-sig") as f:
+            text = f.read()
+    except (FileNotFoundError, OSError):
+        return vals
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        vals[k.strip()] = v.strip().strip("`").strip('"')
+    return vals
+
+
+def write_local(local_md=None, **kw):
+    path = local_md or LOCAL_MD
+    vals = read_local(path)
+    for k, v in kw.items():
+        if v:
+            vals[k] = v
+    lines = [HEADER]
+    for k in ORDER:
+        if vals.get(k):
+            lines.append("%s=%s\n" % (k, vals[k]))
+    for k in sorted(set(vals) - set(ORDER)):
+        lines.append("%s=%s\n" % (k, vals[k]))
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write("".join(lines))
+    except OSError:
+        return vals
+    return vals
+
+
+def looks_unset(value):
+    return (not value) or any(h in value for h in ("<", "待用户指定", "你的样本库根目录"))
+
+
+def detect_root(cli_root=None):
+    """样本库根目录：命令行 > paths.local.md > paths.md 兼容取值。
+
+    注意：命令行给的路径**即使还不存在也要认**（用户就是要新建到这个位置），
+    所以这里不能加 os.path.isdir 判断 —— 否则会悄悄退回旧配置、把项目建到别处去。
+    """
+    if cli_root and cli_root.strip():
+        return os.path.normpath(cli_root.strip())
+    root = read_local().get("SAMPLES_ROOT")
+    if not looks_unset(root) and os.path.isdir(root):
+        return os.path.normpath(root)
+    try:
+        with open(PATHS_MD, encoding="utf-8-sig") as f:
+            for line in f:
+                if "${SAMPLES_ROOT}" in line and line.strip().startswith("|"):
+                    cells = [c.strip().strip("`") for c in line.split("|") if c.strip()]
+                    cand = cells[-1] if cells else ""
+                    if not looks_unset(cand) and os.path.isdir(cand):
+                        return os.path.normpath(cand)
+    except (FileNotFoundError, OSError):
+        pass
+    return None
+
+
+# ── 命名：同主题重开依次加序号（「0」= 第一个，不写 0）─────────────────────
+def next_project_name(root, base):
+    """在 root 下为 base 找一个可用的实验名：base、base1、base2 …"""
+    base = (base or "").strip().strip("/\\")
+    if not base:
+        return ""
+    cand, n = base, 0
+    while os.path.exists(os.path.join(root, cand)):
+        n += 1
+        cand = "%s%d" % (base, n)
+    return cand
+
+
+def name_conflict(root, name):
+    return os.path.exists(os.path.join(root, name))
+
+
+# ── 素材类型与元数据 ───────────────────────────────────────────────────────
+def kind_of(path):
+    ext = os.path.splitext(path)[1].lower()
+    if ext in IMAGE_EXT:
+        return "image"
+    if ext in VIDEO_EXT:
+        return "video"
+    if ext in AUDIO_EXT:
+        return "audio"
+    if ext in TEXT_EXT:
+        return "text"
+    return "other"
+
+
+def file_hash(path):
+    """小文件全量 sha1；大文件用「体积 + 首尾 1MB」快指纹（省时间，够用来判重）。"""
+    size = os.path.getsize(path)
+    h = hashlib.sha1()
+    h.update(str(size).encode())
+    chunk = 1024 * 1024
+    with open(path, "rb") as f:
+        if size <= HASH_LIMIT_MB * 1024 * 1024:
+            for blk in iter(lambda: f.read(chunk), b""):
+                h.update(blk)
+        else:
+            h.update(f.read(chunk))
+            f.seek(-chunk, os.SEEK_END)
+            h.update(f.read(chunk))
+    return "sha1:" + h.hexdigest()[:20]
+
+
+def _ffprobe(path):
+    """用 ffprobe 读宽高与时长；没装 ffprobe 就安静返回空。"""
+    exe = shutil.which("ffprobe") or "ffprobe"
+    try:
+        p = subprocess.run(
+            [exe, "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height:format=duration",
+             "-of", "json", path],
+            capture_output=True, timeout=20)
+        if p.returncode != 0:
+            return {}
+        data = json.loads(p.stdout.decode("utf-8", "replace") or "{}")
+        st = (data.get("streams") or [{}])[0]
+        dur = (data.get("format") or {}).get("duration")
+        out = {}
+        if st.get("width"):
+            out["width"] = int(st["width"])
+            out["height"] = int(st["height"])
+        if dur:
+            out["duration"] = round(float(dur), 3)
+        return out
+    except Exception:                                        # noqa: BLE001
+        return {}
+
+
+def meta_of(path):
+    st = os.stat(path)
+    m = {"size": st.st_size}
+    try:
+        m["hash"] = file_hash(path)
+    except OSError:
+        m["hash"] = ""
+    k = kind_of(path)
+    if k == "video":
+        m.update(_ffprobe(path))
+    elif k == "image":
+        try:                                                 # 只读文件头，不解码整图
+            from struct import unpack
+            with open(path, "rb") as f:
+                head = f.read(32)
+            if head[:8] == b"\x89PNG\r\n\x1a\n":
+                w, h = unpack(">II", head[16:24])
+                m.update(width=w, height=h)
+            elif head[:2] == b"\xff\xd8":
+                with open(path, "rb") as f:
+                    f.seek(2)
+                    while True:
+                        b = f.read(1)
+                        while b and b != b"\xff":
+                            b = f.read(1)
+                        while b == b"\xff":
+                            b = f.read(1)
+                        if not b:
+                            break
+                        if b[0] in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6,
+                                    0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                            f.read(3)
+                            hh, ww = unpack(">HH", f.read(4))
+                            m.update(width=ww, height=hh)
+                            break
+                        ln = unpack(">H", f.read(2))[0]
+                        f.seek(ln - 2, os.SEEK_CUR)
+        except Exception:                                    # noqa: BLE001
+            pass
+    return m
+
+
+# ── 骨架 ───────────────────────────────────────────────────────────────────
+def ensure_root(root):
+    root = os.path.normpath(root)
+    os.makedirs(root, exist_ok=True)
+    note = os.path.join(root, "README.txt")
+    if not os.path.exists(note):
+        try:
+            with open(note, "w", encoding="utf-8") as f:
+                f.write("这是本 skill 的样本库根目录（评分工具与素材投放都连本目录）。\n")
+                f.write("每个项目/实验一个子文件夹，统一结构：\n")
+                f.write("  <实验名>/\n")
+                f.write("    ├── 骨架.json            # 机器读（agent 优先读这份）\n")
+                f.write("    ├── 骨架.md              # 人读摘要\n")
+                f.write("    ├── 文案/                # 口播稿 / 提示词\n")
+                f.write("    ├── 素材/                # 用户提供的参考图 / 音视频（本工具自动归类）\n")
+                f.write("    ├── 成片/                # 验收成片\n")
+                f.write("    ├── 废片/                # 作废抽卡（文件名=日期-废因）\n")
+                f.write("    ├── 评价/*.json          # 六维评价（评分工具产出）\n")
+                f.write("    └── 备注/备注.txt        # 主观备注 + 生成参数\n")
+        except OSError:
+            pass
+    return root
+
+
+def ensure_project(project_dir, dirs=None):
+    project_dir = os.path.normpath(project_dir)
+    for d in (dirs or PROJECT_DIRS):
+        os.makedirs(os.path.join(project_dir, d), exist_ok=True)
+    return project_dir
+
+
+def skeleton_path(project_dir):
+    return os.path.join(project_dir, SKELETON_JSON)
+
+
+def load_skeleton(project_dir):
+    p = skeleton_path(project_dir)
+    try:
+        with open(p, encoding="utf-8-sig") as f:
+            return json.load(f)
+    except (FileNotFoundError, ValueError, OSError):
+        return None
+
+
+def new_id(seq):
+    return "m%04d" % seq
+
+
+def build_skeleton(root, name, platform="", project_dir=None, register=True):
+    """建骨架目录 + 写骨架.json/骨架.md；返回 (project_dir, skeleton dict, log list)。
+
+    register=False 时不动 `references/paths.local.md`（自检/测试用）。
+    """
+    log = []
+    root = ensure_root(root)
+    project_dir = os.path.normpath(project_dir or os.path.join(root, name))
+    existed = os.path.exists(project_dir)
+    ensure_project(project_dir)
+
+    sk = load_skeleton(project_dir) or {}
+    if not sk:
+        sk = {
+            "schema": SCHEMA,
+            "project": {
+                "name": os.path.basename(project_dir),
+                "createdAt": datetime.datetime.now().isoformat(timespec="seconds"),
+                "updatedAt": "",
+                "platform": platform or read_local().get("PLATFORM", ""),
+                "materials": [],
+                "generated": [],
+                "prompts": [],
+                "review": None,
+            },
+        }
+        log.append("新建骨架文件 %s" % SKELETON_JSON)
+    else:
+        log.append("已有骨架文件，补全目录并保留原清单")
+    if platform:
+        sk["project"]["platform"] = platform
+    sk["project"]["name"] = os.path.basename(project_dir)
+
+    log.append("目录：%s" % "、".join(PROJECT_DIRS))
+    if existed:
+        log.append("（项目目录原本已存在，未覆盖任何已有文件）")
+
+    save_skeleton(project_dir, sk)
+    if register:
+        write_local(SAMPLES_ROOT=root)
+        log.append("已登记 SAMPLES_ROOT=%s" % root)
+    return project_dir, sk, log
+
+
+def save_skeleton(project_dir, sk):
+    sk["project"]["updatedAt"] = datetime.datetime.now().isoformat(timespec="seconds")
+    sk["counts"] = count_kinds(sk["project"].get("materials", []))   # 每次重算，别用 setdefault
+    p = skeleton_path(project_dir)
+    try:
+        with open(p, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(sk, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+    except OSError:
+        return None
+    try:                                                     # 同目录再落一份人读摘要
+        with open(os.path.join(project_dir, SKELETON_MD), "w",
+                  encoding="utf-8", newline="\n") as f:
+            f.write(render_md(sk))
+    except OSError:
+        pass
+    return p
+
+
+def count_kinds(materials):
+    c = {"image": 0, "video": 0, "audio": 0, "text": 0, "other": 0}
+    for m in materials:
+        c[m.get("type", "other")] = c.get(m.get("type", "other"), 0) + 1
+    return c
+
+
+def _human(n):
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return "%.1f %s" % (n, unit) if unit != "B" else "%d B" % n
+        n /= 1024.0
+
+
+def render_md(sk):
+    p = sk.get("project", {})
+    mats = p.get("materials", [])
+    lines = ["# 骨架 · %s" % p.get("name", ""), "",
+             "- 建立时间：%s" % p.get("createdAt", ""),
+             "- 最近更新：%s" % p.get("updatedAt", ""),
+             "- 平台：%s" % (p.get("platform") or "（未登记）"),
+             "- 素材：%d 个（图 %d / 视频 %d / 音频 %d / 文本 %d / 其它 %d）"
+             % (len(mats), *[count_kinds(mats)[k] for k in
+                             ("image", "video", "audio", "text", "other")]),
+             "", "## 素材清单", "",
+             "| # | 文件 | 类型 | 尺寸 | 时长 | 体积 | 备注 |", "|---|---|---|---|---|---|---|"]
+    for i, m in enumerate(mats, 1):
+        wh = ("%d×%d" % (m["width"], m["height"])) if m.get("width") else ""
+        dur = ("%.1fs" % m["duration"]) if m.get("duration") else ""
+        lines.append("| %d | `%s` | %s | %s | %s | %s | %s |"
+                     % (i, m.get("file", ""), m.get("type", ""), wh, dur,
+                        _human(m.get("size", 0)), m.get("note", "")))
+    if p.get("prompts"):
+        lines += ["", "## 提示词", ""]
+        for pr in p["prompts"]:
+            lines += ["### %s" % pr.get("name", ""), "", pr.get("text", ""), ""]
+    lines += ["", "---", "",
+              "> 本文件由素材工具自动生成；`骨架.json` 是机器读的版本，字段更全。"]
+    return "\n".join(lines) + "\n"
+
+
+# ── 素材投放 ───────────────────────────────────────────────────────────────
+def _unique_target(folder, filename):
+    """同名不覆盖：xx.jpg → xx_1.jpg → xx_2.jpg"""
+    stem, ext = os.path.splitext(filename)
+    cand, n = filename, 0
+    while os.path.exists(os.path.join(folder, cand)):
+        n += 1
+        cand = "%s_%d%s" % (stem, n, ext)
+    return cand
+
+
+def collect_files(paths):
+    """把「文件 + 文件夹」展开成文件清单。"""
+    out = []
+    for p in paths:
+        p = os.path.normpath(p)
+        if os.path.isfile(p):
+            out.append(p)
+        elif os.path.isdir(p):
+            for dirpath, dirnames, filenames in os.walk(p):
+                dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+                for fn in sorted(filenames):
+                    if not fn.startswith("."):
+                        out.append(os.path.join(dirpath, fn))
+    seen, uniq = set(), []
+    for f in out:
+        k = os.path.normcase(os.path.abspath(f))
+        if k not in seen:
+            seen.add(k)
+            uniq.append(f)
+    return uniq
+
+
+def add_materials(project_dir, paths, copy=True, note="", on_log=None):
+    """把素材投放到 <项目>/素材/ 并登记进骨架。返回 (added list, skipped list, log list)。
+
+    幂等：同一个文件（按 hash）已经在清单里就不再重复登记。
+    """
+    log = []
+
+    def emit(msg):
+        log.append(msg)
+        if on_log:
+            on_log(msg)
+
+    project_dir = os.path.normpath(project_dir)
+    ensure_project(project_dir)
+    folder = os.path.join(project_dir, MATERIAL_DIR)
+    os.makedirs(folder, exist_ok=True)
+    sk = load_skeleton(project_dir)
+    if not sk:
+        sk = {"schema": SCHEMA, "project": {"name": os.path.basename(project_dir),
+                                            "createdAt": datetime.datetime.now()
+                                            .isoformat(timespec="seconds"),
+                                            "materials": [], "generated": [],
+                                            "prompts": [], "review": None}}
+    mats = sk["project"].setdefault("materials", [])
+    known = {(m.get("file", ""), m.get("hash", "")) for m in mats}
+    known_hash = {m.get("hash") for m in mats if m.get("hash")}
+    added, skipped = [], []
+    seq = len(mats) + 1
+
+    for src in collect_files(paths):
+        try:
+            meta = meta_of(src)
+        except OSError as e:
+            skipped.append({"src": src, "why": "读不到文件：%s" % e})
+            emit("跳过 %s（读不到）" % os.path.basename(src))
+            continue
+        base = os.path.basename(src)
+        if meta.get("hash") and meta["hash"] in known_hash:
+            skipped.append({"src": src, "why": "内容与已投放的素材相同（hash 一致）"})
+            emit("跳过 %s（内容重复）" % base)
+            continue
+        rel_name = base
+        if copy:
+            dst_name = _unique_target(folder, base)
+            dst = os.path.join(folder, dst_name)
+            try:
+                shutil.copy2(src, dst)
+            except (OSError, shutil.Error) as e:
+                skipped.append({"src": src, "why": "复制失败：%s" % e})
+                emit("跳过 %s（复制失败）" % base)
+                continue
+            rel_name = dst_name
+            if dst_name != base:
+                emit("同名已存在 → 存为 %s" % dst_name)
+        rec = {
+            "id": new_id(seq),
+            "file": "%s/%s" % (MATERIAL_DIR, rel_name),
+            "name": rel_name,
+            "srcPath": "" if copy else os.path.abspath(src),
+            "type": kind_of(rel_name),
+            "addedAt": datetime.datetime.now().isoformat(timespec="seconds"),
+        }
+        rec.update(meta)
+        if note:
+            rec["note"] = note
+        rec.setdefault("tags", [])
+        key = (rec["file"], rec.get("hash", ""))
+        if key in known:
+            skipped.append({"src": src, "why": "清单里已有同名同 hash 记录"})
+            continue
+        known.add(key)
+        if rec.get("hash"):
+            known_hash.add(rec["hash"])
+        mats.append(rec)
+        added.append(rec)
+        seq += 1
+        size_mb = rec.get("size", 0) / 1048576.0
+        warn = "  ⚠ 体积较大" if size_mb > BIG_FILE_MB else ""
+        emit("已投放 %s（%s，%s）%s"
+             % (rec["name"], rec["type"], _human(rec.get("size", 0)), warn))
+
+    save_skeleton(project_dir, sk)
+    return added, skipped, log
+
+
+def rescan(project_dir):
+    """磁盘→清单的自愈重扫：按相对路径合并，保留原 id 与人工字段。"""
+    project_dir = os.path.normpath(project_dir)
+    folder = os.path.join(project_dir, MATERIAL_DIR)
+    sk = load_skeleton(project_dir) or {"schema": SCHEMA, "project": {
+        "name": os.path.basename(project_dir), "materials": []}}
+    mats = sk["project"].setdefault("materials", [])
+    by_file = {m.get("file"): m for m in mats}
+    on_disk = []
+    if os.path.isdir(folder):
+        for fn in sorted(os.listdir(folder)):
+            if fn.startswith("."):
+                continue
+            fp = os.path.join(folder, fn)
+            if os.path.isfile(fp):
+                on_disk.append("%s/%s" % (MATERIAL_DIR, fn))
+    added = removed = 0
+    seq = len(mats) + 1
+    for rel in on_disk:
+        if rel in by_file:
+            continue
+        fp = os.path.join(project_dir, rel.replace("/", os.sep))
+        try:
+            meta = meta_of(fp)
+        except OSError:
+            continue
+        rec = {"id": new_id(seq), "file": rel, "name": os.path.basename(rel),
+               "type": kind_of(rel), "srcPath": "",
+               "addedAt": datetime.datetime.now().isoformat(timespec="seconds"),
+               "tags": [], "note": ""}
+        rec.update(meta)
+        mats.append(rec)
+        by_file[rel] = rec
+        seq += 1
+        added += 1
+    keep = []
+    for m in mats:
+        fp = os.path.join(project_dir, str(m.get("file", "")).replace("/", os.sep))
+        if m.get("file") and not os.path.isfile(fp):
+            removed += 1
+            continue
+        keep.append(m)
+    sk["project"]["materials"] = keep
+    save_skeleton(project_dir, sk)
+    return added, removed, sk
+
+
+# ── 命令行入口（agent 直接调用；输出可用 --json 解析）──────────────────────
+def _cli(argv):
+    import argparse
+    ap = argparse.ArgumentParser(
+        prog="project_core",
+        description="项目骨架 / 素材投放（agent 与工具共用同一套实现）")
+    ap.add_argument("--root", help="样本库根目录（登记为 SAMPLES_ROOT）")
+    ap.add_argument("--name", help="实验名；不带日期戳，重开自动加序号")
+    ap.add_argument("--project", help="直接指定项目目录（建骨架或投素材都可用）")
+    ap.add_argument("--platform", default="", help="平台名（即梦 / 小云雀 / updream）")
+    ap.add_argument("--add", nargs="+", metavar="PATH",
+                    help="投放素材（文件或文件夹，可多个）")
+    ap.add_argument("--reference", action="store_true",
+                    help="只登记原路径不复制（默认复制进 <项目>/素材/）")
+    ap.add_argument("--note", default="", help="给这批素材记一句备注")
+    ap.add_argument("--rescan", action="store_true", help="按磁盘重扫、自愈清单")
+    ap.add_argument("--no-register", action="store_true",
+                    help="不把 --root 写进 references/paths.local.md（自检用）")
+    ap.add_argument("--show", action="store_true", help="打印当前骨架摘要")
+    ap.add_argument("--json", action="store_true", help="以 JSON 输出结果")
+    a = ap.parse_args(argv)
+
+    out = {"ok": True, "actions": []}
+    root = detect_root(a.root)
+
+    # 1) 建骨架
+    if a.project or a.name:
+        if not root and not a.project:
+            out.update(ok=False, error="还没指定样本库根目录",
+                       ask=ASK_PLACE,
+                       hint='先问用户，再跑：--root "<样本库根>" --name "<实验名>"')
+            print(json.dumps(out, ensure_ascii=False, indent=2) if a.json
+                  else "[骨架] 还没指定根目录。先问用户：%s" % ASK_PLACE)
+            return 1
+        name = a.name or os.path.basename(os.path.normpath(a.project))
+        if root and not a.project and name_conflict(root, name):   # 同主题重开 → 加序号
+            new = next_project_name(root, name)
+            out["renamed_from"] = name
+            name = new
+        pdir = os.path.normpath(a.project) if a.project else os.path.join(root, name)
+        # 只有显式给了 --root 才改写 references/paths.local.md；单给 --project 时只建骨架，
+        # 不动用户已配置好的本机取值。
+        pdir, sk, log = build_skeleton(root or os.path.dirname(pdir), name,
+                                       platform=a.platform, project_dir=pdir,
+                                       register=bool(a.root) and not a.no_register)
+        out["actions"].append({"build_skeleton": pdir, "log": log})
+        if not a.json:
+            for l in log:
+                print("[骨架]", l)
+
+    # 2) 投素材
+    if a.add:
+        if not a.project:
+            out.update(ok=False, error="--add 需要同时给 --project <项目目录>")
+            print(json.dumps(out, ensure_ascii=False, indent=2) if a.json
+                  else "[素材] --add 必须配 --project")
+            return 2
+        pdir = os.path.normpath(a.project)
+        if not os.path.isdir(pdir):
+            os.makedirs(pdir, exist_ok=True)
+            build_skeleton(os.path.dirname(pdir), os.path.basename(pdir),
+                           project_dir=pdir, register=bool(a.root))
+        added, skipped, log = add_materials(pdir, a.add, copy=not a.reference,
+                                            note=a.note)
+        out["actions"].append({"add_materials": pdir,
+                               "added": len(added), "skipped": len(skipped),
+                               "files": [m["file"] for m in added],
+                               "why_skipped": skipped})
+        if not a.json:
+            for l in log:
+                print("[素材]", l)
+            for s in skipped:
+                print("[素材] 跳过 %s：%s" % (os.path.basename(s["src"]), s["why"]))
+
+    # 3) 重扫
+    if a.rescan:
+        if not a.project:
+            out.update(ok=False, error="--rescan 需要 --project")
+            return 2
+        ad, rm, sk = rescan(os.path.normpath(a.project))
+        out["actions"].append({"rescan": a.project, "added": ad, "removed": rm})
+        if not a.json:
+            print("[重扫] 补录 %d，剔除 %d" % (ad, rm))
+
+    # 4) 摘要
+    target = a.project or (os.path.join(root, a.name) if (root and a.name) else None)
+    if a.show or (not a.json and target and os.path.isdir(target)):
+        sk = load_skeleton(target) if target else None
+        if sk:
+            mats = sk["project"].get("materials", [])
+            out["skeleton"] = {"dir": target, "name": sk["project"].get("name"),
+                               "counts": count_kinds(mats), "total": len(mats)}
+            if not a.json:
+                c = count_kinds(mats)
+                print("[骨架] %s：素材 %d（图 %d / 视频 %d / 音频 %d / 文本 %d / 其它 %d）"
+                      % (target, len(mats), c["image"], c["video"], c["audio"],
+                         c["text"], c["other"]))
+    if a.json:
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0 if out.get("ok") else 1
+
+
+if __name__ == "__main__":
+    sys.exit(_cli(sys.argv[1:]))
