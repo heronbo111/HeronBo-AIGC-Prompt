@@ -143,6 +143,11 @@ def _scan_project(pdir):
             out["framework"] = json.load(open(fw, encoding="utf-8"))
         except (ValueError, OSError):
             out["framework"] = {}
+    try:                      # 项目创建时间（Windows 上 st_ctime 就是创建时间）
+        out["createdAt"] = datetime.datetime.fromtimestamp(
+            os.stat(pdir).st_ctime).strftime("%m-%d %H:%M")
+    except OSError:
+        out["createdAt"] = ""
     for name in ("素材", "文案", "成片", "废片", "评价", "备注", "即梦上传", "废片原因"):
         d = os.path.join(pdir, name)
         items = []

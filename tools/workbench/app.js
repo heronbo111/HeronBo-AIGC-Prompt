@@ -136,6 +136,9 @@ function renderFlow() {
   const who = (c.i === 1 && S.agent && S.agent.label) ? `（用 ${esc(S.agent.label)}）` : "";
   $("nextText").innerHTML = `<b>${esc(STEPS[cur].n)}</b>：`
     + (cur === auto ? esc(c.why) + who : "你手动切到了这一步；点「回到自动」恢复按状态判断");
+  const prev = $("btnPrev"), next = $("btnNext");
+  if (prev) { prev.disabled = cur <= 0; prev.onclick = () => stepBy(-1); }
+  if (next) { next.disabled = cur >= STEPS.length - 1; next.onclick = () => stepBy(1); }
   const b = $("nextBtn");
   b.disabled = false;
   b.textContent = ["建框架归类", "出提示词", "复制提示词", "收成片", "去打分"][cur];
@@ -151,6 +154,48 @@ function renderFlow() {
 
 /* 当前阶段对应哪一栏 → 那一栏高亮（用户不用猜"现在该看哪儿"） */
 const STEP_COL = [1, 2, 2, 2, 3];
+function stepBy(d) {                 // 上一步 / 下一步（手动切换，可回退）
+  const cur = activeStep();
+  const t = Math.max(0, Math.min(STEPS.length - 1, cur + d));
+  S.manualStep = (t === currentStep().i) ? null : t;    // 回到自动判定时清掉手动标记
+  renderFlow();
+}
+
+/* ── 主题：默认「原版」＝用户基准页那套；其余只换 CSS 变量 ───────────────── */
+const THEMES = [
+  ["原版", "#f4f6f9", "#2f6fed"], ["拾光", "#f6f4f1", "#e4622e"],
+  ["深色", "#1b2028", "#5b8def"], ["莫兰迪", "#faf8f5", "#7d8f76"],
+  ["护眼绿", "#f6faf4", "#2e7d32"], ["暗夜", "#15203a", "#4f8cff"],
+  ["暖夜", "#241f1c", "#e0913f"],
+];
+function applyTheme(name) {
+  document.body.dataset.theme = (name === "原版") ? "" : name;
+  try { localStorage.setItem("heronbo.theme", name); } catch (e) {}
+  const b = $("btnTheme");
+  if (b) { b.textContent = "主题 · " + name; b.title = "换主题（默认原版）"; }
+}
+function themeModal() {
+  const cur = (document.body.dataset.theme || "原版");
+  const rows = THEMES.map(([n, bg, ac]) =>
+    `<div class="arow ${n === cur ? "on" : ""}" data-t="${esc(n)}" style="cursor:pointer">
+       <i class="adot" style="background:${ac};box-shadow:0 0 0 3px ${ac}22"></i>
+       <span class="an">${esc(n)}</span>
+       <span class="aw">底色 <code>${bg}</code> · 强调 <code>${ac}</code></span>
+       <span class="ar">${n === cur ? "✓ 当前" : "点这里用"}</span></div>`).join("");
+  const m = document.createElement("div");
+  m.className = "modal";
+  m.innerHTML = `<div class="box"><h3>主题</h3>
+    <p class="meta">只换配色，不动布局。默认是「原版」（你给的那份基准页配色）。</p>
+    <div class="amod">${rows}</div>
+    <div style="text-align:right;margin-top:12px"><button class="btn" id="mclose">知道了</button></div></div>`;
+  document.body.appendChild(m);
+  m.querySelector("#mclose").onclick = () => m.remove();
+  m.onclick = (e) => { if (e.target === m) m.remove(); };
+  m.querySelectorAll(".arow").forEach((r) => {
+    r.onclick = () => { applyTheme(r.dataset.t); m.remove(); toast("主题已换成 " + r.dataset.t); };
+  });
+}
+
 function hintColumns() {
   const cur = activeStep();
   document.querySelectorAll(".col").forEach((el, i) => {
@@ -391,7 +436,10 @@ async function loadState(scrollTop) {
   renderScoreForm(); fillReview(rv.review);
   renderFlow(); renderPending(); renderAgent(st.agent);
   paintIcons();
-  $("buildStamp").textContent = `构建 ${st.build.stamp}`;
+  const bs = $("buildStamp");
+  const p = st.project;
+  bs.textContent = p ? `项目创建 ${p.createdAt || "（未知）"}` : `构建 ${st.build.stamp}`;
+  bs.title = `exe 构建 ${st.build.stamp}` + (p ? ` · 项目 ${p.name}` : "");
   if (!st.agent.ok) logLine("agent 通道不可用：" + st.agent.why, "bad");
 }
 
@@ -668,6 +716,7 @@ $("btnReload").onclick = async () => {
   toast("已重新载入上次评分");
 };
 $("btnHelp").onclick = () => helpModal();
+$("btnTheme").onclick = () => themeModal();
 $("btnClassic").onclick = async () => {
   const r = await api("/api/classic", {});
   if (!r.ok) return toast(r.error || "切不过来");
@@ -679,5 +728,6 @@ $("note").oninput = () => { S.review.备注 = $("note").value; };
 
 bindDrop();
 paintIcons();
+try { applyTheme(localStorage.getItem("heronbo.theme") || "原版"); } catch (e) { applyTheme("原版"); }
 loadState();
 logLine("工作台已就绪");
