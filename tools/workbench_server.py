@@ -1,0 +1,850 @@
+# -*- coding: utf-8 -*-
+"""工作台 · Web 前端服务端（Python 标准库 http.server，零第三方依赖）。
+
+为什么这么搭：界面用 HTML/CSS 写（好看、好改、agent 也能改），业务逻辑一行不动——
+本文件只做三件事：① 把 `project_core` / `score_core` / `agent_bridge` 的现成函数
+暴露成 JSON 接口；② 把 `workbench/` 里的静态页面发给浏览器；③ 用 SSE 把 agent 的
+实时进度推给页面。
+
+浏览器用系统自带 Edge 的 `--app=` 窗口打开（无地址栏、无工具栏，看起来就是个桌面窗口），
+所以不需要打包任何 UI 框架；页面与本地服务只走 127.0.0.1。
+
+接口一览（前端只认这些）：
+    GET  /                  静态页面
+    GET  /api/state         样本库 / 项目列表 / 当前项目 / 框架 / 状态 / 评分维度
+    POST /api/project       选项目
+    GET  /api/prompts       读提示词与即梦上传清单
+    POST /api/pick          弹系统文件/目录选择框（Tk，跑在专用线程里）
+    POST /api/intake        投放素材（路径列表）→ 自动判角色
+    POST /api/intake/go     建框架 + 归类
+    POST /api/upload        浏览器拖进来的文件（原样字节流）
+    POST /api/receive       收成片 / 废片
+    POST /api/feedback      写本轮反馈（可顺带叫 agent）
+    POST /api/agent         叫 agent 出提示词 / 按反馈重出
+    GET  /api/progress      SSE：阶段 + 已用 + 预计 + 日志行
+    GET  /api/review        读该项目的评分
+    POST /api/score         保存评分
+    POST /api/ping          页面心跳（页面关了服务自己退）
+"""
+import datetime
+import importlib.util
+import json
+import os
+import queue
+import re
+import shutil
+import socket
+import sys
+import threading
+import time
+import urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+BASE = getattr(sys, "_MEIPASS", HERE)
+WEB_DIR = os.path.join(BASE, "workbench")
+if not os.path.isdir(WEB_DIR):
+    WEB_DIR = os.path.join(HERE, "workbench")
+
+
+def _load_core(fname, modname):
+    for d in (BASE, HERE):
+        p = os.path.join(d, fname)
+        if os.path.isfile(p):
+            spec = importlib.util.spec_from_file_location(modname, p)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return mod
+    return None
+
+
+pcore = _load_core("project_core.py", "project_core")
+score = _load_core("score_core.py", "score_core")
+abridge = _load_core("agent_bridge.py", "agent_bridge")
+
+
+# ── 系统文件选择框（Tk 只能在同一个线程里用，所以单开一个线程常驻）──────────
+class Picker:
+    """专用线程里跑一个隐藏 Tk 根窗口，主线程通过队列请它弹对话框。"""
+
+    def __init__(self):
+        self.q = queue.Queue()
+        self.ready = threading.Event()
+        self.t = threading.Thread(target=self._loop, daemon=True)
+        self.t.start()
+        self.ready.wait(6)
+
+    def _loop(self):
+        import tkinter as tk
+        from tkinter import filedialog
+        try:
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+        except Exception:                                        # noqa: BLE001
+            return
+        self.root = root
+        self.ready.set()
+        while True:
+            job = self.q.get()
+            if job is None:
+                break
+            kind, reply = job
+            try:
+                if kind == "dir":
+                    out = filedialog.askdirectory(title="选文件夹")
+                    reply["paths"] = [out] if out else []
+                else:
+                    out = filedialog.askopenfilenames(title="选素材（可多选）")
+                    reply["paths"] = list(out)
+            except Exception as e:                               # noqa: BLE001
+                reply["error"] = str(e)
+            reply["event"].set()
+
+    def ask(self, kind="files", timeout=300):
+        if not self.ready.is_set():
+            return {"error": "本机弹不出文件选择框（Tk 不可用）"}
+        reply = {"event": threading.Event(), "paths": []}
+        self.q.put((kind, reply))
+        reply["event"].wait(timeout)
+        reply.pop("event")
+        return reply
+
+
+_picker = None
+
+
+def picker():
+    global _picker
+    if _picker is None:
+        _picker = Picker()
+    return _picker
+
+
+# ── 业务胶水：把 core 的现成函数拼成前端要的形状 ────────────────────────────
+def _proj_state(pdir):
+    st = {}
+    if pcore:
+        try:
+            st = pcore.read_state(pdir) or {}
+        except Exception:                                        # noqa: BLE001
+            st = {}
+    return st
+
+
+def _scan_project(pdir):
+    """一个项目目录 → {素材, 文案, 成片, 废片, 评价} 清单 + 框架.json 摘要。"""
+    out = {"dir": pdir, "name": os.path.basename(pdir.rstrip("\\/")), "folders": {},
+           "framework": {}, "state": _proj_state(pdir)}
+    fw = os.path.join(pdir, "框架.json")
+    if os.path.isfile(fw):
+        try:
+            out["framework"] = json.load(open(fw, encoding="utf-8"))
+        except (ValueError, OSError):
+            out["framework"] = {}
+    for name in ("素材", "文案", "成片", "废片", "评价", "备注", "即梦上传", "废片原因"):
+        d = os.path.join(pdir, name)
+        items = []
+        if os.path.isdir(d):
+            for fn in sorted(os.listdir(d)):
+                p = os.path.join(d, fn)
+                try:
+                    sz = os.path.getsize(p) if os.path.isfile(p) else 0
+                except OSError:
+                    sz = 0
+                items.append({"name": fn, "size": sz, "dir": os.path.isdir(p)})
+        out["folders"][name] = items
+    return out
+
+
+def _samples(root):
+    if not root or not os.path.isdir(root):
+        return []
+    rows = []
+    for fn in sorted(os.listdir(root)):
+        p = os.path.join(root, fn)
+        if not os.path.isdir(p) or fn.startswith("_"):
+            continue
+        try:
+            mats = len(os.listdir(os.path.join(p, "素材")))
+        except OSError:
+            mats = 0
+        gen = bad = 0
+        for d, tgt in (("成片", "gen"), ("废片", "bad")):
+            try:
+                n = len([x for x in os.listdir(os.path.join(p, d)) if not x.startswith(".")])
+            except OSError:
+                n = 0
+            if tgt == "gen":
+                gen = n
+            else:
+                bad = n
+        try:
+            rev = len([x for x in os.listdir(os.path.join(p, "评价")) if x.endswith(".json")])
+        except OSError:
+            rev = 0
+        rows.append({"name": fn, "dir": p, "materials": mats, "videos": gen,
+                     "rejects": bad, "reviews": rev})
+    return rows
+
+
+def detect_root():
+    if pcore:
+        for fn in ("detect_root", "detect_samples_root"):
+            f = getattr(pcore, fn, None)
+            if f:
+                try:
+                    r = f(None)
+                    if r:
+                        return r
+                except Exception:                                # noqa: BLE001
+                    pass
+                try:
+                    r = f()
+                    if r:
+                        return r
+                except Exception:                                # noqa: BLE001
+                    pass
+    return ""
+
+
+def dims_payload():
+    d = {"dims": [], "forbid": [], "concl": ["可用", "可改", "作废"],
+         "forbid_default": "无", "forbid_on": "有"}
+    if score:
+        try:
+            d["dims"] = [{"key": k, "options": list(o), "hint": s}
+                         for k, o, s in score.DIMS]
+        except Exception:                                        # noqa: BLE001
+            pass
+        try:
+            d["forbid"] = [k for k, _s in score.FORBID]
+        except Exception:                                        # noqa: BLE001
+            pass
+    return d
+
+
+def build_info():
+    src = sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__)
+    try:
+        stamp = datetime.datetime.fromtimestamp(os.path.getmtime(src)).strftime("%m-%d %H:%M")
+    except OSError:
+        stamp = "?"
+    return {"path": src, "stamp": stamp, "frozen": bool(getattr(sys, "frozen", False))}
+
+
+def prompts_payload(pdir):
+    """③栏读的东西：提示词正文 + 即梦上传清单 + 状态里的阶段。
+
+    口径与 Tk 版 `wb_load_prompts` **完全一致**（同一份 框架.json、同一个 文案/）：
+    提示词在 `框架.json → project.prompts`（[{name,text}]），另外 `文案/` 里的
+    .txt/.md 也算提示词来源（agent 两种写法都用过）。
+    """
+    out = {"prompts": [], "uploads": [], "state": _proj_state(pdir)}
+    sk = None
+    if pcore:
+        try:
+            sk = pcore.load_skeleton(pdir)
+        except Exception:                                        # noqa: BLE001
+            sk = None
+    proj = ((sk or {}).get("project") or {}) if isinstance(sk, dict) else {}
+    for pr in (proj.get("prompts") or []):
+        if isinstance(pr, dict):
+            out["prompts"].append({"ver": pr.get("name") or "提示词",
+                                   "text": pr.get("text") or ""})
+        elif isinstance(pr, str):
+            out["prompts"].append({"ver": "提示词", "text": pr})
+    wenan = os.path.join(pdir, "文案")
+    if os.path.isdir(wenan):
+        for fn in sorted(os.listdir(wenan)):
+            if not fn.lower().endswith((".txt", ".md")):
+                continue
+            try:
+                body = open(os.path.join(wenan, fn), encoding="utf-8-sig").read().strip()
+            except OSError:
+                continue
+            out["prompts"].append({"ver": "文案/" + fn, "text": body})
+    up = os.path.join(pdir, "即梦上传")
+    if os.path.isdir(up):
+        for fn in sorted(os.listdir(up)):
+            p = os.path.join(up, fn)
+            if os.path.isfile(p):
+                try:
+                    out["uploads"].append({"name": fn, "size": os.path.getsize(p)})
+                except OSError:
+                    out["uploads"].append({"name": fn, "size": 0})
+    return out
+
+
+# ── agent 进度：把 stdout 实时转成阶段事件 ─────────────────────────────────
+STAGES = [("读技能 / 框架", 15), ("写提示词", 65), ("落即梦上传", 15), ("写回执", 5)]
+_PROG = {"job": 0, "stage": 0, "pct": 0, "lines": [], "done": False, "ok": None,
+         "text": "", "t0": 0, "eta": 180, "running": False}
+_PROG_LOCK = threading.Lock()
+
+
+def _hist_eta(pdir):
+    """按本项目历史耗时估剩余（中位数），没有历史就按 180 秒。"""
+    p = os.path.join(pdir, "_会话", "耗时.jsonl")
+    vals = []
+    if os.path.isfile(p):
+        for line in open(p, encoding="utf-8", errors="replace"):
+            try:
+                v = float(json.loads(line).get("seconds") or 0)
+            except (ValueError, TypeError):
+                v = 0
+            if 5 < v < 3600:
+                vals.append(v)
+    if not vals:
+        return 180.0, 0
+    vals.sort()
+    return vals[len(vals) // 2], len(vals)
+
+
+def _record_eta(pdir, seconds, ok):
+    d = os.path.join(pdir, "_会话")
+    try:
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "耗时.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps({"at": datetime.datetime.now().isoformat(timespec="seconds"),
+                                "seconds": round(seconds, 1), "ok": bool(ok)},
+                               ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def _stage_from_line(line, cur):
+    """把 agent 的一行输出映射到阶段。工具名/文件路径是最可靠的信号。"""
+    low = line.lower()
+    if "receipt" in low or "回执" in line:
+        return 3
+    if "即梦上传" in line:
+        return max(cur, 2)
+    if "框架.json" in line or "提示词" in line or "prompt" in low:
+        return max(cur, 1)
+    if "skill.md" in low or "读" in line and cur == 0:
+        return 0
+    return cur
+
+
+def start_agent(pdir, what, feedback=""):
+    """起一个 agent 任务（后台线程），进度写进 _PROG，页面用 SSE 读。"""
+    with _PROG_LOCK:
+        if _PROG["running"]:
+            return {"error": "已经有一个任务在跑"}
+        _PROG.update({"job": _PROG["job"] + 1, "stage": 0, "pct": 0, "lines": [],
+                      "done": False, "ok": None, "text": "", "t0": time.time(),
+                      "running": True})
+        eta, n = _hist_eta(pdir)
+        _PROG["eta"] = eta
+        _PROG["eta_n"] = n
+        job = _PROG["job"]
+    st = _proj_state(pdir)
+    skill_md = os.path.join(os.path.dirname(HERE), "SKILL.md")
+    sid = st.get("agentSession") or None
+    if what == "feedback":
+        todo = ("先读技能说明 %s 再动手（本机已装，直接读文件即可）。\n\n"
+                "用户在界面上给了第 %s 轮反馈：\n%s\n\n"
+                "请按反馈重出一版提示词：更新 %s\\文案\\ 下的稿子与 框架.json 的 prompts，"
+                "并把要上传的文件副本放进 即梦上传\\（含上传说明.txt）。"
+                "完成后跑 tools\\project_core.py --project \"%s\" --receipt \"改了什么\" "
+                "--todo-done 写回执。" % (skill_md, st.get("round", 1), feedback, pdir, pdir))
+    else:
+        todo = ("先读技能说明 %s 再动手（本机已装，直接读文件即可）。\n\n"
+                "用户点了「叫 agent 出提示词」。请扫描 %s\\ 下的 框架.json 与 素材/、文案/，"
+                "按 skill 规则出一版提示词，写回 框架.json 的 prompts 与 文案/，"
+                "并把要上传的文件副本按引用编号放进 即梦上传\\；"
+                "完成后跑 tools\\project_core.py --project \"%s\" --receipt \"改了什么\" "
+                "--todo-done 写回执。" % (skill_md, pdir, pdir))
+
+    def run():
+        t0 = time.time()
+        try:
+            res = abridge.ask(todo, session_id=sid, cwd=pdir, timeout=1800,
+                              permission_mode="bypassPermissions",
+                              on_line=lambda ln: _push_line(ln))
+        except Exception as e:                                   # noqa: BLE001
+            res = {"ok": False, "error": "起不来：%s" % e}
+        usec = time.time() - t0
+        _record_eta(pdir, usec, res.get("ok"))
+        try:
+            if res.get("session_id") and res["session_id"] != sid:
+                pcore.write_state(pdir, agentSession=res["session_id"])
+            if res.get("ok"):
+                pcore.push_receipt(pdir, res.get("text", ""), kind="出提示词")
+                pcore.mark_todos_done(pdir)
+                _push_line("✅ agent 回来了：" + (res.get("text") or "")[:400])
+            else:
+                _push_line("!! agent 没跑成：" + (res.get("error") or "")[:400])
+        except Exception as e:                                   # noqa: BLE001
+            _push_line("!! 回写失败：%s" % e)
+        with _PROG_LOCK:
+            _PROG.update({"done": True, "ok": bool(res.get("ok")), "running": False,
+                          "pct": 100 if res.get("ok") else _PROG["pct"],
+                          "text": res.get("text") or res.get("error") or "",
+                          "seconds": round(usec, 1)})
+    threading.Thread(target=run, daemon=True).start()
+    return {"job": job, "eta": _PROG["eta"], "eta_n": _PROG.get("eta_n", 0)}
+
+
+def _push_line(line):
+    line = (line or "").rstrip()
+    if not line:
+        return
+    with _PROG_LOCK:
+        _PROG["lines"].append(line)
+        if len(_PROG["lines"]) > 400:
+            del _PROG["lines"][:-400]
+        _PROG["stage"] = _stage_from_line(line, _PROG["stage"])
+        # 百分比 = max(已完成阶段的权重和, 按历史耗时推算的时间进度)，封顶 96%
+        # （不封 100：真正到 100 只发生在任务结束时，进度条才不会"卡在 100 还在等"）
+        acc = sum(w for i, (_n, w) in enumerate(STAGES) if i < _PROG["stage"])
+        by_time = 0
+        if _PROG["t0"]:
+            el = time.time() - _PROG["t0"]
+            by_time = int(el / max(1.0, _PROG["eta"]) * 100)
+        _PROG["pct"] = min(96, max(acc, by_time))
+
+
+def progress_snapshot(since=0):
+    with _PROG_LOCK:
+        el = time.time() - _PROG["t0"] if _PROG["t0"] else 0
+        d = {"job": _PROG["job"], "stage": _PROG["stage"],
+             "stageName": STAGES[min(_PROG["stage"], 3)][0],
+             "pct": _PROG["pct"], "elapsed": round(el), "eta": round(_PROG["eta"]),
+             "running": _PROG["running"], "done": _PROG["done"], "ok": _PROG["ok"],
+             "lines": _PROG["lines"][since:], "n": len(_PROG["lines"]),
+             "text": _PROG["text"]}
+        return d
+
+
+# ── HTTP ───────────────────────────────────────────────────────────────────
+class Handler(BaseHTTPRequestHandler):
+    server_version = "HeronBoWorkbench/1.0"
+    last_ping = time.time()
+    root = ""
+
+    def log_message(self, *a):                                   # 静默：别刷控制台
+        pass
+
+    # ---- 小工具 ----
+    def _json(self, obj, code=200):
+        body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _body(self):
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if not n:
+            return {}
+        raw = self.rfile.read(n)
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except ValueError:
+            return {}
+
+    def _proj(self, payload=None):
+        """当前项目目录：请求里带的优先，否则用服务端记着的。"""
+        if payload and payload.get("project"):
+            return payload["project"]
+        return read_proj()
+
+    def _set_proj(self, pdir):
+        write_proj(pdir)
+
+    # ---- 静态 ----
+    def do_GET(self):
+        path = urllib.parse.urlparse(self.path).path
+        if path == "/api/state":
+            return self._json(self.state())
+        if path == "/api/prompts":
+            return self._json(prompts_payload(self._proj()))
+        if path == "/api/review":
+            return self._json(self.read_review())
+        if path == "/api/progress":
+            return self.sse()
+        if path == "/api/agent/status":
+            return self._json(progress_snapshot())
+        if path.startswith("/api/upload/") and path.endswith("/open"):
+            return self._json({"skip": True})
+        if path == "/favicon.ico":
+            self.send_response(204)
+            self.end_headers()
+            return
+        # 静态文件
+        rel = "index.html" if path in ("/", "") else path.lstrip("/")
+        fp = os.path.normpath(os.path.join(WEB_DIR, rel))
+        if not fp.startswith(os.path.abspath(WEB_DIR)) or not os.path.isfile(fp):
+            self.send_error(404, "not found")
+            return
+        ctype = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
+                 ".js": "application/javascript; charset=utf-8",
+                 ".svg": "image/svg+xml", ".png": "image/png",
+                 ".woff2": "font/woff2"}.get(os.path.splitext(fp)[1], "application/octet-stream")
+        data = open(fp, "rb").read()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    # ---- POST ----
+    def do_POST(self):
+        path = urllib.parse.urlparse(self.path).path
+        if path == "/api/ping":
+            Handler.last_ping = time.time()
+            return self._json({"ok": True})
+        if path == "/api/project":
+            b = self._body()
+            d = b.get("dir") or ""
+            if d and os.path.isdir(d):
+                self._set_proj(d)
+                return self._json({"ok": True, "project": _scan_project(d)})
+            return self._json({"ok": False, "error": "目录不存在：%s" % d}, 400)
+        if path == "/api/pick":
+            b = self._body()
+            return self._json(picker().ask(b.get("kind") or "files"))
+        if path == "/api/intake":
+            return self._json(self.intake(self._body()))
+        if path == "/api/intake/go":
+            return self._json(self.intake_go(self._body()))
+        if path == "/api/upload":
+            return self._json(self.upload())
+        if path == "/api/receive":
+            return self._json(self.receive(self._body()))
+        if path == "/api/feedback":
+            return self._json(self.feedback(self._body()))
+        if path == "/api/agent":
+            b = self._body()
+            pdir = b.get("project") or self._proj()
+            if not pdir:
+                return self._json({"error": "先选项目"}, 400)
+            return self._json(start_agent(pdir, b.get("what") or "prompt",
+                                          b.get("feedback") or ""))
+        if path == "/api/score":
+            return self._json(self.save_review(self._body()))
+        self.send_error(404, "not found")
+
+    # ---- 各接口实现 ----
+    def state(self):
+        root = Handler.root or detect_root()
+        pdir = self._proj()
+        proj = _scan_project(pdir) if pdir and os.path.isdir(pdir) else None
+        d = dims_payload()
+        d.update({"root": root, "samples": _samples(root), "project": proj,
+                  "build": build_info(), "agent": self.agent_ok(),
+                  "theme": self.theme_name(), "stages": [n for n, _w in STAGES]})
+        return d
+
+    def agent_ok(self):
+        if not abridge:
+            return {"ok": False, "why": "缺 agent_bridge.py"}
+        try:
+            ok, why = abridge.available()
+            return {"ok": bool(ok), "why": why}
+        except Exception as e:                                   # noqa: BLE001
+            return {"ok": False, "why": str(e)}
+
+    def theme_name(self):
+        p = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
+                         "HeronBoScoreTool", "theme.txt")
+        try:
+            return open(p, encoding="utf-8").read().strip() or "浅色"
+        except OSError:
+            return "浅色"
+
+    def _pending(self):
+        return self.server.pending
+
+    def intake(self, b):
+        paths = b.get("paths") or []
+        pend = self._pending()
+        for p in paths:
+            p = os.path.normpath(p)
+            if p and (os.path.isfile(p) or os.path.isdir(p)) and p not in pend:
+                pend.append(p)
+        plan = None
+        if pcore and pend:
+            try:
+                plan = pcore.auto_plan(pend)
+            except Exception as e:                               # noqa: BLE001
+                return {"ok": False, "error": "规划失败：%s" % e, "pending": pend}
+        return {"ok": True, "pending": pend, "plan": plan}
+
+    def intake_go(self, b):
+        pend = self._pending()
+        if not (pcore and pend):
+            return {"ok": False, "error": "还没有待投放的素材"}
+        root = b.get("root") or Handler.root or detect_root()
+        if not root:
+            return {"ok": False, "error": "没有样本库根，请先选"}
+        try:
+            pdir, plan, _log = pcore.auto_build(
+                list(pend), root=root, name=b.get("name") or None,
+                platform=b.get("platform") or "",
+                on_log=lambda s: _push_line("[归类] " + str(s)))
+        except Exception as e:                                   # noqa: BLE001
+            return {"ok": False, "error": "建框架失败：%s" % e}
+        if pdir and os.path.isdir(pdir):
+            self._set_proj(pdir)
+            del pend[:]
+        return {"ok": bool(pdir), "project": _scan_project(pdir) if pdir else None,
+                "plan": {"final_name": (plan or {}).get("final_name"),
+                         "count": (plan or {}).get("count")}}
+
+    def upload(self):
+        """浏览器拖进来的文件：请求体就是文件字节，名字放 X-File-Name（URL 编码）。"""
+        name = urllib.parse.unquote(self.headers.get("X-File-Name") or "")
+        pdir = self._proj()
+        if not (name and pdir):
+            return {"ok": False, "error": "缺少文件名或项目"}
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        dest_dir = os.path.join(pdir, "素材")
+        os.makedirs(dest_dir, exist_ok=True)
+        target = os.path.join(dest_dir, os.path.basename(name))
+        base, ext = os.path.splitext(target)
+        i = 1
+        while os.path.exists(target):
+            target = "%s(%d)%s" % (base, i, ext)
+            i += 1
+        left = n
+        with open(target + ".part", "wb") as f:
+            while left > 0:
+                chunk = self.rfile.read(min(1 << 20, left))
+                if not chunk:
+                    break
+                f.write(chunk)
+                left -= len(chunk)
+        os.replace(target + ".part", target)
+        pend = self._pending()
+        if target not in pend:
+            pend.append(target)
+        return {"ok": True, "saved": target, "pending": pend}
+
+    def receive(self, b):
+        pdir = b.get("project") or self._proj()
+        paths = b.get("paths") or []
+        good = bool(b.get("good"))
+        if not (pcore and pdir and paths):
+            return {"ok": False, "error": "需要项目 + 至少一个文件"}
+        try:
+            placed, _ = pcore.accept_deliverables(
+                pdir, list(paths), verdict="good" if good else "bad",
+                note=b.get("note") or "", on_log=lambda s: _push_line("[接收] " + s))
+        except Exception as e:                                   # noqa: BLE001
+            return {"ok": False, "error": str(e)}
+        return {"ok": True, "placed": placed,
+                "project": _scan_project(pdir) if pdir else None}
+
+    def feedback(self, b):
+        pdir = b.get("project") or self._proj()
+        text = (b.get("text") or "").strip()
+        if not (pcore and pdir and text):
+            return {"ok": False, "error": "先选项目、写点反馈"}
+        try:
+            n = pcore.new_round(pdir, text)
+        except Exception as e:                                   # noqa: BLE001
+            return {"ok": False, "error": "写待办失败：%s" % e}
+        out = {"ok": True, "round": n}
+        if b.get("callAgent"):
+            out["agent"] = start_agent(pdir, "feedback", text)
+        return out
+
+    def read_review(self):
+        pdir = self._proj()
+        if not (pdir and os.path.isdir(os.path.join(pdir, "评价"))):
+            return {"review": None}
+        d = os.path.join(pdir, "评价")
+        js = sorted(x for x in os.listdir(d) if x.endswith(".json"))
+        if not js:
+            return {"review": None}
+        try:
+            return {"review": json.load(open(os.path.join(d, js[-1]), encoding="utf-8")),
+                    "file": js[-1]}
+        except (ValueError, OSError):
+            return {"review": None}
+
+    def save_review(self, b):
+        """保存评分：口径与 Tk 版**完全一致**（同一个 score_core.save，同一个 json 结构）。
+
+        score_core.save 要的是「样本库根 + 样本名」而不是项目目录；payload 是
+        {六维:{}, 违禁项:{}, 整体评分, 结论, 备注}。
+        """
+        pdir = b.get("project") or self._proj()
+        rev = b.get("review") or {}
+        video = b.get("video") or ""
+        root = Handler.root or detect_root()
+        if not (score and pdir and root and rev):
+            return {"ok": False, "error": "缺 score_core / 项目 / 样本库根 / 评分内容"}
+        sample = os.path.basename(pdir.rstrip("\\/"))
+        if video.startswith("（"):
+            video = ""
+        try:
+            p = score.save(root, sample, video, rev.get("六维") or {},
+                           rev.get("违禁项") or {}, rev.get("整体评分") or 4,
+                           rev.get("结论") or "可改", rev.get("备注") or "")
+        except Exception as e:                                   # noqa: BLE001
+            return {"ok": False, "error": str(e)}
+        return {"ok": True, "file": p}
+
+    def sse(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        since = 0
+        try:
+            while True:
+                snap = progress_snapshot(since)
+                since = snap["n"]
+                payload = json.dumps(snap, ensure_ascii=False)
+                self.wfile.write(("data: %s\n\n" % payload).encode("utf-8"))
+                self.wfile.flush()
+                Handler.last_ping = time.time()
+                if snap["done"] and not snap["running"]:
+                    time.sleep(0.6)
+                    self.wfile.write(b"data: {\"bye\": true}\n\n")
+                    self.wfile.flush()
+                    break
+                time.sleep(0.7)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+
+
+# ── 启动 ───────────────────────────────────────────────────────────────────
+def find_edge():
+    """找系统 Edge（WebView2 运行时就是它）。"""
+    import glob as _glob
+    cands = [r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+             r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"]
+    for c in cands:
+        if os.path.isfile(c):
+            return c
+    hits = _glob.glob(os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                                   "Microsoft", "Edge", "Application", "msedge.exe"))
+    return hits[0] if hits else None
+
+
+def serve(root="", port=0, host="127.0.0.1"):
+    Handler.root = root or ""
+    srv = ThreadingHTTPServer((host, port or 0), Handler)
+    srv.pending = []
+    srv.daemon_threads = True
+    return srv
+
+
+def wait_and_exit(srv, idle=25, total=None):
+    """页面关了（心跳停了）就自己退，别留个孤儿进程。"""
+    t0 = time.time()
+    while True:
+        time.sleep(2)
+        if time.time() - Handler.last_ping > idle and time.time() - t0 > 12:
+            break
+        if total and time.time() - t0 > total:
+            break
+    srv.shutdown()
+
+
+# ── 「上次打开的项目」记在小文件里，重启后还在同一个项目上 ──────────────────
+def _proj_file():
+    return os.path.join(os.environ.get("TEMP", "."), "heronbo_workbench.json")
+
+
+def read_proj():
+    try:
+        return json.load(open(_proj_file(), encoding="utf-8")).get("project") or ""
+    except (ValueError, OSError):
+        return ""
+
+
+def write_proj(pdir, port=None):
+    """记下当前项目（顺带记端口，便于排查：临时文件里一眼看到服务在哪个端口）。"""
+    try:
+        cur = {}
+        try:
+            cur = json.load(open(_proj_file(), encoding="utf-8")) or {}
+        except (ValueError, OSError):
+            cur = {}
+        cur["project"] = pdir
+        if port:
+            cur["port"] = int(port)
+        json.dump(cur, open(_proj_file(), "w", encoding="utf-8"))
+    except OSError:
+        pass
+
+
+def launch_web(root="", project="", hint="", port=0, wait=True):
+    """起服务 + 用 Edge 的 app 模式开一个「看起来像桌面程序」的窗口。
+
+    为什么用 `msedge --app=`：不用装 pywebview（零新依赖），窗口没有地址栏/标签栏，
+    又有完整的 HTML/CSS 能力；系统自带 Edge 就是 WebView2 的宿主。
+    窗口一关，页面的心跳停掉，服务自己退。
+    """
+    import subprocess
+    import webbrowser
+    if project and os.path.isdir(project):
+        write_proj(project)
+    elif hint:
+        r = root or detect_root()
+        for s in _samples(r):
+            if hint in s["name"]:
+                write_proj(s["dir"])
+                break
+    srv = serve(root=root or "")
+    url = "http://127.0.0.1:%d/" % srv.server_address[1]
+    write_proj(read_proj(), port=srv.server_address[1])
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    Handler.last_ping = time.time()
+    exe = find_edge()
+    proc = None
+    if exe:
+        prof = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
+                            "HeronBoScoreTool", "webprofile")
+        try:
+            os.makedirs(prof, exist_ok=True)
+        except OSError:
+            pass
+        try:
+            proc = subprocess.Popen(
+                [exe, "--app=" + url, "--user-data-dir=" + prof,
+                 "--window-size=1520,940", "--no-first-run",
+                 "--no-default-browser-check", "--disable-features=Translate,msEdgeSidebarV2",
+                 "--disable-session-crashed-bubble"],
+                **({"creationflags": 0x08000000} if os.name == "nt" else {}))
+        except OSError:
+            proc = None
+    if proc is None:                       # 没 Edge 就退到默认浏览器（至少能用）
+        try:
+            webbrowser.open(url)
+        except Exception:                                        # noqa: BLE001
+            pass
+    print("[工作台] %s" % url)
+    if wait:
+        wait_and_exit(srv)
+        try:
+            if proc is not None and proc.poll() is None:
+                proc.terminate()
+        except OSError:
+            pass
+    return srv, url
+
+
+if __name__ == "__main__":
+    s = serve()
+    print("http://127.0.0.1:%d/" % s.server_address[1])
+    try:
+        s.serve_forever()
+    except KeyboardInterrupt:
+        pass

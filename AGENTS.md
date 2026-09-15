@@ -25,7 +25,7 @@
 
 | agent | 文件范围 | 开始时间 |
 |---|---|---|
-| （空） | | |
+| ZCode | tools/workbench/、tools/workbench_server.py、score_gui.pyw 入口、score-tool.spec（界面换 HTML） | 2026-09-15 17:00 |
 
 ## 分工建议（减少撞车）
 

@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>HeronBo · AI 视频工作台</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<header>
+  <div class="brand">HeronBo · AI 视频工作台<small id="projName">未选项目</small></div>
+  <div class="spacer"></div>
+  <span class="build" id="buildStamp">—</span>
+  <button class="iconbtn" id="btnHelp">？怎么用</button>
+</header>
+
+<!-- 流程条：一眼知道走到哪、下一步谁动手 -->
+<div class="flowbar" id="flow"></div>
+<div class="nextbar">
+  <span class="k">下一步</span>
+  <div class="t" id="nextText">正在读项目…</div>
+  <button class="btn" id="nextBtn" disabled>执行</button>
+  <button class="btn ghost" id="btnClassic" title="旧 Tk 界面（排查问题时用）">经典界面</button>
+</div>
+
+<div class="work">
+
+  <section class="col">
+    <div class="colhead"><h2><span class="no">1</span>项目</h2>
+      <div class="acts">
+        <span class="meta" id="rootPath"></span>
+        <button class="btn ghost" id="btnRefresh">刷新</button></div></div>
+    <div class="colbody">
+      <div class="seclab">样本库（点一下切过去）</div>
+      <div id="sampleList" class="list"></div>
+      <div class="seclab">当前项目</div>
+      <div id="projCard" class="card"></div>
+    </div>
+  </section>
+
+  <section class="col">
+    <div class="colhead"><h2><span class="no">2</span>素材</h2>
+      <div class="acts"><button class="btn" id="btnIntakeGo">建框架归类</button></div></div>
+    <div class="colbody" id="col2">
+      <div class="dropzone" id="dz">
+        <b>把素材拖到这里</b>
+        图片 / 视频 / 音频 / 文本，整文件夹也行
+        <small></small>
+        <button class="btn ghost" id="btnPick">选择素材</button>
+        <button class="btn ghost" id="btnPickDir" style="margin-left:6px">选文件夹</button>
+      </div>
+      <div class="seclab" id="pendLab">待投放 · 角色识别</div>
+      <div id="pendList" class="list"></div>
+      <div class="seclab">已归类</div>
+      <div id="matList" class="list"></div>
+    </div>
+  </section>
+
+  <section class="col">
+    <div class="colhead"><h2><span class="no">3</span>分镜 / 提示词</h2>
+      <div class="acts">
+        <span class="meta" id="stageLab"></span>
+        <button class="btn ghost" id="btnLoadPrompts">读取</button>
+        <button class="btn" id="btnAsk">出提示词</button></div></div>
+    <div class="colbody">
+      <div class="prog" id="prog" hidden>
+        <div class="top"><span class="s" id="pstage">正在叫 agent…</span>
+          <span class="tm" id="ptime"></span></div>
+        <div class="bar"><i id="pfill"></i></div>
+        <div class="stages" id="pstages"></div>
+      </div>
+      <div class="seclab">提示词正文</div>
+      <div class="prompt" id="promptBox">（还没有提示词。先在②栏丢素材 → 建框架归类 → 点右上「出提示词」。）</div>
+      <div class="seclab">即梦上传清单（点「复制」会连素材名一起给你）</div>
+      <div id="upList" class="list"></div>
+      <div class="seclab">成片 / 废片</div>
+      <div class="rowline">
+        <button class="btn ghost" id="btnGood">收成片</button>
+        <button class="btn ghost danger" id="btnBad">收废片</button>
+        <input id="why" placeholder="废因（废片必填）">
+      </div>
+      <div class="seclab">本轮反馈（提交后 agent 接着干）</div>
+      <textarea id="fb" rows="3" placeholder="哪里好、哪里不对？写清现象，agent 好照着改"></textarea>
+      <div class="rowline">
+        <span class="meta">写完点右边 →</span>
+        <button class="btn" id="btnSubmitFb">提交反馈 · 再出一版</button>
+      </div>
+      <div class="seclab">执行记录</div>
+      <div class="log" id="log"></div>
+    </div>
+  </section>
+
+  <section class="col">
+    <div class="colhead"><h2><span class="no">4</span>评分</h2>
+      <div class="acts"><button class="btn" id="btnSave">保存评分</button>
+        <button class="btn ghost" id="btnReload">重新载入</button></div></div>
+    <div class="colbody" id="scoreCol">
+      <div class="fld"><label>成片</label><select id="videoSel"></select></div>
+      <div id="dimBox"></div>
+      <div class="fld"><label>违禁项</label><div id="forbidBox" class="rowline"></div></div>
+      <div class="fld"><label>整体评分</label><span class="stars" id="stars"></span></div>
+      <div class="fld"><label>结论</label><span class="seg" id="conclBox"></span></div>
+      <div class="fld" style="align-items:start"><label>备注</label>
+        <textarea id="note" rows="3" placeholder="哪里好、哪里不对？"></textarea></div>
+      <div class="note ok" id="saveHint">保存后进 <code>评价/</code>，下一版提示词按它改。</div>
+    </div>
+  </section>
+
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
