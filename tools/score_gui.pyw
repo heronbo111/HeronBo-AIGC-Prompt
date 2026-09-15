@@ -387,26 +387,36 @@ def save_theme_name(name):
 LEFT_MIN, LEFT_MAX = 210, 560          # 样本栏可拖范围
 
 
-def load_left_width():
-    """样本栏宽度（记忆到 layout.txt，与 theme.txt 同目录）。"""
+COL_DEFAULTS = (190, 260, 440, 570)          # ①项目 ②素材 ③提示词 ④评分
+COL_LIMITS = ((150, 400), (220, 520), (300, 900), (430, 780))
+
+
+def load_col_widths():
+    """四栏宽度（记忆到 layout.txt）。兼容旧版只存一个数字的样本栏宽度。"""
     p = _theme_file()
     if p:
         lp = os.path.join(os.path.dirname(p), "layout.txt")
         try:
             if os.path.isfile(lp):
-                return max(LEFT_MIN, min(LEFT_MAX, int(open(lp, encoding="utf-8").read().strip())))
+                raw = open(lp, encoding="utf-8").read().strip()
+                parts = [int(x) for x in raw.replace(" ", "").split(",") if x]
+                if len(parts) == 1:                      # 旧格式：就是样本栏宽度
+                    return (max(160, min(420, parts[0])),) + COL_DEFAULTS[1:]
+                if len(parts) >= 4:
+                    return tuple(max(COL_LIMITS[i][0], min(COL_LIMITS[i][1], parts[i]))
+                                 for i in range(4))
         except (OSError, ValueError):
             pass
-    return 300
+    return COL_DEFAULTS
 
 
-def save_left_width(w):
+def save_col_widths(widths):
     p = _theme_file()
-    if not p:
+    if not p or not widths:
         return
     try:
         open(os.path.join(os.path.dirname(p), "layout.txt"), "w",
-             encoding="utf-8").write(str(int(w)))
+             encoding="utf-8").write(",".join(str(int(w)) for w in widths))
     except OSError:
         pass
 
@@ -979,443 +989,6 @@ def app_root_hint():
     return ""
 
 
-class MaterialPanel(tk.Toplevel):
-    """素材投放箱：建项目骨架 + 把用户给的素材归类进 <项目>/素材/。
-
-    对应 rules.md 第 264-272 条：骨架 <SAMPLES_ROOT>/<实验名>/{文案,素材,成片,废片,评价,备注}/。
-    与命令行 `python tools/project_core.py` 共用同一份实现（project_core.py）。
-    """
-
-    def __init__(self, master, app, project=None):
-        super().__init__(master)
-        self.app = app
-        self.theme = app.theme
-        t = self.theme
-        self.title("素材投放 · 建骨架")
-        self.configure(bg=t["bg"])
-        self.geometry("900x800")
-        self.minsize(760, 620)
-        self.transient(master)
-        self._pending = []                    # 待投放的文件/文件夹
-        self._build()
-        self.apply_theme(t)
-        if project:
-            self.proj_var.set(project)
-
-    # ---- 界面 -------------------------------------------------------------
-    def _row(self, parent):
-        f = tk.Frame(parent, bg=self.theme["surface"])
-        f.pack(fill="x", padx=16, pady=(0, 8))
-        return f
-
-    def _build(self):
-        t = self.theme
-        self._labels = []                       # 必须在建控件之前就绪（_lab 会往里塞）
-        head = tk.Frame(self, bg=t["header"])
-        self._frames = [(head, "header")]
-        head.pack(fill="x")
-        self._lab(head, "素材投放 · 建骨架", "title").pack(anchor="w", padx=18, pady=(12, 0))
-        self._lab(head, "选位置 → 建骨架 → 把素材拖进来（或用下面两个按钮）→ 自动归类并写清单",
-                  "small", "muted").pack(anchor="w", padx=18, pady=(2, 12))
-
-        body = tk.Frame(self, bg=t["surface"])
-        body.pack(fill="both", expand=True, padx=14, pady=12)
-        self._frames.append((body, "surface"))
-
-        # ① 位置与项目名
-        r1 = self._row(body)
-        self._lab(r1, "样本库根", "small", "muted").pack(side="left")
-        self.root_var = tk.StringVar(value=(app_root_hint()))
-        tk.Entry(r1, textvariable=self.root_var, font=F("small"), width=44,
-                 relief="flat", highlightthickness=1).pack(side="left", padx=6)
-        Pill(r1, "换位置", self._pick_root, theme=t, font=F("small"), kind="ghost",
-             padx=10, pady=5, radius=8, bg_key="surface", depth=2).pack(side="left")
-
-        r2 = self._row(body)
-        self._lab(r2, "项目名", "small", "muted").pack(side="left", padx=(0, 10))
-        self.name_var = tk.StringVar()
-        tk.Entry(r2, textvariable=self.name_var, font=F("small"), width=28,
-                 relief="flat", highlightthickness=1).pack(side="left")
-        self._lab(r2, "（不带日期戳；重名会自动加序号）", "small", "muted").pack(side="left", padx=8)
-        Pill(r2, "建骨架", self._make_skeleton, theme=t, font=F("small"), kind="primary",
-             padx=14, pady=6, radius=9, bg_key="surface", depth=3).pack(side="right")
-
-        r3 = self._row(body)
-        self._lab(r3, "项目目录", "small", "muted").pack(side="left", padx=(0, 10))
-        self.proj_var = tk.StringVar()
-        tk.Entry(r3, textvariable=self.proj_var, font=F("small"),
-                 relief="flat", highlightthickness=1).pack(side="left", fill="x",
-                                                          expand=True)
-
-        # ② 素材
-        self._lab(body, "待投放素材", "h2").pack(anchor="w", pady=(10, 4))
-        lrow = tk.Frame(body, bg=t["surface"])
-        lrow.pack(fill="x")                       # 不抢高度，给下面的「执行记录」留位置
-        self.lb = tk.Listbox(lrow, height=6, activestyle="none", bd=0, highlightthickness=1,
-                             font=F("small"), exportselection=False)
-        self.lb.pack(side="left", fill="x", expand=True)
-        sb = tk.Scrollbar(lrow, orient="vertical", command=self.lb.yview, width=10,
-                          bd=0, relief="flat", elementborderwidth=0)
-        sb.pack(side="right", fill="y", padx=(3, 0))
-        self.lb.config(yscrollcommand=sb.set)
-        self._sb = sb
-
-        r4 = self._row(body)
-        Pill(r4, "选文件", lambda: self._pick(False), theme=t, font=F("small"),
-             kind="ghost", padx=12, pady=6, radius=8, bg_key="surface", depth=2).pack(side="left")
-        Pill(r4, "选文件夹", lambda: self._pick(True), theme=t, font=F("small"),
-             kind="ghost", padx=12, pady=6, radius=8, bg_key="surface", depth=2).pack(
-                 side="left", padx=6)
-        Pill(r4, "清空", self._clear, theme=t, font=F("small"), kind="ghost",
-             padx=12, pady=6, radius=8, bg_key="surface", depth=2).pack(side="left")
-        self._lab(r4, "备注", "small", "muted").pack(side="left", padx=(16, 4))
-        self.note_var = tk.StringVar()
-        tk.Entry(r4, textvariable=self.note_var, font=F("small"), width=14,
-                 relief="flat", highlightthickness=1).pack(side="left")
-        Pill(r4, "开始投放", self._drop, theme=t, font=F("small"), kind="primary",
-             padx=16, pady=7, radius=9, bg_key="surface", depth=3).pack(side="right")
-
-        # ③ 提示词（agent 写回骨架的 prompts + 文案/ 里的稿子）—— 用户直接在这里复制
-        self._lab(body, "提示词（agent 写回后在这里复制）", "h2").pack(anchor="w", pady=(10, 4))
-        prow = tk.Frame(body, bg=t["surface"])
-        prow.pack(fill="both", expand=True)
-        self.prompt = tk.Text(prow, height=10, font=F("small"), bd=0, relief="flat",
-                              highlightthickness=1, wrap="word")
-        self.prompt.pack(side="left", fill="both", expand=True)
-        psb = tk.Scrollbar(prow, orient="vertical", command=self.prompt.yview, width=10,
-                           bd=0, relief="flat", elementborderwidth=0)
-        psb.pack(side="right", fill="y", padx=(3, 0))
-        self.prompt.config(yscrollcommand=psb.set)
-        self._psb = psb
-        self.prompt.configure(state="disabled")
-
-        rp = self._row(body)
-        Pill(rp, "读取提示词", self.load_prompts, theme=t, font=F("small"), kind="ghost",
-             padx=12, pady=6, radius=8, bg_key="surface", depth=2).pack(side="left")
-        Pill(rp, "复制全部", self.copy_prompts, theme=t, font=F("small"), kind="primary",
-             padx=14, pady=6, radius=8, bg_key="surface", depth=3).pack(side="left", padx=6)
-        self.state_lab = self._lab(rp, "—", "small", "muted")
-        self.state_lab.pack(side="right")
-
-        # ④ 成片 / 废片接收（接收完自动弹反馈窗口）
-        self._lab(body, "成片 / 废片接收", "h2").pack(anchor="w", pady=(10, 4))
-        rc = self._row(body)
-        Pill(rc, "接收成片（可用）", lambda: self.receive(True), theme=t, font=F("small"),
-             kind="primary", padx=13, pady=6, radius=8, bg_key="surface", depth=3).pack(side="left")
-        Pill(rc, "接收废片", lambda: self.receive(False), theme=t, font=F("small"),
-             kind="danger", padx=13, pady=6, radius=8, bg_key="surface", depth=3).pack(
-                 side="left", padx=6)
-        self._lab(rc, "废因", "small", "muted").pack(side="left", padx=(14, 4))
-        self.why_var = tk.StringVar()
-        tk.Entry(rc, textvariable=self.why_var, font=F("small"), width=16,
-                 relief="flat", highlightthickness=1).pack(side="left")
-
-        # ⑤ 反馈 → 交给 agent
-        self._lab(body, "本轮反馈（提交后 agent 会接着干）", "h2").pack(anchor="w", pady=(10, 4))
-        self.fb = tk.Text(body, height=5, font=F("small"), bd=0, relief="flat",
-                          highlightthickness=1, wrap="word")
-        self.fb.pack(fill="x")
-        rf = self._row(body)
-        Pill(rf, "提交反馈 · 让 agent 再出一版", lambda: self.submit_feedback(True),
-             theme=t, font=F("small"), kind="primary", padx=16, pady=8, radius=9,
-             bg_key="surface", depth=4).pack(side="left")
-        Pill(rf, "只记待办（不叫 agent）", lambda: self.submit_feedback(False),
-             theme=t, font=F("small"), kind="ghost", padx=12, pady=8, radius=9,
-             bg_key="surface", depth=2).pack(side="left", padx=6)
-        Pill(rf, "叫 agent 出提示词", lambda: self.ask_agent("prompt"),
-             theme=t, font=F("small"), kind="ghost", padx=12, pady=8, radius=9,
-             bg_key="surface", depth=2).pack(side="left")
-
-        # ⑥ 日志
-        self._lab(body, "执行记录", "h2").pack(anchor="w", pady=(10, 4))
-        self.log = tk.Text(body, height=9, font=F("small"), bd=0, relief="flat",
-                           highlightthickness=1, wrap="word")
-        self.log.pack(fill="both", expand=True)
-        self.log.configure(state="disabled")
-
-    def _lab(self, parent, text, font="body", color="text"):
-        w = tk.Label(parent, text=text, font=F(font), anchor="w", justify="left")
-        self._labels.append((w, color, parent))
-        return w
-
-    # ---- 主题 -------------------------------------------------------------
-    def apply_theme(self, theme):
-        self.theme = theme
-        t = theme
-        for w, key in getattr(self, "_frames", []):
-            try:
-                w.config(bg=t[key])
-            except tk.TclError:
-                pass
-        for w, color, parent in getattr(self, "_labels", []):
-            key = "header"
-            for pw, pk in getattr(self, "_frames", []):
-                if pw is parent:
-                    key = pk
-                    break
-            try:
-                w.config(bg=t[key], fg=t[color])
-            except tk.TclError:
-                pass
-        self.configure(bg=t["bg"])
-        for w in self.winfo_children():
-            self._recolor_tree(w)
-        try:
-            self.lb.config(bg=t["surface"], fg=t["text"],
-                           selectbackground=t["accent_soft"], selectforeground=t["text"])
-            self._sb.config(bg=t["surface"], troughcolor=t["bg"], relief="flat")
-            self.log.config(bg=t["surface"], fg=t["text"], insertbackground=t["accent"])
-            self.prompt.config(bg=t["surface"], fg=t["text"], insertbackground=t["accent"],
-                               highlightbackground=t["border"])
-            self.fb.config(bg=t["surface"], fg=t["text"], insertbackground=t["accent"],
-                           highlightbackground=t["border"], highlightcolor=t["accent"])
-            self._psb.config(bg=t["surface"], troughcolor=t["bg"], relief="flat")
-        except tk.TclError:
-            pass
-
-    def _recolor_tree(self, w):
-        """把 Entry / Frame 这类没登记进 _frames 的也刷一遍底色。"""
-        t = self.theme
-        try:
-            if isinstance(w, tk.Entry):
-                w.config(bg=t["surface"], fg=t["text"], insertbackground=t["accent"],
-                         highlightbackground=t["border"], highlightcolor=t["accent"],
-                         disabledbackground=t["surface"])
-            elif isinstance(w, tk.Frame) and w is not self:
-                w.config(bg=self._bg_of(w))
-        except tk.TclError:
-            pass
-        for c in w.winfo_children():
-            self._recolor_tree(c)
-
-    def _bg_of(self, w):
-        t = self.theme
-        try:
-            parent = w.master
-            for pw, pk in getattr(self, "_frames", []):
-                if pw is parent:
-                    return t[pk]
-        except Exception:                                     # noqa: BLE001
-            pass
-        return t["surface"]
-
-    # ---- 动作 -------------------------------------------------------------
-    def _log(self, msg):
-        self.log.configure(state="normal")
-        self.log.insert("end", msg + "\n")
-        self.log.see("end")
-        self.log.configure(state="disabled")
-
-    def _pick_root(self):
-        d = filedialog.askdirectory(title="选样本库根目录")
-        if d:
-            self.root_var.set(os.path.normpath(d))
-
-    def _pick(self, folder):
-        if folder:
-            p = filedialog.askdirectory(title="选要投放的文件夹")
-            if p:
-                self._pending.append(os.path.normpath(p))
-        else:
-            ps = filedialog.askopenfilenames(title="选要投放的文件")
-            for p in ps or ():
-                self._pending.append(os.path.normpath(p))
-        self._refresh_pending()
-
-    def _clear(self):
-        self._pending = []
-        self._refresh_pending()
-
-    def _refresh_pending(self):
-        self.lb.delete(0, "end")
-        for p in self._pending:
-            n = len(pcore.collect_files([p])) if pcore else 0
-            self.lb.insert("end", "%s  （%d 个文件）" % (p, n))
-
-    def _make_skeleton(self):
-        if not pcore:
-            self._log("!! 找不到 project_core.py，功能不可用")
-            return
-        root = self.root_var.get().strip()
-        name = self.name_var.get().strip()
-        if not root or not name:
-            self._log("请先填「样本库根」和「项目名」")
-            return
-        try:
-            final = pcore.next_project_name(root, name)
-            if final != name:
-                self._log("同名已存在 → 这次用 %s" % final)
-            pdir, sk, log = pcore.build_skeleton(root, final, project_dir=None)
-            for l in log:
-                self._log("· " + l)
-            self.proj_var.set(pdir)
-            self._log("✅ 骨架就绪：%s" % pdir)
-            if self.app:
-                self.app.reload()                     # 评分工具那边同步看到新项目
-        except Exception as e:                        # noqa: BLE001
-            self._log("!! 建骨架失败：%s" % e)
-
-    def _drop(self):
-        if not pcore:
-            self._log("!! 找不到 project_core.py，功能不可用")
-            return
-        proj = self.proj_var.get().strip()
-        if not proj:
-            self._log("请先建骨架，或直接填「项目目录」")
-            return
-        if not self._pending:
-            self._log("还没有选任何素材")
-            return
-        try:
-            added, skipped, log = pcore.add_materials(
-                proj, list(self._pending), copy=True, note=self.note_var.get().strip(),
-                on_log=self._log)
-            self._log("---- 完成：投放 %d，跳过 %d ----" % (len(added), len(skipped)))
-            self._pending = []
-            self._refresh_pending()
-        except Exception as e:                        # noqa: BLE001
-            self._log("!! 投放失败：%s" % e)
-
-    # ---- 提示词 -----------------------------------------------------------
-    def load_prompts(self):
-        proj = self.proj_var.get().strip()
-        if not (pcore and proj) or not os.path.isdir(proj):
-            self._log("先建骨架 / 填好项目目录")
-            return
-        parts = []
-        sk = pcore.load_skeleton(proj)
-        if sk:
-            for pr in sk["project"].get("prompts", []):
-                parts.append("【%s】\n%s" % (pr.get("name", "提示词"), pr.get("text", "")))
-        wenan = os.path.join(proj, "文案")
-        if os.path.isdir(wenan):
-            for fn in sorted(os.listdir(wenan)):
-                if fn.lower().endswith((".txt", ".md")):
-                    try:
-                        body = open(os.path.join(wenan, fn), encoding="utf-8-sig").read()
-                    except OSError:
-                        continue
-                    parts.append("── 文案/%s ──\n%s" % (fn, body.strip()))
-        txt = "\n\n".join(parts) if parts else "（还没有提示词。等 agent 写回 骨架.json 的 prompts，或放进 文案/）"
-        self.prompt.configure(state="normal")
-        self.prompt.delete("1.0", "end")
-        self.prompt.insert("1.0", txt)
-        self.prompt.configure(state="disabled")
-        self.refresh_state()
-        self._log("已读取提示词（%d 段）" % len(parts))
-
-    def copy_prompts(self):
-        txt = self.prompt.get("1.0", "end").strip()
-        if not txt:
-            self._log("没有可复制的内容")
-            return
-        try:
-            self.clipboard_clear()
-            self.clipboard_append(txt)
-            self._log("已复制到剪贴板（%d 字），去即梦粘贴即可" % len(txt))
-        except tk.TclError as e:
-            self._log("复制失败：%s" % e)
-
-    # ---- 状态 -------------------------------------------------------------
-    def refresh_state(self):
-        proj = self.proj_var.get().strip()
-        if not (pcore and proj) or not os.path.isdir(proj):
-            return
-        st = pcore.read_state(proj)
-        pend = len(pcore.read_todos(proj))
-        self.state_lab.config(
-            text="阶段 %s · 第 %s 轮 · 待办 %d%s"
-                 % (st.get("stage", "新建"), st.get("round", 0), pend,
-                    " · exe 在线" if st.get("exeAlive") else ""))
-
-    # ---- 成片 / 废片接收 ---------------------------------------------------
-    def receive(self, good):
-        proj = self.proj_var.get().strip()
-        if not (pcore and proj):
-            self._log("先建骨架 / 填好项目目录")
-            return
-        verb = "成片" if good else "废片"
-        ps = filedialog.askopenfilenames(title="选要接收的%s（可多选）" % verb)
-        if not ps:
-            return
-        placed, log = pcore.accept_deliverables(
-            proj, list(ps), verdict="good" if good else "bad",
-            note=self.why_var.get().strip(), on_log=self._log)
-        if not placed:
-            return
-        self._log("---- 已接收 %d 个到 %s/ ----" % (len(placed), verb))
-        self.refresh_state()
-        # 接收完就弹反馈窗口（可按 × 随时关掉）
-        FeedbackWin(self.master, self, proj, placed, good)
-
-    # ---- 反馈 → 叫 agent --------------------------------------------------
-    def submit_feedback(self, call_agent):
-        proj = self.proj_var.get().strip()
-        if not (pcore and proj):
-            self._log("先建骨架 / 填好项目目录")
-            return
-        text = self.fb.get("1.0", "end").strip()
-        if not text:
-            self._log("反馈还是空的，先写两句")
-            return
-        n = pcore.new_round(proj, text)
-        pcore.push_todo(proj, "反馈", text)
-        self._log("已记入 第 %d 轮 反馈（_会话/轮次/%03d-反馈.txt）" % (n, n))
-        self.fb.delete("1.0", "end")
-        self.refresh_state()
-        if call_agent:
-            self.ask_agent("feedback", text)
-
-    def ask_agent(self, what, feedback=""):
-        """把 agent 叫起来干活：读待办 → 出提示词/按反馈再出一版 → 写回执。"""
-        proj = self.proj_var.get().strip()
-        if not (pcore and abridge and proj):
-            self._log("通道不可用（缺 project_core / agent_bridge）")
-            return
-        ok, why = abridge.available()
-        if not ok:
-            self._log("叫不动 agent：%s" % why)
-            return
-        st = pcore.read_state(proj)
-        sid = st.get("agentSession") or None
-        if what == "feedback":
-            todo = ("用户在界面上给了第 %s 轮反馈：\n%s\n\n"
-                    "请按反馈重出一版提示词：更新 %s\\文案\\ 下的稿子与 骨架.json 的 prompts，"
-                    "并把这一版放进 即梦上传\\（含上传说明.txt）。做完用一句话说明改了什么。"
-                    % (st.get("round", 1), feedback, proj))
-        else:
-            todo = ("用户点了「叫 agent 出提示词」。请扫描 %s\\ 下的 骨架.json 与 素材/、文案/，"
-                    "按 skill 规则出一版提示词，写回 骨架.json 的 prompts 与 文案/，"
-                    "并把要上传的文件副本按引用编号放进 即梦上传\\。" % proj)
-        self._log("→ 正在叫 agent …（可继续用界面，跑完会写回执）")
-        self.refresh_state()
-
-        def worker():
-            res = abridge.ask(todo, session_id=sid, cwd=proj, timeout=900,
-                              permission_mode="acceptEdits")
-            def done():
-                if res.get("session_id") and res["session_id"] != sid:
-                    pcore.write_state(proj, agentSession=res["session_id"])
-                if res.get("ok"):
-                    pcore.push_receipt(proj, res.get("text", ""), kind="出提示词")
-                    pcore.mark_todos_done(proj)
-                    self._log("✅ agent 回来了：%s" % (res.get("text") or "")[:300])
-                    self.load_prompts()
-                else:
-                    self._log("!! agent 没跑成：%s" % (res.get("error") or res.get("stderr", "")[:300]))
-                self.refresh_state()
-            try:
-                self.after(10, done)
-            except tk.TclError:
-                pass
-
-        try:
-            import threading
-            threading.Thread(target=worker, daemon=True).start()
-        except Exception as e:                        # noqa: BLE001
-            self._log("!! 起线程失败：%s" % e)
-
-
 class FeedbackWin(tk.Toplevel):
     """接收完成片/废片后弹的本轮反馈窗口。
 
@@ -1476,14 +1049,14 @@ class FeedbackWin(tk.Toplevel):
         text = self._take()
         if text:
             self.panel.fb.insert("end", text)
-            self.panel.submit_feedback(False)
+            self.panel.wb_submit(False)
         self.destroy()
 
     def _send_and_close(self):
         text = self._take()
         if text:
             self.panel.fb.insert("end", text)
-            self.panel.submit_feedback(True)
+            self.panel.wb_submit(True)
         else:
             self.panel._log("反馈为空，没有提交")
         self.destroy()
@@ -1497,10 +1070,13 @@ class App:
         self._loading = False
         self.dirty = False
         self.drafts = {}
+        self._pending = []          # ②栏待投放的素材路径
+        self._plan = None           # 软件规划出来的结果（角色 / 项目名）
+        self.proj_dir = ""          # ③栏当前项目目录
 
-        root.title("Seedance 成片六维评分")
-        root.geometry("1040x726")
-        root.minsize(940, 640)
+        root.title("HeronBo · AI 视频工作台")
+        root.geometry("1500x900")   # 四栏工作台，照 StoryVia 的 1400×900 量级
+        root.minsize(1180, 700)
         root.configure(bg=self.theme["bg"])
         root.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -1589,7 +1165,10 @@ class App:
             if os.path.isfile(c):
                 txt = open(c, encoding="utf-8-sig").read()
                 if re.search(r"(?m)^\s*SAMPLES_ROOT\s*=", txt):
-                    txt = re.sub(r"(?m)^\s*SAMPLES_ROOT\s*=.*$", "SAMPLES_ROOT=" + root_dir, txt)
+                    # 注意：不能用字符串当替换串 —— Windows 路径里的 \A \1 \g 会被当成
+                    # 正则转义，直接抛 "bad escape \A"（本机样本库路径里带 \A 就会炸）。用函数替换。
+                    txt = re.sub(r"(?m)^\s*SAMPLES_ROOT\s*=.*$",
+                                 lambda _m: "SAMPLES_ROOT=" + root_dir, txt)
                 else:
                     txt = "SAMPLES_ROOT=%s\n" % root_dir + txt
             else:
@@ -1629,21 +1208,23 @@ class App:
         body.pack(fill="both", expand=True, padx=20, pady=12)
         self._frames.append((body, "bg", "bg"))
 
-        # 左：样本列表（宽度可拖；宽度记忆到 layout.txt）
-        self._left_w = load_left_width()
-        leftcard = tk.Frame(body, bg=t["border"], width=self._left_w)
-        leftcard.pack(side="left", fill="y")
-        leftcard.pack_propagate(False)
-        self._frames.append((leftcard, "border", "bg"))
-        self._leftcard = leftcard
-        left = tk.Frame(leftcard, bg=t["surface"])
-        left.pack(fill="both", expand=True, padx=1, pady=1)
-        self._frames.append((left, "surface", "bg"))
-        self._lab(left, "样本", "h2").pack(anchor="w", padx=12, pady=(12, 6))
+        # ── 四栏工作台（照 StoryVia 形制：四栏 + 4px 隐形拖缝 + 全高）──────
+        # ① 项目 ② 素材 ③ 分镜/提示词 ④ 评分；每条拖缝改它左边那一栏的宽度
+        self._cols = []
+        self._body = body
+        c1w, c2w, c3w, c4w = load_col_widths()
+
+        # ① 项目栏（含样本列表）
+        self._leftcard = self._col(body, t, c1w)
+        self._left_w = c1w
+        left = self._inner(self._leftcard, t)
+        self._lab(left, "项目", "h2").pack(anchor="w", padx=12, pady=(12, 4))
+        self.proj_lab = self._lab(left, "未选项目 · 骨架未建", "small", "muted")
+        self.proj_lab.pack(anchor="w", padx=12, pady=(0, 8))
         lrow = tk.Frame(left, bg=t["surface"])
         lrow.pack(fill="both", expand=True, padx=(12, 6), pady=(0, 12))
         self._frames.append((lrow, "surface", "bg"))
-        self.lb = tk.Listbox(lrow, width=26, activestyle="none", bd=0, highlightthickness=0,
+        self.lb = tk.Listbox(lrow, width=22, activestyle="none", bd=0, highlightthickness=0,
                              exportselection=False, font=F("body"))
         self.lb.pack(side="left", fill="both", expand=True)
         self.lb.bind("<<ListboxSelect>>", lambda e: self.on_sample())
@@ -1660,40 +1241,35 @@ class App:
         rrow = tk.Frame(left, bg=t["surface"])
         rrow.pack(fill="x", padx=12, pady=(0, 12))
         self._frames.append((rrow, "surface", "bg"))
-        self.refresh_pill = Pill(rrow, "刷新样本", self.reload, theme=t, font=F("small"),
-                                 kind="ghost", padx=14, pady=8, radius=10,
+        self.refresh_pill = Pill(rrow, "刷新", self.reload, theme=t, font=F("small"),
+                                 kind="ghost", padx=12, pady=8, radius=10,
                                  bg_key="surface", depth=3)
         self.refresh_pill.pack(side="left")
         self._dyn.append(self.refresh_pill)
+        self.detail_pill = Pill(rrow, "详细…", lambda: self.open_material(self.proj_dir),
+                                theme=t, font=F("small"), kind="ghost", padx=12, pady=8,
+                                radius=10, bg_key="surface", depth=3)
+        self.detail_pill.pack(side="right")
+        self._dyn.append(self.detail_pill)
 
-        # 素材投放 / 建骨架（rules.md 第 264-272 条的骨架与归类，搬进工具）
-        self.mat_pill = Pill(rrow, "素材/骨架", self.open_material, theme=t, font=F("small"),
-                             kind="primary", padx=14, pady=8, radius=10,
-                             bg_key="surface", depth=3)
-        self.mat_pill.pack(side="right")
-        self._dyn.append(self.mat_pill)
+        self._splitter(body, t, 0)
 
-        # 隐形可拖分隔条（视觉上只是一枚小药丸，命中区 8px）
-        self._split = tk.Frame(body, bg=t["bg"], width=8, cursor="sb_h_double_arrow")
-        self._split.pack(side="left", fill="y")
-        self._split.pack_propagate(False)
-        self._frames.append((self._split, "bg", "bg"))
-        self._grip = tk.Canvas(self._split, width=8, bg=t["bg"], highlightthickness=0, bd=0)
-        self._grip.pack(fill="y", expand=True)
-        self._frames.append((self._grip, "bg", "bg"))
-        self._grip_pill = self._grip.create_rectangle(3, 0, 5, 0, fill=t["border"], outline="")
-        self._grip.bind("<Button-1>", self._split_press)
-        self._grip.bind("<B1-Motion>", self._split_drag)
-        self._grip.bind("<ButtonRelease-1>", self._split_release)
-        self._grip.bind("<Enter>", lambda e: self._split_hover(True))
-        self._grip.bind("<Leave>", lambda e: self._split_hover(False))
-        self._grip.bind("<Configure>", self._split_configure)
+        # ② 素材栏：投放 + 软件自动判角色 + 一键归类
+        self._col(body, t, c2w)
+        mid = self._inner(self._cols[1][0], t)
+        self._build_intake(mid, t)
 
-        # 右：评分表单
-        rightcard = tk.Frame(body, bg=t["border"])
-        rightcard.pack(side="left", fill="both", expand=True)
-        self._frames.append((rightcard, "border", "bg"))
-        self._body = body
+        self._splitter(body, t, 1)
+
+        # ③ 分镜 / 提示词栏
+        self._col(body, t, c3w)
+        pcol = self._inner(self._cols[2][0], t)
+        self._build_prompt_col(pcol, t)
+
+        self._splitter(body, t, 2)
+
+        # ④ 评分栏（原有表单原样搬进来，不改逻辑）
+        rightcard = self._col(body, t, c4w)
         right = tk.Frame(rightcard, bg=t["surface"])
         right.pack(fill="both", expand=True, padx=1, pady=1)
         self._frames.append((right, "surface", "bg"))
@@ -1809,8 +1385,38 @@ class App:
             pass
         self._sb.config(bg=t["surface"], troughcolor=t["bg"], activebackground=t["muted"],
                         highlightbackground=t["surface"])
-        self._grip.configure(bg=t["bg"])
-        self._grip.itemconfig(self._grip_pill, fill=t["border"])
+        # 四栏内联后控件变多：逐个护住，任何一个没建好都不该拖垮换肤
+        for w, kw in (
+            (getattr(self, "intake_lb", None), dict(bg=t["surface"], fg=t["text"],
+                                                    selectbackground=t["accent_soft"],
+                                                    selectforeground=t["text"],
+                                                    highlightbackground=t["border"])),
+            (getattr(self, "_isb", None), dict(bg=t["surface"], troughcolor=t["bg"],
+                                               activebackground=t["muted"],
+                                               highlightbackground=t["surface"])),
+            (getattr(self, "prompt", None), dict(bg=t["surface"], fg=t["text"],
+                                                 insertbackground=t["accent"],
+                                                 highlightbackground=t["border"])),
+            (getattr(self, "_psb", None), dict(bg=t["surface"], troughcolor=t["bg"],
+                                               activebackground=t["muted"],
+                                               highlightbackground=t["surface"])),
+            (getattr(self, "fb", None), dict(bg=t["surface"], fg=t["text"],
+                                             insertbackground=t["accent"],
+                                             highlightbackground=t["border"],
+                                             highlightcolor=t["accent"])),
+            (getattr(self, "log", None), dict(bg=t["surface"], fg=t["text"],
+                                              insertbackground=t["accent"],
+                                              highlightbackground=t["border"])),
+            (getattr(self, "_lsb", None), dict(bg=t["surface"], troughcolor=t["bg"],
+                                               activebackground=t["muted"],
+                                               highlightbackground=t["surface"])),
+        ):
+            if w is None:
+                continue
+            try:
+                w.config(**kw)
+            except tk.TclError:
+                pass
         self.video_menu.config(bg=t["surface"], fg=t["text"], highlightbackground=t["border"],
                                activebackground=t["surface_hover"], activeforeground=t["text"])
         self.video_menu["menu"].config(bg=t["surface"], fg=t["text"],
@@ -1855,55 +1461,502 @@ class App:
             self._recolor_list()
             self.lb.config(cursor="hand2" if idx is not None else "")
 
-    # ---- 分隔条（拖拽调整样本栏宽度）-------------------------------------
-    def _split_hover(self, on):
-        t = self.theme
-        self._grip.configure(bg=t["bg"], cursor="sb_h_double_arrow" if on else "")
-        self._grip.itemconfig(self._grip_pill,
-                              fill=t["accent"] if on else t["border"])
+    # ---- 四栏骨架 ---------------------------------------------------------
+    def _col(self, body, t, w):
+        """一栏：外层描边 + 固定宽度 + 登记进 _cols（拖缝就是改这里存的宽度）。"""
+        card = tk.Frame(body, bg=t["border"], width=w)
+        card.pack(side="left", fill="y")
+        card.pack_propagate(False)
+        self._frames.append((card, "border", "bg"))
+        self._cols.append([card, w])
+        return card
 
-    def _split_configure(self, _e=None):
-        """把中央药丸画成竖直短条（高度自适应，居中）。"""
-        h = self._grip.winfo_height()
-        y1 = max(0, h // 2 - 26)
-        y2 = min(h, h // 2 + 26)
-        self._grip.coords(self._grip_pill, 3, y1, 5, y2)
+    def _inner(self, card, t):
+        f = tk.Frame(card, bg=t["surface"])
+        f.pack(fill="both", expand=True, padx=1, pady=1)
+        self._frames.append((f, "surface", "bg"))
+        return f
 
-    def _split_press(self, e):
-        self._split_drag(e)
+    def _splitter(self, body, t, i):
+        """8px 命中区 / 4px 视觉 的隐形拖缝；拖它改「左边那一栏」的宽度。"""
+        sp = tk.Frame(body, bg=t["bg"], width=8, cursor="sb_h_double_arrow")
+        sp.pack(side="left", fill="y")
+        sp.pack_propagate(False)
+        self._frames.append((sp, "bg", "bg"))
+        grip = tk.Canvas(sp, width=8, bg=t["bg"], highlightthickness=0, bd=0)
+        grip.pack(fill="y", expand=True)
+        self._frames.append((grip, "bg", "bg"))
+        pill = grip.create_rectangle(3, 0, 5, 0, fill=t["border"], outline="")
+        grip.bind("<Configure>", lambda e, g=grip, p=pill: self._split_configure(g, p))
+        grip.bind("<Button-1>", lambda e, k=i: self._split_press(e, k))
+        grip.bind("<B1-Motion>", lambda e, k=i: self._split_drag(e, k))
+        grip.bind("<ButtonRelease-1>", lambda e, k=i: self._split_release(e, k))
+        grip.bind("<Enter>", lambda e, g=grip, p=pill: self._split_hover(g, p, True))
+        grip.bind("<Leave>", lambda e, g=grip, p=pill: self._split_hover(g, p, False))
+        return sp
 
-    def _split_drag(self, e):
+    # ---- ② 素材栏 ---------------------------------------------------------
+    def _build_intake(self, parent, t):
+        self._lab(parent, "素材", "h2").pack(anchor="w", padx=12, pady=(12, 4))
+        self.intake_root_lab = self._lab(parent, "样本库：—", "small", "muted")
+        self.intake_root_lab.pack(anchor="w", padx=12)
+
+        drop = tk.Frame(parent, bg=t["surface"], highlightthickness=2,
+                        highlightbackground=t["border"], highlightcolor=t["border"])
+        drop.pack(fill="x", padx=12, pady=(8, 6))
+        self._lab(drop, "把素材（文件或整个文件夹）丢进来", "small").pack(pady=(12, 2))
+        self._lab(drop, "软件自己判角色、起项目名、建骨架", "small", "muted").pack(pady=(0, 12))
+
+        row = tk.Frame(parent, bg=t["surface"])
+        row.pack(fill="x", padx=12)
+        self._frames.append((row, "surface", "bg"))
+        Pill(row, "选文件", lambda: self.intake_pick(False), theme=t, font=F("small"),
+             kind="ghost", padx=11, pady=7, radius=8, bg_key="surface", depth=2).pack(side="left")
+        Pill(row, "选文件夹", lambda: self.intake_pick(True), theme=t, font=F("small"),
+             kind="ghost", padx=11, pady=7, radius=8, bg_key="surface", depth=2).pack(
+                 side="left", padx=5)
+        Pill(row, "清空", self.intake_clear, theme=t, font=F("small"), kind="ghost",
+             padx=11, pady=7, radius=8, bg_key="surface", depth=2).pack(side="left")
+
+        self._lab(parent, "待投放 · 角色识别", "h2").pack(anchor="w", padx=12, pady=(12, 4))
+        box = tk.Frame(parent, bg=t["surface"])
+        box.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+        self._frames.append((box, "surface", "bg"))
+        self.intake_lb = tk.Listbox(box, height=9, activestyle="none", bd=0,
+                                    highlightthickness=1, font=F("small"),
+                                    exportselection=False)
+        self.intake_lb.pack(side="left", fill="both", expand=True)
+        isb = tk.Scrollbar(box, orient="vertical", command=self.intake_lb.yview, width=9,
+                           bd=0, relief="flat", elementborderwidth=0)
+        isb.pack(side="right", fill="y", padx=(2, 0))
+        self.intake_lb.config(yscrollcommand=isb.set)
+        self._isb = isb
+
+        self.go_pill = Pill(parent, "自动建骨架并归类", self.intake_go, theme=t,
+                            font=F("small"), kind="primary", padx=14, pady=9, radius=10,
+                            bg_key="surface", depth=4)
+        self.go_pill.pack(fill="x", padx=12, pady=(0, 8))
+        self._dyn.append(self.go_pill)
+        self.intake_hint = self._lab(parent, "选定素材后点上面这颗按钮", "small", "muted")
+        self.intake_hint.pack(anchor="w", padx=12, pady=(0, 8))
+
+    # ---- ③ 分镜 / 提示词栏 ------------------------------------------------
+    def _build_prompt_col(self, parent, t):
+        head = tk.Frame(parent, bg=t["surface"])
+        head.pack(fill="x", padx=12, pady=(12, 2))
+        self._frames.append((head, "surface", "bg"))
+        self._lab(head, "分镜 / 提示词", "h2").pack(side="left")
+        self.wb_state_lab = self._lab(head, "—", "small", "muted")
+        self.wb_state_lab.pack(side="right")
+
+        prow = tk.Frame(parent, bg=t["surface"])
+        prow.pack(fill="both", expand=True, padx=12, pady=(4, 6))
+        self._frames.append((prow, "surface", "bg"))
+        self.prompt = tk.Text(prow, height=9, font=F("small"), bd=0, relief="flat",
+                              highlightthickness=1, wrap="word")
+        self.prompt.pack(side="left", fill="both", expand=True)
+        psb = tk.Scrollbar(prow, orient="vertical", command=self.prompt.yview, width=9,
+                           bd=0, relief="flat", elementborderwidth=0)
+        psb.pack(side="right", fill="y", padx=(2, 0))
+        self.prompt.config(yscrollcommand=psb.set)
+        self._psb = psb
+        self.prompt.configure(state="disabled")
+
+        pr = tk.Frame(parent, bg=t["surface"])
+        pr.pack(fill="x", padx=12, pady=(0, 8))
+        self._frames.append((pr, "surface", "bg"))
+        Pill(pr, "读取提示词", self.wb_load_prompts, theme=t, font=F("small"), kind="ghost",
+             padx=11, pady=7, radius=8, bg_key="surface", depth=2).pack(side="left")
+        self.copy_pill = Pill(pr, "复制全部", self.wb_copy, theme=t, font=F("small"),
+                              kind="primary", padx=13, pady=7, radius=8, bg_key="surface",
+                              depth=3)
+        self.copy_pill.pack(side="left", padx=5)
+        self._dyn.append(self.copy_pill)
+
+        self._lab(parent, "成片 / 废片接收（收完会自动弹反馈窗）", "h2").pack(
+            anchor="w", padx=12, pady=(6, 4))
+        rr = tk.Frame(parent, bg=t["surface"])
+        rr.pack(fill="x", padx=12)
+        self._frames.append((rr, "surface", "bg"))
+        Pill(rr, "接收成片", lambda: self.wb_receive(True), theme=t, font=F("small"),
+             kind="primary", padx=12, pady=7, radius=8, bg_key="surface", depth=3).pack(
+                 side="left")
+        Pill(rr, "接收废片", lambda: self.wb_receive(False), theme=t, font=F("small"),
+             kind="danger", padx=12, pady=7, radius=8, bg_key="surface", depth=3).pack(
+                 side="left", padx=5)
+        self._lab(rr, "废因", "small", "muted").pack(side="left", padx=(10, 4))
+        self.why_var = tk.StringVar()
+        tk.Entry(rr, textvariable=self.why_var, font=F("small"), width=14, relief="flat",
+                 highlightthickness=1).pack(side="left")
+
+        self._lab(parent, "本轮反馈（提交后 agent 接着干）", "h2").pack(
+            anchor="w", padx=12, pady=(10, 4))
+        self.fb = tk.Text(parent, height=3, font=F("small"), bd=0, relief="flat",
+                          highlightthickness=1, wrap="word")
+        self.fb.pack(fill="x", padx=12)
+        fr = tk.Frame(parent, bg=t["surface"])
+        fr.pack(fill="x", padx=12, pady=(6, 8))
+        self._frames.append((fr, "surface", "bg"))
+        self.send_pill = Pill(fr, "提交反馈 · 让 agent 再出一版", lambda: self.wb_submit(True),
+                              theme=t, font=F("small"), kind="primary", padx=13, pady=8,
+                              radius=9, bg_key="surface", depth=4)
+        self.send_pill.pack(side="left")
+        self._dyn.append(self.send_pill)
+        Pill(fr, "只记待办", lambda: self.wb_submit(False), theme=t, font=F("small"),
+             kind="ghost", padx=10, pady=8, radius=9, bg_key="surface", depth=2).pack(
+                 side="left", padx=5)
+        Pill(fr, "叫 agent 出提示词", lambda: self.wb_ask("prompt"), theme=t,
+             font=F("small"), kind="ghost", padx=10, pady=8, radius=9, bg_key="surface",
+             depth=2).pack(side="left")
+
+        self._lab(parent, "执行记录", "h2").pack(anchor="w", padx=12, pady=(2, 4))
+        lrow = tk.Frame(parent, bg=t["surface"])
+        lrow.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        self._frames.append((lrow, "surface", "bg"))
+        self.log = tk.Text(lrow, height=6, font=F("small"), bd=0, relief="flat",
+                           highlightthickness=1, wrap="word")
+        self.log.pack(side="left", fill="both", expand=True)
+        lsb = tk.Scrollbar(lrow, orient="vertical", command=self.log.yview, width=9,
+                           bd=0, relief="flat", elementborderwidth=0)
+        lsb.pack(side="right", fill="y", padx=(2, 0))
+        self.log.config(yscrollcommand=lsb.set)
+        self._lsb = lsb
+        self.log.configure(state="disabled")
+
+    # ---- ② 素材栏 / ③ 提示词栏 的动作 --------------------------------------
+    def _log(self, msg):
         try:
-            x0 = self._body.winfo_rootx()
+            self.log.configure(state="normal")
+            self.log.insert("end", msg + "\n")
+            self.log.see("end")
+            self.log.configure(state="disabled")
+        except tk.TclError:
+            pass
+
+    def intake_pick(self, folder):
+        if folder:
+            p = filedialog.askdirectory(title="选要投放的文件夹")
+            if p:
+                self._pending.append(os.path.normpath(p))
+        else:
+            for p in filedialog.askopenfilenames(title="选要投放的文件") or ():
+                self._pending.append(os.path.normpath(p))
+        self.intake_refresh()
+
+    def intake_clear(self):
+        self._pending = []
+        self.intake_refresh()
+
+    def intake_refresh(self):
+        """刷新待投放列表，并把软件判出来的角色先亮出来（只规划，不落盘）。"""
+        try:
+            self.intake_lb.delete(0, "end")
         except tk.TclError:
             return
-        w = max(LEFT_MIN, min(LEFT_MAX, int(e.x_root - x0)))
-        if w != self._left_w:
-            self._left_w = w
-            self._leftcard.configure(width=w)
+        root = ""
+        if pcore:
+            try:
+                root = pcore.detect_root() or ""
+            except Exception:                                 # noqa: BLE001
+                root = ""
+        try:
+            self.intake_root_lab.config(text="样本库：%s" % (root or "（未配置，会在建骨架时问你）"))
+        except tk.TclError:
+            pass
+        if not (pcore and self._pending):
+            self._plan = None
+            try:
+                self.intake_hint.config(text="选定素材后点上面这颗按钮")
+            except tk.TclError:
+                pass
+            return
+        try:
+            plan = pcore.auto_plan(self._pending)
+        except Exception as e:                                # noqa: BLE001
+            self._log("!! 规划失败：%s" % e)
+            return
+        self._plan = plan
+        for it in plan["items"]:
+            try:
+                self.intake_lb.insert("end", "%-5s %s" % (it["role"], it["name"]))
+            except tk.TclError:
+                pass
+        try:
+            self.intake_hint.config(text="将建成：%s  （素材 %d 个，角色已判好）"
+                                         % (plan["final_name"] or "（推不出名）", plan["count"]))
+        except tk.TclError:
+            pass
 
-    def _split_release(self, _e=None):
-        save_left_width(self._left_w)
-        self.status.config(text="样本栏宽度已保存（%d px）" % self._left_w)
+    def intake_go(self):
+        """一键：软件自动定根 / 定名 → 建骨架 → 按角色归类 → 切到该项目。"""
+        if not pcore:
+            self._log("!! 找不到 project_core.py")
+            return
+        if not self._pending:
+            self._log("还没有选素材")
+            return
+        try:
+            pdir, _plan, _log = pcore.auto_build(self._pending, on_log=self._log)
+        except Exception as e:                                # noqa: BLE001
+            self._log("!! 建骨架失败：%s" % e)
+            return
+        if not pdir:
+            self._log("建骨架失败（可能还没配置样本库根目录）")
+            return
+        self._pending = []
+        self.intake_refresh()
+        self.set_project(pdir)
+        self.reload()
+        self._log("✅ 骨架就绪：%s" % pdir)
+
+    def set_project(self, pdir):
+        """切换当前项目：刷新项目卡 + 提示词区 + 状态栏。"""
+        self.proj_dir = pdir or ""
+        name = os.path.basename(os.path.normpath(pdir)) if pdir else "未选项目 · 骨架未建"
+        try:
+            self.proj_lab.config(text=name)
+        except tk.TclError:
+            pass
+        self.wb_load_prompts(quiet=True)
+
+    def wb_load_prompts(self, quiet=False):
+        proj = getattr(self, "proj_dir", "")
+        if not (pcore and proj) or not os.path.isdir(proj):
+            if not quiet:
+                self._log("先建骨架（②栏）或在①栏选中一个项目")
+            return
+        parts = []
+        try:
+            sk = pcore.load_skeleton(proj)
+            if sk:
+                for pr in sk["project"].get("prompts", []):
+                    parts.append("【%s】\n%s" % (pr.get("name", "提示词"), pr.get("text", "")))
+            wenan = os.path.join(proj, "文案")
+            if os.path.isdir(wenan):
+                for fn in sorted(os.listdir(wenan)):
+                    if fn.lower().endswith((".txt", ".md")):
+                        try:
+                            body = open(os.path.join(wenan, fn),
+                                        encoding="utf-8-sig").read()
+                        except OSError:
+                            continue
+                        parts.append("── 文案/%s ──\n%s" % (fn, body.strip()))
+        except Exception as e:                                # noqa: BLE001
+            self._log("!! 读提示词失败：%s" % e)
+            return
+        txt = "\n\n".join(parts) if parts else \
+            "（还没有提示词。agent 写回 骨架.json 的 prompts、或放进 文案/ 后，点「读取提示词」）"
+        try:
+            self.prompt.configure(state="normal")
+            self.prompt.delete("1.0", "end")
+            self.prompt.insert("1.0", txt)
+            self.prompt.configure(state="disabled")
+        except tk.TclError:
+            return
+        if not quiet:
+            self._log("已读取提示词（%d 段）" % len(parts))
+        self.wb_state()
+
+    def wb_copy(self):
+        try:
+            txt = self.prompt.get("1.0", "end").strip()
+        except tk.TclError:
+            return
+        if not txt or txt.startswith("（还没有提示词"):
+            self._log("没有可复制的内容")
+            return
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(txt)
+            self._log("已复制 %d 字，去即梦粘贴即可" % len(txt))
+        except tk.TclError as e:
+            self._log("复制失败：%s" % e)
+
+    def wb_receive(self, good):
+        proj = getattr(self, "proj_dir", "")
+        if not (pcore and proj):
+            self._log("先建骨架（②栏）")
+            return
+        ps = filedialog.askopenfilenames(
+            title="选要接收的%s（可多选）" % ("成片" if good else "废片"))
+        if not ps:
+            return
+        try:
+            placed, _ = pcore.accept_deliverables(
+                proj, list(ps), verdict="good" if good else "bad",
+                note=self.why_var.get().strip(), on_log=self._log)
+        except Exception as e:                                # noqa: BLE001
+            self._log("!! 接收失败：%s" % e)
+            return
+        if placed:
+            self._log("---- 已接收 %d 个到 %s/ ----"
+                      % (len(placed), "成片" if good else "废片"))
+            self.wb_state()
+            FeedbackWin(self.root, self, proj, placed, good)   # 收完就弹反馈窗（可关）
+
+    def wb_submit(self, call_agent):
+        proj = getattr(self, "proj_dir", "")
+        if not (pcore and proj):
+            self._log("先建骨架（②栏）")
+            return ""
+        try:
+            text = self.fb.get("1.0", "end").strip()
+        except tk.TclError:
+            return ""
+        if not text:
+            self._log("反馈还是空的，先写两句")
+            return ""
+        try:
+            n = pcore.new_round(proj, text)
+            pcore.push_todo(proj, "反馈", text)
+        except Exception as e:                                # noqa: BLE001
+            self._log("!! 写待办失败：%s" % e)
+            return ""
+        self._log("已记入第 %d 轮反馈（_会话/轮次/%03d-反馈.txt）" % (n, n))
+        try:
+            self.fb.delete("1.0", "end")
+        except tk.TclError:
+            pass
+        self.wb_state()
+        if call_agent:
+            self.wb_ask("feedback", text)
+        return text
+
+    def wb_state(self):
+        proj = getattr(self, "proj_dir", "")
+        if not (pcore and proj) or not os.path.isdir(proj):
+            try:
+                self.wb_state_lab.config(text="—")
+            except tk.TclError:
+                pass
+            return
+        try:
+            st = pcore.read_state(proj)
+            pend = len(pcore.read_todos(proj))
+            self.wb_state_lab.config(text="阶段 %s · 第 %s 轮 · 待办 %d"
+                                          % (st.get("stage", "新建"), st.get("round", 0), pend))
+        except Exception:                                     # noqa: BLE001
+            pass
+
+    def wb_ask(self, what, feedback=""):
+        """叫 agent 干活：读待办 → 按反馈/首轮出提示词 → 写回执。"""
+        proj = getattr(self, "proj_dir", "")
+        if not (pcore and abridge and proj):
+            self._log("通道不可用（缺 project_core / agent_bridge）")
+            return
+        ok, why = abridge.available()
+        if not ok:
+            self._log("叫不动 agent：%s" % why)
+            return
+        st = pcore.read_state(proj)
+        sid = st.get("agentSession") or None
+        if what == "feedback":
+            todo = ("用户在界面上给了第 %s 轮反馈：\n%s\n\n"
+                    "请按反馈重出一版提示词：更新 %s\\文案\\ 下的稿子与 骨架.json 的 prompts，"
+                    "并把要上传的文件副本放进 即梦上传\\（含上传说明.txt）。"
+                    "完成后跑 tools\\project_core.py --project \"%s\" --receipt \"改了什么\" "
+                    "--todo-done 写回执。" % (st.get("round", 1), feedback, proj, proj))
+        else:
+            todo = ("用户点了「叫 agent 出提示词」。请扫描 %s\\ 下的 骨架.json 与 素材/、文案/，"
+                    "按 skill 规则出一版提示词，写回 骨架.json 的 prompts 与 文案/，"
+                    "并把要上传的文件副本按引用编号放进 即梦上传\\；"
+                    "完成后跑 tools\\project_core.py --project \"%s\" --receipt \"改了什么\" "
+                    "--todo-done 写回执。" % (proj, proj))
+        self._log("→ 正在叫 agent …（可以继续用界面，跑完自动写回执）")
+        self.wb_state()
+
+        def worker():
+            res = abridge.ask(todo, session_id=sid, cwd=proj, timeout=900,
+                              permission_mode="acceptEdits")
+
+            def done():
+                try:
+                    if res.get("session_id") and res["session_id"] != sid:
+                        pcore.write_state(proj, agentSession=res["session_id"])
+                    if res.get("ok"):
+                        pcore.push_receipt(proj, res.get("text", ""), kind="出提示词")
+                        pcore.mark_todos_done(proj)
+                        self._log("✅ agent 回来了：%s" % (res.get("text") or "")[:300])
+                        self.wb_load_prompts(quiet=True)
+                    else:
+                        self._log("!! agent 没跑成：%s"
+                                  % (res.get("error") or (res.get("stderr") or "")[:300]))
+                    self.wb_state()
+                except Exception as e:                        # noqa: BLE001
+                    self._log("!! 回写失败：%s" % e)
+            try:
+                self.root.after(10, done)
+            except tk.TclError:
+                pass
+
+        try:
+            import threading
+            threading.Thread(target=worker, daemon=True).start()
+        except Exception as e:                                # noqa: BLE001
+            self._log("!! 起线程失败：%s" % e)
+
+    # ---- 分隔条（四栏通用：每条改「它左边那一栏」的宽度）-------------------
+    def _split_hover(self, grip, pill, on):
+        t = self.theme
+        try:
+            grip.configure(bg=t["bg"], cursor="sb_h_double_arrow" if on else "")
+            grip.itemconfig(pill, fill=t["accent"] if on else t["border"])
+        except tk.TclError:
+            pass
+
+    def _split_configure(self, grip=None, pill=None):
+        """把中央药丸画成竖直短条（高度自适应，居中）。"""
+        grip = grip if grip is not None else getattr(self, "_grip", None)
+        pill = pill if pill is not None else getattr(self, "_grip_pill", None)
+        if grip is None or pill is None:
+            return
+        try:
+            h = grip.winfo_height()
+            grip.coords(pill, 3, max(0, h // 2 - 26), 5, min(h, h // 2 + 26))
+        except tk.TclError:
+            pass
+
+    def _split_press(self, e, i=0):
+        self._split_drag(e, i)
+
+    def _split_drag(self, e, i=0):
+        """按鼠标在 body 里的位置算左栏宽度（用绝对位置，不累加 dx，不会漂）。"""
+        try:
+            x0 = self._body.winfo_rootx()
+            card = self._cols[i][0]
+        except (tk.TclError, IndexError, AttributeError):
+            return
+        base = sum(c[1] for c in self._cols[:i]) + 8 * i      # 前面各栏 + 前面的分隔条
+        lo, hi = COL_LIMITS[i]
+        w = max(lo, min(hi, int(e.x_root - x0) - base))
+        if w != self._cols[i][1]:
+            self._cols[i][1] = w
+            try:
+                card.configure(width=w)
+            except tk.TclError:
+                pass
+
+    def _split_release(self, _e=None, i=0):
+        widths = [c[1] for c in getattr(self, "_cols", [])]
+        save_col_widths(widths)
+        try:
+            self.status.config(text="栏宽已保存：%s" % " / ".join(str(w) for w in widths))
+        except tk.TclError:
+            pass
 
     # ---- 素材投放 / 建骨架 ------------------------------------------------
     def open_material(self, project=None):
-        """打开「素材投放 · 建骨架」窗口（单实例）。"""
-        if not pcore:
-            self.status.config(text="找不到 project_core.py，「素材/骨架」暂不可用")
-            return None
-        win = getattr(self, "_mat_win", None)
+        """切到某个项目（四栏内联后不再弹窗；保留此名以兼容命令行 --material）。"""
+        if project:
+            self.set_project(project)
         try:
-            alive = win is not None and win.winfo_exists()
+            self.root.deiconify()
+            self.root.lift()
+            self.root.focus_force()
         except tk.TclError:
-            alive = False
-        if alive:
-            if project:
-                win.proj_var.set(project)
-            win.deiconify()
-            win.lift()
-            win.focus_force()
-            return win
+            pass
+        self.intake_refresh()
+        return None
         win = MaterialPanel(self.root, self, project=project)
         self._mat_win = win
 
@@ -2111,31 +2164,29 @@ def _parse_args():
 
 
 def _run_material_actions(app, opt):
-    """按命令行把「建骨架 / 投素材」跑掉，结果写进素材窗口的记录区。"""
+    """按命令行把「建骨架 / 投素材」跑掉（结果写进 ③栏 执行记录）。"""
     if not pcore:
         return
-    win = app.open_material(project=opt.get("project") or None)
-    if win is None:
-        return
-    if opt.get("root"):
-        win.root_var.set(opt["root"])
-    try:
-        if opt.get("name"):
-            win.name_var.set(opt["name"])
+    if opt.get("project"):
+        app.set_project(opt["project"])
+    if opt.get("add") or opt.get("name"):
         if opt.get("add"):
-            for p in opt["add"]:
-                win._pending.append(os.path.normpath(p))
-            if opt.get("note"):
-                win.note_var.set(opt["note"])
-            win._refresh_pending()
-    except Exception:                                            # noqa: BLE001
-        pass
-    if opt.get("name") or (opt.get("project") and not win.proj_var.get()):
-        win._make_skeleton()
-    if opt.get("add"):
-        if opt.get("note"):
-            win.note_var.set(opt["note"])
-        win._drop()
+            app._pending.extend(os.path.normpath(p) for p in opt["add"])
+            app.intake_refresh()
+        try:
+            pdir, _plan, _log = pcore.auto_build(app._pending or [],
+                                                 root=opt.get("root"),
+                                                 name=opt.get("name"),
+                                                 on_log=app._log)
+        except Exception as e:                                # noqa: BLE001
+            app._log("!! 自动建骨架失败：%s" % e)
+            return
+        if pdir:
+            app._pending = []
+            app.intake_refresh()
+            app.set_project(pdir)
+            app.reload()
+            app._log("✅ 骨架就绪：%s" % pdir)
 
 
 def main():
