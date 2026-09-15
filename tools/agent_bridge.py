@@ -321,11 +321,13 @@ def _probe_zcode():
         cfg = json.load(open(cfgp, encoding="utf-8-sig"))
     except (OSError, ValueError):
         return False, "找不到 %s" % cfgp
-    if not cfg.get("provider"):
-        return False, ("CLI 要 %s 里有 provider（现在只有 %s）；把桌面端 "
-                       "~/.zcode/v2/config.json 的 provider 那段搬过去就能用"
-                       % (cfgp, "/".join(cfg.keys())))
-    return True, cli
+    # 两种就绪形态都认：① 有 provider（自己填的 API Key 通道）
+    # ② 有 model（`zcode login` 后它自己写的 "provider/model" 引用，如 zai/glm-5.1）
+    if cfg.get("provider") or cfg.get("model"):
+        return True, cli
+    return False, ("CLI 要 %s 里有 provider 或 model（现在只有 %s）；"
+                   "先跑一次 `zcode login`，或把桌面端 ~/.zcode/v2/config.json 的 provider 搬过去"
+                   % (cfgp, "/".join(cfg.keys())))
 
 
 def _dsh_note():
