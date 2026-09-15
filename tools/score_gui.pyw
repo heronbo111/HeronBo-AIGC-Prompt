@@ -518,6 +518,7 @@ class Segmented(_Slider, tk.Canvas):
         self._thumb_i = None
         self._texts = []
         self.bind("<Button-1>", self._on_click)
+        self.bind("<B1-Motion>", self._on_click)     # 按住拖 = 滑条手感（变阻器）
         self.bind("<Motion>", self._on_motion)
         self.bind("<Leave>", self._on_leave)
         self._measure()
@@ -1664,7 +1665,7 @@ class App:
         self._frames.append((right, "surface", "bg"))
         self._col_head(right, t, "评分", [
             ("save", "保存评分", self.save, "primary"),
-            ("undo", "重新载入（丢弃未保存改动）", self.on_sample),
+            ("undo", "重新载入", self.on_sample),
             ("copy", "复制JSON", self.copy_review_json),
         ])
         form = tk.Frame(right, bg=t["surface"])
@@ -1677,7 +1678,7 @@ class App:
         self.video_var = tk.StringVar()
         self.video_var.trace_add("write", lambda *a: self._touch())
         self.video_menu = tk.OptionMenu(form, self.video_var, "")
-        self.video_menu.config(anchor="w", relief="flat", bd=0, highlightthickness=1, width=46,
+        self.video_menu.config(anchor="w", relief="flat", bd=0, highlightthickness=1, width=26,
                                font=F("body"), activebackground=t["surface_hover"])
         self.video_menu.grid(row=self._row, column=1, sticky="w", pady=(0, 12), ipady=4)
         self.video_menu["menu"].config(bd=0, activeborderwidth=0, font=F("body"))
@@ -2547,10 +2548,12 @@ class App:
 
     # ---- 分隔条（四栏通用：每条改「它左边那一栏」的宽度）-------------------
     def _split_hover(self, grip, pill, on):
+        """悬停只把药丸压深一档——**不用强调色**（强调色纪律：accent 只给主按钮/选中/焦点）。
+        原先悬停变蓝，在页面背景上就是"莫名其妙一根蓝条"。"""
         t = self.theme
         try:
             grip.configure(bg=t["bg"], cursor="sb_h_double_arrow" if on else "")
-            grip.itemconfig(pill, fill=t["accent"] if on else t["border"])
+            grip.itemconfig(pill, fill=_mix(t["border"], t["text"], 0.45 if on else 0.0))
         except tk.TclError:
             pass
 
@@ -2562,7 +2565,7 @@ class App:
             return
         try:
             h = grip.winfo_height()
-            grip.coords(pill, 3, max(0, h // 2 - 26), 5, min(h, h // 2 + 26))
+            grip.coords(pill, 2, max(0, h // 2 - 14), 6, min(h, h // 2 + 14))   # 4×28 小药丸
         except tk.TclError:
             pass
 
@@ -2635,7 +2638,19 @@ class App:
                 mark = "○"
             self.lb.insert(tk.END, "%s %s   (%d片/%d评)" % (mark, s["name"], len(s["videos"]), len(s["reviews"])))
         self.root_path_lab.config(text="样本库：%s    ● 待评分（有片无评）  ✓ 已评分" % self.samples_root)
-        self.status.config(text="共 %d 个样本" % len(self.samples))
+        # 刷新要连当前项目一起重读（框架.json / 会话状态 / 统计），否则点了看不出变化
+        pj = getattr(self, "proj_dir", "")
+        if pj and os.path.isdir(pj):
+            try:
+                self.set_project(pj)
+            except Exception:                                    # noqa: BLE001
+                pass
+            self.status.config(text="已刷新：%d 个样本；当前项目已重读（%s）"
+                                    % (len(self.samples), os.path.basename(pj)))
+            self.toast("已刷新：样本 %d 个，当前项目已重读" % len(self.samples), "ok")
+        else:
+            self.status.config(text="共 %d 个样本" % len(self.samples))
+            self.toast("已刷新：样本 %d 个" % len(self.samples), "info")
         self._select_by_name(keep)
 
     def cur_name(self):
