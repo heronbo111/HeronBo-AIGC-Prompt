@@ -16,6 +16,10 @@ references/*.local.md
 references/*.local.json
 # 联调通道的本机覆盖（node / CLI 路径），不写进仓库
 tools/agent_bridge.local.json
+# 打包后这份配置就写在 exe 旁边（本机私有：选了哪个 agent）
+tools/dist/agent_bridge.local.json
+# 换位时留的旧 exe 备份（本机回滚用，别把 18MB 分发进仓库）
+tools/dist/score-tool_*.exe
 # Python 缓存（诊断脚本 import 工具时会生成）
 __pycache__/
 
