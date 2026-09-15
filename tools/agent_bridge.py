@@ -283,12 +283,70 @@ def dsh_pkg():
     return _glob_first(pats)
 
 
+def zcode_cli():
+    """找 ZCode 自带的 CLI。
+
+    ZCode 桌面端里**真的带了一个命令行**（我原先只查了桌面端主进程的参数白名单，漏了这个）：
+        <ZCode安装目录>
+esources\glm\zcode.cjs   （12.6MB Node 单文件，zcode 0.16.5）
+    它的无头用法（`zcode --help` 实证）：
+        zcode --prompt "<任务>" --cwd <目录> --mode yolo [--resume <sess_...>] [--json]
+    注意：`--settings` / `--config` 虽然写在帮助里，但实际报 Unknown option（文档与实现不一致），
+    模型配置只能落在它固定的 `~/.zcode/cli/config.json`（要显式 provider）。
+    """
+    cfg = _local_cfg().get("zcode")
+    if cfg and os.path.isfile(cfg):
+        return cfg
+    import glob as _glob
+    pats = []
+    for base in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)"),
+                 os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs"),
+                 os.environ.get("ProgramW6432"), "F:\\", "C:\\"):
+        if base and os.path.isdir(base):
+            pats.append(os.path.join(base, "ZCode", "resources", "glm", "zcode.cjs"))
+            pats.append(os.path.join(base, "*", "resources", "glm", "zcode.cjs"))
+    return _glob_first(pats)
+
+
+def _probe_zcode():
+    cli = zcode_cli()
+    if not cli:
+        return False, "没找到 ZCode 自带的 CLI（resources/glm/zcode.cjs）"
+    if not node_exe():
+        return False, "没找到 node 可执行文件"
+    # 就绪检查：CLI 明确要求 ~/.zcode/cli/config.json 里有 provider（2026-09-15 实测报
+    # "Model config is missing"）。顺手查一下，别让用户"选了才发现"。
+    cfgp = os.path.join(os.path.expanduser("~"), ".zcode", "cli", "config.json")
+    try:
+        cfg = json.load(open(cfgp, encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return False, "找不到 %s" % cfgp
+    if not cfg.get("provider"):
+        return False, ("CLI 要 %s 里有 provider（现在只有 %s）；把桌面端 "
+                       "~/.zcode/v2/config.json 的 provider 那段搬过去就能用"
+                       % (cfgp, "/".join(cfg.keys())))
+    return True, cli
+
+
+def _dsh_note():
+    """DSH 已知的坑：settings 里的 provider 可能只有 web 档才有（2026-09-15 实测）。"""
+    p = os.path.join(os.path.expanduser("~"), ".dsh", "settings.yaml")
+    try:
+        txt = open(p, encoding="utf-8", errors="replace").read()
+    except OSError:
+        return ""
+    if "provider: deepseek-vision" in txt:
+        return ("；注意你的 settings 把 provider 指向 deepseek-vision，那是 web 档插件 "
+                "dsh-vision-router 提供的，headless 档没有它（会报 NO_ADAPTER）")
+    return ""
+
+
 def _probe_dsh():
     if not dsh_pkg():
         return False, "没找到 DSH（需要 npx @deepseek-ai/dsh 跑过一次，或全局安装）"
     if not node_exe():
         return False, "没找到 node 可执行文件"
-    return True, dsh_pkg()
+    return True, dsh_pkg() + _dsh_note()
 
 
 def _probe_codex():
@@ -311,12 +369,10 @@ ADAPTERS = {
     "codex": {"label": "Codex CLI", "probe": _probe_codex},
     # 这两个先留探测位：ZCode / DSH 目前没在安装目录暴露无头 CLI。
     # 找得到就把命令写进 agent_bridge.local.json 的 cmd 字段（见 pick_agent 的说明）。
-    # ZCode（2026-09-15 实证）：桌面端主进程认的启动参数只有 --open-workspace / --exit-log /
-    # --file-uri / --folder-uri 等桌面项，**没有"跑一个任务"的无头入口**（bundle 里那处
-    # --headless 是它给内部 Chrome 传的 --headless=new，做浏览器自动化用的）。所以 ZCode
-    # 暂时只能在其界面里用；哪天它提供 CLI，用 local.json 的 cmd 接上即可。
-    "zcode": {"label": "ZCode", "probe": lambda: (
-        False, "ZCode 桌面端没有无头入口（可用 local.json 的 cmd 自定义接别的命令）")},
+    # ZCode：桌面端主进程参数里没有无头入口，但**安装目录里自带 CLI**（resources/glm/zcode.cjs），
+    # 支持 `--prompt` 无头跑一条任务 —— 2026-09-15 实证找到（先前只查了桌面端参数白名单）。
+    # 唯一前置：`~/.zcode/cli/config.json` 里要有显式 provider，否则报 "Model config is missing"。
+    "zcode": {"label": "ZCode CLI", "probe": _probe_zcode},
     "dsh": {"label": "DSH（DeepSeek Harness）", "probe": _probe_dsh},
 }
 
@@ -342,11 +398,11 @@ def pick_agent(prefer=None):
         if r["ok"]:
             return want, ("按配置用 %s" % r["label"]) if prefer or cfg.get("agent")                 else r["label"]
         return None, "配置指定的 %s 不可用：%s" % (r["label"], r["why"])
-    for key in ("workbuddy", "codex", "dsh"):
+    for key in ("workbuddy", "codex", "zcode", "dsh"):
         r = rows.get(key)
         if r and r["ok"] and r["host"]:
             return key, "%s（本 skill 就装在它名下）" % r["label"]
-    for key in ("workbuddy", "codex", "dsh"):
+    for key in ("workbuddy", "codex", "zcode", "dsh"):
         r = rows.get(key)
         if r and r["ok"]:
             return key, "%s（本机可用；本 skill 未装在任何 agent 名下）" % r["label"]
@@ -362,6 +418,16 @@ def build_cmd_for(key, prompt, session_id=None, cwd=None, permission_mode=None,
         cmd = [str(x).replace("{prompt}", prompt).replace("{cwd}", cwd or "")
                for x in cfg["cmd"]]
         return cmd, cfg.get("cmd_mode") or "text"
+    if key == "zcode":
+        cli = zcode_cli()
+        if not cli:
+            raise RuntimeError("ZCode CLI 不可用（没找到 resources/glm/zcode.cjs）")
+        cmd = [node_exe(), cli, "--prompt", prompt, "--mode", "yolo"]
+        if cwd:
+            cmd += ["--cwd", cwd]
+        if session_id:
+            cmd += ["--resume", session_id]      # 钉住本项目自己的会话，不用 -c（不抢用户正在聊的）
+        return cmd, "text"
     if key == "dsh":
         pkg = dsh_pkg()
         if not pkg:
