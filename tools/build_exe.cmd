@@ -35,6 +35,7 @@ if errorlevel 1 (
   --hidden-import json --hidden-import datetime --hidden-import argparse ^
   --add-data "score_core.py;." ^
   --add-data "project_core.py;." ^
+  --add-data "agent_bridge.py;." ^
   score_gui.pyw
 if errorlevel 1 (
   echo.

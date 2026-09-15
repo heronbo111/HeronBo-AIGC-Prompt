@@ -163,9 +163,69 @@ def file_hash(path):
     return "sha1:" + h.hexdigest()[:20]
 
 
+_FFPROBE = None
+
+
+def ffprobe_exe():
+    """找 ffprobe：先 PATH，再常见安装位置（沙箱/精简 PATH 下也能用）。"""
+    global _FFPROBE
+    if _FFPROBE is not None:
+        return _FFPROBE or None
+    import glob
+    cand = shutil.which("ffprobe")
+    if not cand:
+        pats = [
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "WinGet",
+                         "Packages", "Gyan.FFmpeg*", "**", "bin", "ffprobe.exe"),
+            r"C:\ffmpeg\bin\ffprobe.exe",
+            r"C:\Program Files\ffmpeg\bin\ffprobe.exe",
+            os.path.join(os.environ.get("ChocolateyInstall", r"C:\ProgramData\chocolatey"),
+                         "bin", "ffprobe.exe"),
+        ]
+        for p in pats:
+            hit = glob.glob(p, recursive=True)
+            if hit:
+                cand = hit[0]
+                break
+    _FFPROBE = cand or ""
+    return cand or None
+
+
+def wav_duration(path):
+    """不依赖 ffprobe 读 WAV 时长（RIFF 头解析）。"""
+    try:
+        with open(path, "rb") as f:
+            if f.read(4) != b"RIFF":
+                return None
+            f.read(4)
+            if f.read(4) != b"WAVE":
+                return None
+            rate = channels = bits = None
+            while True:
+                hdr = f.read(8)
+                if len(hdr) < 8:
+                    return None
+                cid, size = hdr[:4], int.from_bytes(hdr[4:8], "little")
+                if cid == b"fmt ":
+                    body = f.read(size)
+                    channels = int.from_bytes(body[2:4], "little")
+                    rate = int.from_bytes(body[4:8], "little")
+                    bits = int.from_bytes(body[14:16], "little")
+                elif cid == b"data":
+                    if rate and channels and bits:
+                        return round(size / float(rate * channels * bits // 8), 3)
+                    return None
+                else:
+                    f.seek(size + (size & 1), os.SEEK_CUR)
+    except (OSError, ZeroDivisionError):
+        return None
+
+
 def _ffprobe(path):
     """用 ffprobe 读宽高与时长；没装 ffprobe 就安静返回空。"""
-    exe = shutil.which("ffprobe") or "ffprobe"
+    exe = ffprobe_exe()
+    if not exe:
+        return {}
     try:
         p = subprocess.run(
             [exe, "-v", "error", "-select_streams", "v:0",
@@ -198,6 +258,12 @@ def meta_of(path):
     k = kind_of(path)
     if k == "video":
         m.update(_ffprobe(path))
+    elif k == "audio":
+        m.update(_ffprobe(path))
+        if not m.get("duration"):                     # 没有 ffprobe → 至少把 WAV 读出来
+            wd = wav_duration(path)
+            if wd:
+                m["duration"] = wd
     elif k == "image":
         try:                                                 # 只读文件头，不解码整图
             from struct import unpack
@@ -258,7 +324,211 @@ def ensure_project(project_dir, dirs=None):
     project_dir = os.path.normpath(project_dir)
     for d in (dirs or PROJECT_DIRS):
         os.makedirs(os.path.join(project_dir, d), exist_ok=True)
+    for extra in (SESSION_DIR, UPLOAD_DIR):
+        os.makedirs(os.path.join(project_dir, extra), exist_ok=True)
     return project_dir
+
+
+# ══ 会话协议：项目文件夹就是 exe 与 agent 的接口 ═══════════════════════════
+# 为什么不做成"程序调 API、agent 调 API"：两边都可能不在、都可能被关掉。
+# 把状态放磁盘上，谁先起来谁读盘，就永远不会丢件，也不需要两边同时在线。
+#
+#   <项目>/_会话/
+#   ├── 状态.json      程序写：exe 是否在跑、当前阶段、agent 会话 id、本轮编号
+#   ├── 待办.jsonl     程序写：用户的反馈/请求（agent 读一条处理一条，处理完标 done）
+#   ├── 回执.jsonl     agent 写：我做了什么、产出了哪些文件（程序读来显示）
+#   └── 轮次/001-反馈.txt  每轮用户反馈原文留档（agent 复盘用）
+SESSION_DIR = "_会话"
+UPLOAD_DIR = "即梦上传"
+STATE_JSON = "状态.json"
+TODO_JSONL = "待办.jsonl"
+RECEIPT_JSONL = "回执.jsonl"
+ROUND_DIR = "轮次"
+
+STAGES = ["新建", "等素材", "等提示词", "等成片", "等反馈", "已完成"]
+
+
+def session_dir(project_dir):
+    return os.path.join(os.path.normpath(project_dir), SESSION_DIR)
+
+
+def _jsonl_append(path, rec):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a", encoding="utf-8", newline="\n") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    return rec
+
+
+def _jsonl_read(path):
+    out = []
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        out.append(json.loads(line))
+                    except ValueError:
+                        pass
+    except (FileNotFoundError, OSError):
+        pass
+    return out
+
+
+def read_state(project_dir):
+    p = os.path.join(session_dir(project_dir), STATE_JSON)
+    try:
+        with open(p, encoding="utf-8-sig") as f:
+            return json.load(f)
+    except (FileNotFoundError, ValueError, OSError):
+        return {}
+
+
+def write_state(project_dir, **kw):
+    d = session_dir(project_dir)
+    os.makedirs(d, exist_ok=True)
+    st = read_state(project_dir)
+    st.update(kw)
+    st["updatedAt"] = datetime.datetime.now().isoformat(timespec="seconds")
+    p = os.path.join(d, STATE_JSON)
+    try:
+        with open(p, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(st, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+    except OSError:
+        pass
+    return st
+
+
+def push_todo(project_dir, kind, text, files=None, by="user"):
+    """程序 → agent。kind: 反馈 / 出提示词 / 归位 / 其它"""
+    d = session_dir(project_dir)
+    todos = _jsonl_read(os.path.join(d, TODO_JSONL))
+    rec = {"i": len(todos) + 1, "at": datetime.datetime.now().isoformat(timespec="seconds"),
+           "kind": kind, "text": text or "", "files": list(files or []),
+           "by": by, "status": "open"}
+    _jsonl_append(os.path.join(d, TODO_JSONL), rec)
+    write_state(project_dir, stage="等提示词" if kind in ("反馈", "出提示词") else None,
+                pending=len([t for t in todos if t.get("status") != "done"]) + 1)
+    return rec
+
+
+def read_todos(project_dir, only_open=True):
+    todos = _jsonl_read(os.path.join(session_dir(project_dir), TODO_JSONL))
+    if only_open:
+        todos = [t for t in todos if t.get("status") != "done"]
+    return todos
+
+
+def mark_todos_done(project_dir, upto=None):
+    d = session_dir(project_dir)
+    path = os.path.join(d, TODO_JSONL)
+    todos = _jsonl_read(path)
+    for i, t in enumerate(todos):
+        if t.get("status") != "done" and (upto is None or t.get("i", 0) <= upto):
+            t["status"] = "done"
+            t["doneAt"] = datetime.datetime.now().isoformat(timespec="seconds")
+    try:
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            for t in todos:
+                f.write(json.dumps(t, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    write_state(project_dir, pending=len([t for t in todos if t.get("status") != "done"]))
+    return todos
+
+
+def push_receipt(project_dir, text, files=None, kind="完成"):
+    """agent → 程序：我做了什么。"""
+    d = session_dir(project_dir)
+    receipts = _jsonl_read(os.path.join(d, RECEIPT_JSONL))
+    rec = {"i": len(receipts) + 1,
+           "at": datetime.datetime.now().isoformat(timespec="seconds"),
+           "kind": kind, "text": text or "", "files": list(files or [])}
+    _jsonl_append(os.path.join(d, RECEIPT_JSONL), rec)
+    return rec
+
+
+def read_receipts(project_dir, since=0):
+    return [r for r in _jsonl_read(os.path.join(session_dir(project_dir), RECEIPT_JSONL))
+            if r.get("i", 0) > since]
+
+
+def new_round(project_dir, feedback_text):
+    """把用户这轮反馈留档，返回轮次号（001 起）。"""
+    d = os.path.join(session_dir(project_dir), ROUND_DIR)
+    os.makedirs(d, exist_ok=True)
+    n = 1
+    if os.path.isdir(d):
+        nums = [int(f[:3]) for f in os.listdir(d) if f[:3].isdigit()]
+        n = (max(nums) + 1) if nums else 1
+    fn = "%03d-反馈.txt" % n
+    try:
+        with open(os.path.join(d, fn), "w", encoding="utf-8", newline="\n") as f:
+            f.write("# 第 %d 轮用户反馈\n" % n)
+            f.write("# 记录时间：%s\n\n"
+                    % datetime.datetime.now().isoformat(timespec="seconds"))
+            f.write(feedback_text or "")
+    except OSError:
+        pass
+    write_state(project_dir, round=n, stage="等提示词")
+    return n
+
+
+def list_rounds(project_dir):
+    d = os.path.join(session_dir(project_dir), ROUND_DIR)
+    if not os.path.isdir(d):
+        return []
+    return sorted(f for f in os.listdir(d) if f.endswith(".txt"))
+
+
+def accept_deliverables(project_dir, paths, verdict="good", note="", on_log=None):
+    """接收成片/废片：good → 成片/，bad → 废片/（文件名=日期-废因，符合命名约定）。
+
+    返回 (放入的文件相对路径列表, log)。这是"成片和废片也要有窗口接收"的落地。
+    """
+    log = []
+
+    def emit(m):
+        log.append(m)
+        if on_log:
+            on_log(m)
+
+    project_dir = os.path.normpath(project_dir)
+    ensure_project(project_dir)
+    sub = "成片" if verdict == "good" else "废片"
+    folder = os.path.join(project_dir, sub)
+    os.makedirs(folder, exist_ok=True)
+    today = datetime.date.today().isoformat()
+    placed = []
+    for src in collect_files(paths):
+        base = os.path.basename(src)
+        if verdict == "bad":                      # 废片：文件名=日期-废因
+            why = _clean_name(note) or "未注明"
+            stem, ext = os.path.splitext(base)
+            base = "%s-%s%s" % (today, why, ext or ".mp4")
+        dst_name = _unique_target(folder, base)
+        try:
+            shutil.copy2(src, os.path.join(folder, dst_name))
+        except (OSError, shutil.Error) as e:
+            emit("跳过 %s（复制失败：%s）" % (base, e))
+            continue
+        rel = "%s/%s" % (sub, dst_name)
+        placed.append(rel)
+        emit("已接收 → %s" % rel)
+    if placed:
+        sk = load_skeleton(project_dir) or {"schema": SCHEMA, "project": {}}
+        g = sk["project"].setdefault("generated", [])
+        for rel in placed:
+            g.append({"file": rel, "verdict": "选用" if verdict == "good" else "作废",
+                      "note": note,
+                      "at": datetime.datetime.now().isoformat(timespec="seconds")})
+        save_skeleton(project_dir, sk)
+        write_state(project_dir, stage="等反馈",
+                    generated=len(g),
+                    lastVerdict="good" if verdict == "good" else "bad")
+    return placed, log
+
 
 
 def skeleton_path(project_dir):
@@ -382,6 +652,183 @@ def render_md(sk):
     return "\n".join(lines) + "\n"
 
 
+# ── 角色识别（rules.md 第11/16/30 条 + 第210/211 行）────────────────────────
+# 素材角色是"一素材一职责"落地的关键：同一份素材只能是一个角色，模型才不会互相打架。
+ROLES = ["形象参考", "台词配音", "音色参考", "参考视频", "产品图", "文案", "其它"]
+
+# 台词配音 vs 音色参考：规则给的界线是"整段口播（时长≈成片）"对"几秒短采样"。
+SPEECH_MIN_SEC = 8.0
+
+PRODUCT_HINT = ("产品", "商品", "包装", "礼盒", "书", "封面", "包装盒", "盒子",
+                "货", "sku", "product", "box")
+FACE_HINT = ("形象", "人物", "角色", "老师", "主播", "三视图", "参考图", "脸",
+             "portrait", "character", "avatar")
+SCRIPT_HINT = ("口播", "台词", "文案", "话术", "script", "copy")
+PROMPT_HINT = ("提示词", "prompt", "指令")
+
+
+def detect_role(path, meta=None):
+    """按「类型 + 时长 + 文件名线索」判素材角色。返回 ROLES 之一。"""
+    meta = meta or {}
+    name = os.path.basename(path).lower()
+    kind = kind_of(path)
+    if kind == "text":
+        if any(h in name for h in PROMPT_HINT):
+            return "文案"
+        if any(h in name for h in SCRIPT_HINT):
+            return "文案"
+        return "文案"
+    if kind == "audio":
+        dur = meta.get("duration")
+        if dur is not None:
+            # 规则给的界线：整段口播（时长≈成片）对几秒短采样
+            return "台词配音" if dur >= SPEECH_MIN_SEC else "音色参考"
+        # 读不到时长 → 退回文件名线索，仍判不出就当音色参考（宁可少挂，不要乱配）
+        if any(h in name for h in ("音色", "采样", "短", "timbre", "voice")):
+            return "音色参考"
+        if any(h in name for h in ("口播", "台词", "完整", "全文", "配音", "整段")):
+            return "台词配音"
+        return "音色参考"
+    if kind == "video":
+        return "参考视频"
+    if kind == "image":
+        if any(h in name for h in PRODUCT_HINT):
+            return "产品图"
+        if any(h in name for h in FACE_HINT):
+            return "形象参考"
+        return "形象参考"                     # 图片默认当形象/场景参考
+    return "其它"
+
+
+def target_dir_for(role):
+    """角色 → 归到哪个目录（rules.md 第267 条归位规则）。"""
+    return "文案" if role == "文案" else MATERIAL_DIR
+
+
+# ── 自动规划：根目录 / 项目名 / 角色，全都由软件推 ────────────────────────────
+FOLDER_NOISE = ("素材", "素材包", "原始素材", "原始", "新建文件夹", "待整理", "给agent的素材",
+                "给agent", "参考", "项目", "批次", "打包")
+
+
+def _clean_name(s):
+    """把候选名洗成"能当项目名"的样子：去扩展名/去标点后半句/去噪声后缀。"""
+    s = re.sub(r"[\r\n\t]+", " ", str(s or "")).strip()
+    s = re.sub(r"\.(txt|md|png|jpe?g|webp|mp4|mov|mkv|mp3|wav|m4a)$", "", s, flags=re.I)
+    # 只取第一个标点之前 —— 避免把整句文案吞成项目名
+    for ch in "，。、；：！？,;:!?（(【[":
+        if ch in s:
+            s = s.split(ch)[0]
+    s = re.sub(r"[_\-—]+", "", s)
+    s = re.sub(r"\s+", "", s)
+    s = s.strip(" ._-—")
+    for noise in FOLDER_NOISE:                 # 去掉"素材/素材包"这类无信息后缀
+        while s.endswith(noise) and len(s) > len(noise):
+            s = s[: -len(noise)].rstrip("_-— ")
+    return s[:24]
+
+
+def guess_project_name(paths):
+    """从输入里推项目名，可靠性从高到低：
+
+    ① 用户丢进来的**文件夹名**（信息量最大，通常是"四六级三本书带货"这种主题名）
+    ② 文案类文件的**文件名**（口播稿.txt 这种通用名会被滤掉）
+    ③ 第一个视频/图片的文件名主干
+    推不出返回空串，由调用方兜底，绝不硬编日期戳（命名约定）。
+    """
+    # ① 文件夹名
+    for p in paths or []:
+        if os.path.isdir(p):
+            cand = _clean_name(os.path.basename(os.path.normpath(p)))
+            if len(cand) >= 3:
+                return cand
+    files = collect_files(paths)
+    generic = ("口播稿", "台词", "文案", "提示词", "脚本", "说明", "备注", "素材", "上传说明")
+    # ② 文案文件名
+    for f in [x for x in files if kind_of(x) == "text"]:
+        stem = _clean_name(os.path.basename(f))
+        if len(stem) >= 3 and stem not in generic:
+            return stem
+    # ③ 视频 / 图片文件名主干
+    for f in [x for x in files if kind_of(x) in ("video", "image")] + files:
+        stem = _clean_name(os.path.basename(f))
+        if len(stem) >= 3 and stem not in generic:
+            return stem
+    return ""
+
+
+def auto_plan(paths, root=None, name=None):
+    """给一批素材做一次"自动规划"：定根目录、定项目名、判每个素材的角色。
+
+    返回 dict，可直接拿去执行，也可以先在界面上给用户看/改。
+    """
+    files = collect_files(paths)
+    root = os.path.normpath(root) if root else (detect_root() or "")
+    nm = (name or "").strip() or guess_project_name(paths)
+    items = []
+    for f in files:
+        try:
+            meta = meta_of(f)
+        except OSError:
+            meta = {}
+        items.append({"src": f, "name": os.path.basename(f),
+                      "type": kind_of(f), "role": detect_role(f, meta), "meta": meta})
+    by_role = {}
+    for it in items:
+        by_role.setdefault(it["role"], []).append(it)
+    final = next_project_name(root, nm) if (root and nm) else nm
+    return {"root": root, "guess_name": nm, "final_name": final,
+            "items": items, "by_role": by_role, "count": len(items)}
+
+
+def auto_build(paths, root=None, name=None, platform="", register=True, on_log=None):
+    """一键：自动定根/定名 → 建骨架（含 即梦上传/）→ 按角色归类 → 写清单。
+
+    这就是"软件自行生成骨架"：用户只管把素材丢进来，其余全自动；
+    任何一步的判断结果都落在日志与骨架里，可回溯、可手改。
+    """
+    log = []
+
+    def emit(m):
+        log.append(m)
+        if on_log:
+            on_log(m)
+
+    plan = auto_plan(paths, root=root, name=name)
+    if not plan["root"]:
+        return None, plan, log + ["还没有样本库根目录，无法自动建骨架"]
+    if not plan["final_name"]:
+        plan["final_name"] = "新项目"
+        emit("推不出项目名 → 先用「新项目」，建好后随手改名即可")
+    pdir, sk, l2 = build_skeleton(plan["root"], plan["final_name"],
+                                  platform=platform or None, register=register)
+    for m in l2:
+        emit(m)
+    # 即梦上传夹（rules.md 第270 条：交付提示词时必须同步建）
+    os.makedirs(os.path.join(pdir, "即梦上传"), exist_ok=True)
+    emit("已建 即梦上传/（规则第270条）")
+
+    # 按角色分批落户
+    buckets = {}
+    for it in plan["items"]:
+        buckets.setdefault(target_dir_for(it["role"]), []).append(it["src"])
+    total_added = 0
+    for sub, srcs in buckets.items():
+        dest_root = os.path.join(pdir, sub)
+        added, skipped, _ = add_materials(pdir, srcs, copy=True,
+                                          note="", on_log=emit, into=sub)
+        total_added += len(added)
+    # 把角色回填到骨架里
+    sk = load_skeleton(pdir) or sk
+    roles = {os.path.basename(it["src"]): it["role"] for it in plan["items"]}
+    for m in sk["project"].get("materials", []):
+        r = roles.get(m.get("name"))
+        if r:
+            m["role"] = r
+    save_skeleton(pdir, sk)
+    emit("共归类 %d 个素材，按角色写入骨架" % total_added)
+    return pdir, plan, log
+
+
 # ── 素材投放 ───────────────────────────────────────────────────────────────
 def _unique_target(folder, filename):
     """同名不覆盖：xx.jpg → xx_1.jpg → xx_2.jpg"""
@@ -415,12 +862,13 @@ def collect_files(paths):
     return uniq
 
 
-def add_materials(project_dir, paths, copy=True, note="", on_log=None):
-    """把素材投放到 <项目>/素材/ 并登记进骨架。返回 (added list, skipped list, log list)。
+def add_materials(project_dir, paths, copy=True, note="", on_log=None, into=None):
+    """把素材投放到 <项目>/<into>/（默认 素材/）并登记进骨架。
 
-    幂等：同一个文件（按 hash）已经在清单里就不再重复登记。
+    返回 (added list, skipped list, log list)。幂等：同一文件（按 hash）已在清单里就不再登记。
     """
     log = []
+    into = into or MATERIAL_DIR
 
     def emit(msg):
         log.append(msg)
@@ -429,7 +877,7 @@ def add_materials(project_dir, paths, copy=True, note="", on_log=None):
 
     project_dir = os.path.normpath(project_dir)
     ensure_project(project_dir)
-    folder = os.path.join(project_dir, MATERIAL_DIR)
+    folder = os.path.join(project_dir, into)
     os.makedirs(folder, exist_ok=True)
     sk = load_skeleton(project_dir)
     if not sk:
@@ -471,7 +919,7 @@ def add_materials(project_dir, paths, copy=True, note="", on_log=None):
                 emit("同名已存在 → 存为 %s" % dst_name)
         rec = {
             "id": new_id(seq),
-            "file": "%s/%s" % (MATERIAL_DIR, rel_name),
+            "file": "%s/%s" % (into, rel_name),
             "name": rel_name,
             "srcPath": "" if copy else os.path.abspath(src),
             "type": kind_of(rel_name),
@@ -501,21 +949,22 @@ def add_materials(project_dir, paths, copy=True, note="", on_log=None):
 
 
 def rescan(project_dir):
-    """磁盘→清单的自愈重扫：按相对路径合并，保留原 id 与人工字段。"""
+    """磁盘→清单的自愈重扫：扫 素材/ 与 文案/，按相对路径合并，保留原 id 与人工字段。"""
     project_dir = os.path.normpath(project_dir)
-    folder = os.path.join(project_dir, MATERIAL_DIR)
     sk = load_skeleton(project_dir) or {"schema": SCHEMA, "project": {
         "name": os.path.basename(project_dir), "materials": []}}
     mats = sk["project"].setdefault("materials", [])
     by_file = {m.get("file"): m for m in mats}
     on_disk = []
-    if os.path.isdir(folder):
+    for sub in (MATERIAL_DIR, "文案"):
+        folder = os.path.join(project_dir, sub)
+        if not os.path.isdir(folder):
+            continue
         for fn in sorted(os.listdir(folder)):
             if fn.startswith("."):
                 continue
-            fp = os.path.join(folder, fn)
-            if os.path.isfile(fp):
-                on_disk.append("%s/%s" % (MATERIAL_DIR, fn))
+            if os.path.isfile(os.path.join(folder, fn)):
+                on_disk.append("%s/%s" % (sub, fn))
     added = removed = 0
     seq = len(mats) + 1
     for rel in on_disk:
@@ -528,6 +977,7 @@ def rescan(project_dir):
             continue
         rec = {"id": new_id(seq), "file": rel, "name": os.path.basename(rel),
                "type": kind_of(rel), "srcPath": "",
+               "role": detect_role(fp, meta),
                "addedAt": datetime.datetime.now().isoformat(timespec="seconds"),
                "tags": [], "note": ""}
         rec.update(meta)
@@ -563,17 +1013,74 @@ def _cli(argv):
                     help="只登记原路径不复制（默认复制进 <项目>/素材/）")
     ap.add_argument("--note", default="", help="给这批素材记一句备注")
     ap.add_argument("--rescan", action="store_true", help="按磁盘重扫、自愈清单")
+    # ── 会话协议（exe ↔ agent）──
+    ap.add_argument("--todos", action="store_true", help="读未处理的待办（agent 用）")
+    ap.add_argument("--todo-done", action="store_true", help="把所有待办标记为已完成")
+    ap.add_argument("--receipt", metavar="文字", help="写一条回执（agent → 程序）")
+    ap.add_argument("--receipt-files", nargs="+", metavar="FILE", default=None,
+                    help="回执里附带的产出文件")
+    ap.add_argument("--state", action="store_true", help="看/写会话状态")
+    ap.add_argument("--stage", help="配合 --state：设置阶段")
+    ap.add_argument("--new-round", metavar="反馈文字", help="把本轮反馈留档并返回轮次号")
+    ap.add_argument("--deliver", nargs="+", metavar="FILE",
+                    help="接收成片；配 --bad 则当废片接收（废因用 --why）")
+    ap.add_argument("--bad", action="store_true", help="--deliver 的判定设为废片")
+    ap.add_argument("--why", default="", help="废因（作废文件名 = 日期-废因）")
     ap.add_argument("--no-register", action="store_true",
                     help="不把 --root 写进 references/paths.local.md（自检用）")
     ap.add_argument("--show", action="store_true", help="打印当前骨架摘要")
+    ap.add_argument("--auto", action="store_true",
+                    help="全自动：自动定根目录与项目名、自动判素材角色、自动建骨架并归类")
+    ap.add_argument("--plan", action="store_true",
+                    help="只做规划不落地：打印推出来的根目录/项目名/每个素材的角色")
     ap.add_argument("--json", action="store_true", help="以 JSON 输出结果")
     a = ap.parse_args(argv)
 
+    # 0) 全自动模式：软件自己定根/定名/判角色/建骨架/归类
+    if a.auto or a.plan:
+        if not a.add:
+            out = {"ok": False, "error": "--auto / --plan 需要配合 --add <素材路径>"}
+            print(json.dumps(out, ensure_ascii=False, indent=2) if a.json
+                  else "[自动] 请用 --add 把素材路径给我")
+            return 2
+        if a.plan:
+            plan = auto_plan(a.add, root=a.root, name=a.name)
+            data = {"ok": True, "root": plan["root"], "guess_name": plan["guess_name"],
+                    "final_name": plan["final_name"],
+                    "items": [{"name": it["name"], "type": it["type"],
+                               "role": it["role"]} for it in plan["items"]]}
+            if a.json:
+                print(json.dumps(data, ensure_ascii=False, indent=2))
+            else:
+                print("[规划] 根目录 =", plan["root"])
+                print("[规划] 项目名 = %s（避让后 = %s）"
+                      % (plan["guess_name"] or "(未推出)", plan["final_name"]))
+                for it in plan["items"]:
+                    print("[规划]   %-28s %-6s → %s" % (it["name"], it["type"], it["role"]))
+                print("[规划] 素材 %d 个" % plan["count"])
+            return 0
+        pdir, plan, log = auto_build(a.add, root=a.root, name=a.name,
+                                     platform=a.platform,
+                                     register=bool(a.root) and not a.no_register)
+        out = {"ok": bool(pdir), "project": pdir, "plan": {
+            "root": plan["root"], "guess_name": plan["guess_name"],
+            "final_name": plan["final_name"]}, "log": log}
+        if a.json:
+            print(json.dumps(out, ensure_ascii=False, indent=2))
+        else:
+            for m in log:
+                print("[自动]", m)
+            print("[自动] 项目 = %s" % pdir)
+        return 0 if pdir else 1
+
     out = {"ok": True, "actions": []}
     root = detect_root(a.root)
+    # 纯会话操作（读待办/写回执/看状态…）不要顺手重建骨架，免得刷一堆噪声日志
+    session_only = bool(a.todos or a.todo_done or a.receipt or a.state
+                        or a.new_round or a.deliver)
 
     # 1) 建骨架
-    if a.project or a.name:
+    if (a.project or a.name) and not session_only:
         if not root and not a.project:
             out.update(ok=False, error="还没指定样本库根目录",
                        ask=ASK_PLACE,
@@ -630,6 +1137,57 @@ def _cli(argv):
         out["actions"].append({"rescan": a.project, "added": ad, "removed": rm})
         if not a.json:
             print("[重扫] 补录 %d，剔除 %d" % (ad, rm))
+
+    # 3b) 会话协议：待办 / 回执 / 状态 / 轮次 / 交付接收
+    if a.todos or a.todo_done or a.receipt or a.state or a.new_round or a.deliver:
+        if not a.project:
+            out.update(ok=False, error="会话相关动作都需要 --project <项目目录>")
+            print(json.dumps(out, ensure_ascii=False, indent=2) if a.json
+                  else "[会话] 需要 --project")
+            return 2
+        proj = os.path.normpath(a.project)
+        if a.new_round:
+            n = new_round(proj, a.new_round)
+            push_todo(proj, "反馈", a.new_round)      # 顺手落待办，agent 才看得到
+            out["round"] = n
+            if not a.json:
+                print("[会话] 本轮反馈已留档：第 %d 轮（并已落一条待办给 agent）" % n)
+        if a.deliver:
+            placed, log = accept_deliverables(proj, a.deliver,
+                                             verdict="bad" if a.bad else "good",
+                                             note=a.why,
+                                             on_log=None if a.json else print)
+            out["deliver"] = placed
+            if a.json:
+                out.setdefault("log", []).extend(log)
+        if a.receipt:
+            rec = push_receipt(proj, a.receipt, files=a.receipt_files)
+            out["receipt"] = rec
+            if not a.json:
+                print("[会话] 回执已写：%s" % rec["text"][:60])
+        if a.todo_done:
+            mark_todos_done(proj)
+            out["todos_done"] = True
+            if not a.json:
+                print("[会话] 待办已全部标记完成")
+        if a.stage:
+            write_state(proj, stage=a.stage)
+        if a.state or a.stage:
+            st = write_state(proj) if a.stage else read_state(proj)
+            out["state"] = st
+            if not a.json:
+                print("[会话] 状态 =", json.dumps(st, ensure_ascii=False))
+        if a.todos:
+            todos = read_todos(proj)
+            out["todos"] = todos
+            if not a.json:
+                if not todos:
+                    print("[会话] 没有未处理的待办")
+                for t in todos:
+                    print("[会话] 待办 #%d [%s] %s" % (t["i"], t["kind"], t["text"]))
+        if a.json:
+            print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0 if out.get("ok") else 1
 
     # 4) 摘要
     target = a.project or (os.path.join(root, a.name) if (root and a.name) else None)
