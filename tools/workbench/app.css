@@ -190,3 +190,44 @@ textarea{width:100%;resize:vertical}
 .rh button.on{font-weight:600}
 .rh button.on.g{color:var(--ok)} .rh button.on.y{color:var(--warn)} .rh button.on.r{color:var(--bad)}
 .rh.drag .knob{transition:none}
+
+/* ── 流程条 v2：去掉"数字方块"（会顶出胶囊），改用 状态点 + 顺序连接 ───────── */
+.flowbar{display:flex;align-items:center;gap:0;padding:10px 16px 0;flex:0 0 auto}
+.step{display:flex;align-items:center;gap:7px;padding:6px 13px 6px 11px;border:1px solid var(--border);
+  border-radius:999px;background:var(--surface);color:var(--muted);font-size:13px;cursor:pointer;
+  transition:background .15s ease,border-color .15s ease,color .15s ease}
+.step:hover{border-color:#cfd8e6;background:var(--surface2)}
+.step .dot{width:8px;height:8px;border-radius:50%;background:#c7d0de;flex:0 0 auto}
+.step.done{color:var(--text)}
+.step.done .dot{background:var(--ok)}
+.step.now{border-color:var(--accent);background:var(--accent-soft);color:var(--accent);font-weight:600}
+.step.now .dot{background:var(--accent);box-shadow:0 0 0 3px rgba(47,111,237,.18)}
+.step.manual{border-style:dashed}
+.step .who{font-size:11px;border-radius:999px;padding:0 7px;border:1px solid var(--border);
+  background:var(--surface2);color:var(--muted);font-weight:400}
+.step.now .who{border-color:#cfe0ff;background:#fff;color:var(--accent)}
+.sep{flex:0 0 auto;width:14px;height:1px;background:var(--border);margin:0 2px}
+.autochip{border:1px dashed var(--border);background:transparent;color:var(--muted);border-radius:999px;
+  font-size:11px;padding:3px 9px;cursor:pointer;margin-left:8px;font-family:inherit}
+.autochip:hover{border-color:var(--accent);color:var(--accent)}
+
+/* 当前阶段对应的那一栏高亮（用户一眼知道"现在该看哪栏"） */
+.col.hl{outline:2px dashed var(--accent);outline-offset:-3px}
+.col.hl .colhead{background:linear-gradient(180deg,#f2f7ff,#eef4ff)}
+.col.hl .colhead h2{color:var(--accent)}
+
+/* ── agent 通道弹窗 v2：状态点 + 单选式，切换一眼可见 ───────────────────── */
+.amod{display:flex;flex-direction:column;gap:6px;margin:10px 0}
+.arow{display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--border);
+  border-radius:10px;background:var(--surface);cursor:pointer;transition:border-color .15s,background .15s}
+.arow:hover{background:var(--surface2);border-color:#cfd8e6}
+.arow.on{border-color:var(--accent);background:var(--accent-soft)}
+.arow.no{cursor:not-allowed;opacity:.72}
+.arow .adot{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
+.arow .adot.g{background:var(--ok);box-shadow:0 0 0 3px rgba(18,161,80,.15)}
+.arow .adot.r{background:var(--bad);box-shadow:0 0 0 3px rgba(229,72,77,.13)}
+.arow .an{font-weight:600;flex:0 0 auto;min-width:104px}
+.arow .aw{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-size:12px;color:var(--muted)}
+.arow .ar{flex:0 0 auto;font-size:12px;color:var(--muted)}
+.arow.on .ar{color:var(--accent);font-weight:600}

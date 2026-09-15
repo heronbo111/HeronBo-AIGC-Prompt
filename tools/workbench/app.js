@@ -86,7 +86,7 @@ function logLine(text, cls) {
 
 /* ── 状态 ─────────────────────────────────────────────────────────── */
 const S = {state: null, pending: [], review: {}, dims: [], video: "", agentTimer: null,
-           rh: {}, agent: null};
+           rh: {}, agent: null, manualStep: null};
 
 const STEPS = [
   {n: "丢素材", who: "你", man: "把素材（文案/形象图/音频/原片）拖进②栏，然后点「建框架归类」"},
@@ -112,28 +112,50 @@ function currentStep() {
   return {i: 4, why: "打分已保存。还想改就写反馈 → 提交让 agent 再出一版"};
 }
 
+function activeStep() {                       // 手动选的优先（可回到上一步），没选就按状态自动判定
+  return S.manualStep == null ? currentStep().i : S.manualStep;
+}
+
 function renderFlow() {
-  const cur = currentStep().i;
+  const auto = currentStep().i;
+  const cur = activeStep();
   $("flow").innerHTML = STEPS.map((s, i) => {
     const cls = i < cur ? "done" : (i === cur ? "now" : "");
-    const no = i < cur ? "✓" : String(i + 1);
-    return `<div class="step ${cls}"><span class="no">${no}</span>${s.n}` +
-           `<span class="who">${s.who}</span></div>` +
-           (i < STEPS.length - 1 ? '<span class="sep">›</span>' : "");
-  }).join("");
+    const man = (S.manualStep != null && i === cur) ? " manual" : "";
+    return `<div class="step ${cls}${man}" data-i="${i}" title="点一下切到这一步（可以回退）">`
+         + `<i class="dot"></i>${esc(s.n)}<span class="who">${esc(s.who)}</span></div>`
+         + (i < STEPS.length - 1 ? '<span class="sep"></span>' : "");
+  }).join("") + (S.manualStep != null ? '<button class="autochip" id="btnAuto">回到自动</button>' : "");
+  $("flow").querySelectorAll(".step").forEach((el) => {
+    el.onclick = () => { S.manualStep = +el.dataset.i; renderFlow(); };
+  });
+  const au = $("btnAuto");
+  if (au) au.onclick = () => { S.manualStep = null; renderFlow(); };
+
   const c = currentStep();
   const who = (c.i === 1 && S.agent && S.agent.label) ? `（用 ${esc(S.agent.label)}）` : "";
-  $("nextText").innerHTML = `<b>${STEPS[c.i].n}</b>：${esc(c.why)}${who}`;
+  $("nextText").innerHTML = `<b>${esc(STEPS[cur].n)}</b>：`
+    + (cur === auto ? esc(c.why) + who : "你手动切到了这一步；点「回到自动」恢复按状态判断");
   const b = $("nextBtn");
   b.disabled = false;
-  b.textContent = ["建框架归类", "出提示词", "复制提示词", "收成片", "去打分"][c.i];
+  b.textContent = ["建框架归类", "出提示词", "复制提示词", "收成片", "去打分"][cur];
   b.onclick = () => {
-    if (c.i === 0) return intakeGo();
-    if (c.i === 1) return askAgent("prompt");
-    if (c.i === 2) return copyPrompt();
-    if (c.i === 3) return receive(true);
-    document.querySelector("#scoreCol").scrollIntoView({behavior: "smooth"});
+    if (cur === 0) return intakeGo();
+    if (cur === 1) return askAgent("prompt");
+    if (cur === 2) return copyPrompt();
+    if (cur === 3) return receive(true);
+    $("scoreCol").scrollIntoView({behavior: "smooth", block: "start"});
   };
+  hintColumns();
+}
+
+/* 当前阶段对应哪一栏 → 那一栏高亮（用户不用猜"现在该看哪儿"） */
+const STEP_COL = [1, 2, 2, 2, 3];
+function hintColumns() {
+  const cur = activeStep();
+  document.querySelectorAll(".col").forEach((el, i) => {
+    el.classList.toggle("hl", i === STEP_COL[cur]);
+  });
 }
 
 /* ── 渲染 ─────────────────────────────────────────────────────────── */
@@ -188,27 +210,26 @@ function renderAgent(agent) {
 function agentModal() {
   const a = S.agent || {};
   const rows = (a.list || []).map((r) => {
-    const tag = r.host ? '<span class="who" style="border-color:#cfe0ff;background:var(--accent-soft);color:var(--accent)">装了本技能</span>' : "";
-    const st = r.ok ? '<span style="color:var(--ok)">可用</span>'
-                    : `<span class="meta">${esc(r.why)}</span>`;
-    const now = r.key === a.picked;
-    const btn = (r.ok && !now)
-      ? `<button class="btn ghost sm" data-k="${esc(r.key)}">换成这个</button>`
-      : (now ? '<span class="meta">当前</span>' : "");
-    return `<div class="step"><b style="flex:0 0 96px">${esc(r.label)}</b>
-      <span style="flex:1">${tag} ${st}</span>${btn}</div>`;
+    const now = r.ok && r.key === a.picked;
+    const cls = (r.ok ? "" : " no") + (now ? " on" : "");
+    const why = r.ok ? (r.host ? "本 skill 就装在它名下" : "本机可用") : (r.why || "不可用");
+    const right = now ? "✓ 当前使用" : (r.ok ? "点这里切换" : "不可用");
+    return `<div class="arow${cls}" data-k="${esc(r.key)}" data-ok="${r.ok ? 1 : 0}" title="${esc(r.why || "")}">
+        <i class="adot ${r.ok ? "g" : "r"}"></i>
+        <span class="an">${esc(r.label)}</span>
+        <span class="aw">${esc(why)}</span>
+        <span class="ar">${right}</span>
+      </div>`;
   }).join("");
   const m = document.createElement("div");
   m.className = "modal";
   m.innerHTML = `<div class="box"><h3>agent 通道</h3>
-    <p class="meta">这个工作台跟着 skill 走：谁把本技能装在自己名下、且命令行可用，就用谁。</p>
-    <div class="step"><b style="flex:0 0 96px">当前</b><span>${esc(a.label || "无")}
-      —— ${esc(a.ok ? (a.why || "") : (a.why || "没找到可用的 agent"))}</span></div>
-    ${rows}
-    <p class="note" style="margin-top:12px">
-      选择记在 <code>tools\agent_bridge.local.json</code>。要接没适配的 CLI（比如以后
-      ZCode、DSH 提供了无头入口），在那份 json 里写
-      <code>{"cmd": ["你的命令", "{prompt}"], "cmd_mode": "text"}</code>（{prompt}/{cwd} 是占位符）。</p>
+    <p class="meta">工作台跟着 skill 走：谁把本技能装在自己名下、且命令行可用，就用谁。
+      <span style="color:var(--ok)">● 可用</span>　<span style="color:var(--bad)">● 不可用</span>　点一行即可切换。</p>
+    <div class="amod">${rows}</div>
+    <p class="note" style="margin-top:4px">想用别的：在 <code>tools/agent_bridge.local.json</code> 写
+      <code>{"agent": "codex"}</code> 指定；要接没适配的命令行，写
+      <code>{"cmd": ["命令", "{prompt}"], "cmd_mode": "text"}</code>。</p>
     <div style="text-align:right;margin-top:12px">
       ${a.chosen ? '<button class="btn ghost" id="mauto">恢复自动挑选</button>' : ""}
       <button class="btn" id="mclose">知道了</button></div>
@@ -216,12 +237,13 @@ function agentModal() {
   document.body.appendChild(m);
   m.querySelector("#mclose").onclick = () => m.remove();
   m.onclick = (e) => { if (e.target === m) m.remove(); };
-  m.querySelectorAll("button[data-k]").forEach((b) => {
-    b.onclick = async () => {
-      const r = await api("/api/agent/set", {key: b.dataset.k});
+  m.querySelectorAll(".arow").forEach((row) => {
+    row.onclick = async () => {
+      if (row.dataset.ok !== "1") return toast("这个 agent 现在不可用");
+      const r = await api("/api/agent/set", {key: row.dataset.k});
       if (!r.ok) return toast(r.why || "设置失败");
       S.agent = r.agent; renderAgent(S.agent); m.remove();
-      toast("已换成 " + (S.agent.label || ""));
+      toast("已切换为 " + (S.agent.label || ""));
     };
   });
   const auto = m.querySelector("#mauto");
@@ -573,7 +595,7 @@ function helpModal() {
   const rows = [
     ["① 丢素材", "把文案/形象图/音频/原片拖进②栏 → 「建框架归类」；软件会判角色并回报去向。"],
     ["② 出提示词", "点③栏右上「出提示词」，agent 读技能与框架 → 写提示词与即梦上传副本 → 写回执。"],
-    ["③ 去平台生成", "复制提示词 → 上传清单里列的素材（没写进提示词的别传）→ 手选 9:16 → 生成。"],
+    ["③ 去平台生成", "复制提示词 → 上传清单里列的素材（没写进提示词的别传）→ 按需求选画幅（默认竖版 9:16，横版/方屏也行；提示词里的画幅句不决定成片比例）→ 生成。"],
     ["④ 收成片", "成片拖回②栏或点「收成片」；废片点「收废片」并写废因。"],
     ["⑤ 打分反馈", "④栏逐项打分 → 保存。想改就写「本轮反馈」→ 提交，agent 按它再出一版。"],
   ];
@@ -583,7 +605,7 @@ function helpModal() {
     <p class="meta">绿色=agent 干，蓝色=你干，灰色=软件干。四栏从左到右就是流程顺序。</p>
     ${rows.map(([a, b]) => `<div class="step"><b style="flex:0 0 96px">${a}</b>
       <span>${b}</span></div>`).join("")}
-    <p class="note" style="margin-top:12px">最常翻车的两件事：画幅没手选 9:16、素材没传全。</p>
+    <p class="note" style="margin-top:12px">最常翻车的两件事：画幅没在平台手选（默认竖版 9:16，按需选横屏/方屏）、素材没传全。</p>
     <div style="text-align:right;margin-top:12px"><button class="btn" id="mclose">知道了</button></div>
     </div>`;
   document.body.appendChild(m);
@@ -631,7 +653,6 @@ $("btnLoadPrompts").onclick = async () => {
   S.prompts = pr.prompts || []; S.uploads = pr.uploads || [];
   renderPrompts(); renderFlow(); toast("已重新读取提示词");
 };
-$("btnCopy").onclick = () => copyPrompt();
 $("btnAgent").onclick = () => agentModal();
 $("btnAsk").onclick = () => askAgent("prompt");
 $("btnIntakeGo").onclick = () => intakeGo();
@@ -647,9 +668,12 @@ $("btnReload").onclick = async () => {
   toast("已重新载入上次评分");
 };
 $("btnHelp").onclick = () => helpModal();
-$("btnClassic").onclick = () => {
-  fetch("/api/classic", {method: "POST"}).catch(() => {});
-  toast("经典界面要重新启动：用 score-tool.exe --classic");
+$("btnClassic").onclick = async () => {
+  const r = await api("/api/classic", {});
+  if (!r.ok) return toast(r.error || "切不过来");
+  toast(r.note || "已切到经典界面");
+  logLine("已切到经典界面（另开的窗口）；本窗口可以直接关掉", "ok");
+  $("nextText").innerHTML = "<b>已切到经典界面</b>：另开了一个窗口，本窗口随时可以关掉。";
 };
 $("note").oninput = () => { S.review.备注 = $("note").value; };
 

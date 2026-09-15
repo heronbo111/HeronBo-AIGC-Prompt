@@ -112,6 +112,7 @@ class Picker:
 
 
 _picker = None
+_WIN = None          # pywebview 窗口句柄（切经典界面时要主动关掉它）
 
 
 def picker():
@@ -524,6 +525,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(self.receive(self._body()))
         if path == "/api/feedback":
             return self._json(self.feedback(self._body()))
+        if path == "/api/classic":
+            return self._json(self.classic())
         if path == "/api/agent/set":
             b = self._body()
             if not abridge:
@@ -601,6 +604,50 @@ class Handler(BaseHTTPRequestHandler):
 
     def _pending(self):
         return self.server.pending
+
+    def classic(self):
+        """切到经典 Tk 界面：另起一个 --classic 进程，然后本窗口关掉、服务退出。
+
+        为什么这么做而不是"页面上换个皮"：经典界面是独立的 Tk 程序，只能另起进程；
+        而两个界面同时开着会争同一个"当前项目/未保存草稿"，所以起完就把这边收掉。
+        """
+        import subprocess
+        if getattr(sys, "frozen", False):
+            cmd = [sys.executable, "--classic"]
+        else:
+            w = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+            cmd = [(w if os.path.isfile(w) else sys.executable),
+                   os.path.join(HERE, "score_gui.pyw"), "--classic"]
+        kw = {"cwd": HERE}
+        if os.name == "nt":
+            kw["creationflags"] = 0x08000000          # 别弹控制台窗口
+            kw["close_fds"] = True
+        try:
+            subprocess.Popen(cmd, **kw)
+        except OSError as e:
+            return {"ok": False, "error": "经典界面起不来：%s" % e}
+
+        def _bye():
+            """能关就把本窗口关掉；**关不掉就留着**（pywebview 的 destroy 从服务线程调用
+            对 WinForms 不生效——2026-09-15 实测窗口没关掉）。留着时页面会提示"可关掉了"，
+            服务继续跑，用户自己关窗后心跳超时自动退出。"""
+            import time as _t
+            _t.sleep(1.0)
+            closed = False
+            try:
+                if _WIN is not None:
+                    _WIN.destroy()
+                    closed = True
+            except Exception:                            # noqa: BLE001
+                closed = False
+            if closed:
+                try:
+                    self.server.shutdown()
+                except Exception:                        # noqa: BLE001
+                    pass
+        threading.Thread(target=_bye, daemon=True).start()
+        return {"ok": True, "note": "已切到经典界面，本窗口稍后自动关闭"}
+
 
     def set_root(self, b):
         """改样本库根：写进技能仓库的 references/paths.local.md（本机取值，不进 git）。"""
@@ -826,6 +873,8 @@ def native_window(title, url, width=1520, height=940):
     try:
         win = webview.create_window(title, url, width=width, height=height,
                                     min_size=(1180, 700), text_select=True)
+        global _WIN
+        _WIN = win
 
         def _show():
             """显式 show/restore：实测（2026-09-15）打包后窗口会以**最小化**状态起来

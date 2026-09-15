@@ -3247,6 +3247,11 @@ def main():
     selftest_res = {"code": None}
     try:
         app = App(root, opt.get("sample"))
+        if opt.get("classic"):
+            try:      # 经典界面与 HTML 工作台会同时存在过一会儿，标题里标出来便于分辨
+                root.title("HeronBo · AI 视频工作台（经典界面）")
+            except tk.TclError:
+                pass
         if (opt.get("material") or opt.get("add") or opt.get("name")
                 or opt.get("project")):          # --project 单独给也要落到那个项目上
             root.after(120, lambda: _run_material_actions(app, opt))
