@@ -226,6 +226,34 @@ def _parse_output(out):
     return None
 
 
+def no_window_kwargs():
+    """子进程创建参数：**别让它弹控制台窗口**（Windows）。
+
+    宿主是 GUI 进程（score-tool.exe / pythonw），本身**没有控制台**；这时创建一个
+    控制台子进程（node.exe），Windows 会给它新开一个终端窗口。Win11 的默认终端是
+    Windows Terminal，于是用户看到"一个什么都没有的命令行"——因为子进程的
+    stdout/stderr 被我们用管道接管了，终端里自然什么都不显示（2026-09-15 实测复现：
+    窗口类 `CASCADIA_HOSTING_WINDOW_CLASS`，标题就是 node.exe 的路径）。
+
+    `CREATE_NO_WINDOW` 让子进程不建控制台；`STARTUPINFO.wShowWindow=SW_HIDE` 是给
+    老系统的双保险。ffprobe 之类短命令同理（归类素材时也会闪一下黑窗）。
+
+    ⚠️ 只对**直接子进程**有效。agent 自己再派生的 shell 属于孙子进程，是否弹窗取决于
+    它自己的 spawn 参数（Node 的 windowsHide）——所以验收要跑一次真调用看全程。
+    """
+    kw = {}
+    if os.name == "nt":
+        kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        try:
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = 0                      # SW_HIDE
+            kw["startupinfo"] = si
+        except (AttributeError, ValueError):
+            pass
+    return kw
+
+
 def ask(prompt, session_id=None, cwd=None, timeout=DEFAULT_TIMEOUT,
         permission_mode="acceptEdits", tools=None, on_line=None, extra=None):
     """叫 agent 干一件事。
@@ -242,7 +270,7 @@ def ask(prompt, session_id=None, cwd=None, timeout=DEFAULT_TIMEOUT,
     try:
         p = subprocess.run(cmd, cwd=cwd or HERE, capture_output=True, timeout=timeout,
                            encoding="utf-8", errors="replace", env=child_env(),
-                           stdin=subprocess.DEVNULL)
+                           stdin=subprocess.DEVNULL, **no_window_kwargs())
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "超时 %ds，已放弃（agent 可能还在跑）" % timeout,
                 "session_id": session_id, "text": "", "cmd": cmd}
