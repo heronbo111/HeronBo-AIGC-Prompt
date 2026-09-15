@@ -110,6 +110,11 @@ def probe():
     ok, detail = check_ocr()
     add("系统 OCR（WinRT）", "拆解用", ok, detail, "" if ok else "Windows 设置里装中文语言/OCR 组件")
 
+    # 工作台界面：exe 自带一份 pywebview（独立窗口），从源码跑才需要本机装
+    ok, detail = mod_state("webview")
+    add("pywebview（工作台独立窗口，界面默认入口）", "源码运行用", ok, detail,
+        "" if ok else "pip install pywebview（或直接用 dist 目录里的 score-tool.exe，里面已带）")
+
     model = os.path.join(DEPTH_DIR, "model.onnx")
     ok = os.path.isfile(model) and os.path.getsize(model) > 90 * 1024 * 1024
     add("Depth-Anything-V2-Small", "深度视频", ok,

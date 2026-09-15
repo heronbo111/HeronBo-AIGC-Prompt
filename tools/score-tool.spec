@@ -18,6 +18,18 @@ hiddenimports = ['json', 'datetime', 'argparse',
 tmp_ret = collect_all('tkinterdnd2')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
+# 独立窗口（pywebview 内嵌 WebView2）：界面默认入口，必须整包带上，
+# 否则 exe 里 import webview 失败 → 只能退回 Edge app 窗口（用户不要那个）。
+for pkg in ('webview', 'pythonnet', 'clr_loader'):
+    try:
+        _r = collect_all(pkg)
+        datas += _r[0]; binaries += _r[1]; hiddenimports += _r[2]
+    except Exception as _e:                                      # noqa: BLE001
+        print('collect_all(%s) 失败: %r' % (pkg, _e))
+hiddenimports += ['webview.platforms.edgechromium', 'webview.platforms.winforms',
+                  'clr_loader', 'pythonnet', 'System', 'System.Windows.Forms',
+                  'System.Drawing', 'System.Threading']
+
 
 a = Analysis(
     ['score_gui.pyw'],

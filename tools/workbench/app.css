@@ -5,7 +5,7 @@
   --ok:#12a150; --ok-soft:#e6f6ee; --warn:#d98b1f; --warn-soft:#fdf3e3;
   --bad:#e5484d; --bad-soft:#fdecec;
   --r:12px; --sh:0 1px 2px rgba(16,24,40,.04), 0 8px 24px rgba(16,24,40,.06);
-  --col1:250px; --col2:300px; --col4:380px;
+  --col1:236px; --col2:290px; --col4:352px;
 }
 *{box-sizing:border-box}
 html,body{height:100%}
@@ -58,9 +58,11 @@ header{display:flex;align-items:center;gap:10px;padding:9px 16px;background:var(
 .btn.sm{padding:4px 9px;font-size:12px}
 
 /* 四栏：齐平白面 + 1px 分栏线 */
-.work{flex:1 1 auto;display:grid;grid-template-columns:var(--col1) var(--col2) 1fr var(--col4);
+.work{flex:1 1 auto;display:grid;
+  grid-template-columns:var(--col1) var(--col2) minmax(0,1fr) var(--col4);
   min-height:0;margin-top:10px;border-top:1px solid var(--border);background:var(--surface)}
-.col{display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--border)}
+.col{display:flex;flex-direction:column;min-height:0;min-width:0;   /* 关键：允许被长文本压缩 */
+  border-right:1px solid var(--border)}
 .col:last-child{border-right:none}
 .colhead{height:44px;flex:0 0 44px;display:flex;align-items:center;gap:8px;padding:0 12px;
   background:linear-gradient(180deg,#fafbfd,#f7f9fc);border-bottom:1px solid var(--border)}
@@ -183,7 +185,8 @@ textarea{width:100%;resize:vertical}
   box-shadow:0 1px 2px rgba(16,24,40,.14);transition:transform .18s ease,width .06s;
   pointer-events:none}
 .rh button{border:0;background:transparent;color:var(--muted);font:12.5px/1.5 inherit;
-  padding:5px 2px;cursor:pointer;border-radius:6px;text-align:center;position:relative;z-index:1}
+  padding:5px 2px;cursor:pointer;border-radius:6px;text-align:center;position:relative;z-index:1;
+  min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rh button.on{font-weight:600}
 .rh button.on.g{color:var(--ok)} .rh button.on.y{color:var(--warn)} .rh button.on.r{color:var(--bad)}
 .rh.drag .knob{transition:none}

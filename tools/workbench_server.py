@@ -798,8 +798,58 @@ class Handler(BaseHTTPRequestHandler):
 
 
 # ── 启动 ───────────────────────────────────────────────────────────────────
+def native_window(title, url, width=1520, height=940):
+    """用 pywebview 开一个**独立窗口**（内嵌 WebView2），返回 True 表示成功接管。
+
+    这是首选路径：窗口属于本程序自己——自己的标题、图标、任务栏条目，没有地址栏；
+    也不用借用户正在用的 Edge 浏览器（2026-09-15 用户明确要求"变成独立程序而不是
+    依赖 Edge"）。WebView2 **运行时**是系统组件（Win10/11 自带，Teams/微信都在用），
+    不是用户的浏览器进程，关掉浏览器不影响它。
+    跑不通就返回 False，让调用方退回 Edge app 窗口 / 默认浏览器。
+    """
+    try:
+        import webview
+    except ImportError:
+        return False
+    store = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
+                         "HeronBoScoreTool", "webview")
+    try:
+        os.makedirs(store, exist_ok=True)
+    except OSError:
+        store = None
+    try:
+        win = webview.create_window(title, url, width=width, height=height,
+                                    min_size=(1180, 700), text_select=True)
+
+        def _show():
+            """显式 show/restore：实测（2026-09-15）打包后窗口会以**最小化**状态起来
+            （任务栏上只有 160x28 一条），不还原的话用户以为程序没打开。"""
+            time.sleep(1.2)
+            for fn in ("show", "restore", "on_top"):
+                try:
+                    getattr(win, fn)()
+                except Exception:                                # noqa: BLE001
+                    pass
+        threading.Thread(target=_show, daemon=True).start()
+        kw = {}
+        if store:
+            kw["storage_path"] = store
+        try:
+            webview.start(**kw)       # 阻塞到窗口关闭
+        except TypeError:             # 老版本没有 storage_path
+            webview.start()
+        return True
+    except Exception as e:                                       # noqa: BLE001
+        try:
+            open(os.path.join(os.environ.get("TEMP", "."), "heronbo_webview_error.log"),
+                 "w", encoding="utf-8").write("pywebview 起不来：%r" % (e,))
+        except OSError:
+            pass
+        return False
+
+
 def find_edge():
-    """找系统 Edge（WebView2 运行时就是它）。"""
+    """找系统 Edge 的可执行文件（只在"独立窗口起不来"时当**退路**用）。"""
     import glob as _glob
     cands = [r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
              r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"]
@@ -859,28 +909,34 @@ def write_proj(pdir, port=None):
         pass
 
 
-def launch_web(root="", project="", hint="", port=0, wait=True):
-    """起服务 + 用 Edge 的 app 模式开一个「看起来像桌面程序」的窗口。
+def launch_web(root="", project="", hint="", port=0, wait=True, backend=None):
+    """起服务 + 开界面窗口。
 
-    为什么用 `msedge --app=`：不用装 pywebview（零新依赖），窗口没有地址栏/标签栏，
-    又有完整的 HTML/CSS 能力；系统自带 Edge 就是 WebView2 的宿主。
-    窗口一关，页面的心跳停掉，服务自己退。
+    窗口优先级（2026-09-15 起）：
+      1. **pywebview 独立窗口**（内嵌 WebView2）——自己的窗口，不依赖用户的 Edge 浏览器；
+      2. Edge 的 `--app=` 窗口——退路（独立窗口起不来时）；
+      3. 默认浏览器打开 URL——最后的退路（至少能用）。
+    `backend="edge"` 可强制走退路（排查用）。
     """
-    import subprocess
     import webbrowser
     if project and os.path.isdir(project):
         write_proj(project)
     elif hint:
         r = root or detect_root()
-        for s in _samples(r):
-            if hint in s["name"]:
-                write_proj(s["dir"])
+        for s_ in _samples(r):
+            if hint in s_["name"]:
+                write_proj(s_["dir"])
                 break
     srv = serve(root=root or "")
     url = "http://127.0.0.1:%d/" % srv.server_address[1]
     write_proj(read_proj(), port=srv.server_address[1])
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     Handler.last_ping = time.time()
+    print("[工作台] %s" % url, flush=True)
+    if backend != "edge" and native_window("HeronBo · AI 视频工作台", url):
+        srv.shutdown()                 # 窗口关了 → 收摊（不用再靠心跳判断）
+        return srv, url, "native"
+    # 退路：Edge app 窗口
     exe = find_edge()
     proc = None
     if exe:
@@ -891,7 +947,8 @@ def launch_web(root="", project="", hint="", port=0, wait=True):
         except OSError:
             pass
         try:
-            proc = subprocess.Popen(
+            import subprocess as _sp
+            proc = _sp.Popen(
                 [exe, "--app=" + url, "--user-data-dir=" + prof,
                  "--window-size=1520,940", "--no-first-run",
                  "--no-default-browser-check", "--disable-features=Translate,msEdgeSidebarV2",
@@ -899,12 +956,11 @@ def launch_web(root="", project="", hint="", port=0, wait=True):
                 **({"creationflags": 0x08000000} if os.name == "nt" else {}))
         except OSError:
             proc = None
-    if proc is None:                       # 没 Edge 就退到默认浏览器（至少能用）
+    if proc is None:
         try:
             webbrowser.open(url)
         except Exception:                                        # noqa: BLE001
             pass
-    print("[工作台] %s" % url)
     if wait:
         wait_and_exit(srv)
         try:
@@ -912,7 +968,7 @@ def launch_web(root="", project="", hint="", port=0, wait=True):
                 proc.terminate()
         except OSError:
             pass
-    return srv, url
+    return srv, url, "edge" if proc is not None else "browser"
 
 
 if __name__ == "__main__":
