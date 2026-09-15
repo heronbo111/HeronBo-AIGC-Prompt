@@ -157,15 +157,42 @@ THEMES = {
 }
 DEFAULT_THEME = "拾光"
 
+
+def tokens(th):
+    """把主题补成 StoryVia 口径的完整令牌表（原主题只定义了主色 + 两级文字）。
+
+    StoryVia 的秩序来自三套「阶梯」，缺一套就会退化成"什么都拿主色顶"：
+      - 边框三级：卡片 1px → 输入/分栏 → hover（`#e8e8e8`→`#d0d0d0`→`#c0c0c0`）
+      - 文字三级：正文 → 次要 → 弱化（`#333`→`#666`→`#999`，层级靠**色阶**不靠彩色）
+      - 面三级：窗口底 `bg` → 工具条 `surface2` → 卡面 `surface`
+    派生值一律从主题既有色算出来，9 套主题自动都有，不必逐套手填。
+    """
+    t = dict(th)
+    t["border_mid"] = _mix(t["border"], t["text"], 0.22)     # 输入框 / 分栏线
+    t["border_str"] = _mix(t["border"], t["text"], 0.45)     # hover 描边
+    t["sub"] = t["muted"]                                    # 二级文字（保留旧名）
+    t["weak"] = _mix(t["muted"], t["surface"], 0.42)         # 三级文字：更贴底色
+    t["surface2"] = _mix(t["surface"], t["bg"], 0.55)        # 只读面 / 表头 / 记录区
+    t["accent_hover"] = _dim(t["accent"], 0.14)              # 主按钮 hover：同色压深，不换色
+    return t
+
+
 _FONTS = {}
 
 
 def F(name="body"):
-    """字体缓存（必须在 Tk() 之后调用）。"""
+    """字体缓存（必须在 Tk() 之后调用）。
+
+    阶梯照 StoryVia 的 px 表换算成 pt：标题条 13px/600 → 10pt bold；
+    正文 13px → 10pt；次要 12px → 9pt；角标 11px → 8pt。
+    """
     if name not in _FONTS:
         fam = "Microsoft YaHei UI"
-        spec = {"title": (fam, 15, "bold"), "h2": (fam, 11, "bold"), "body": (fam, 10),
-                "small": (fam, 9), "stat": (fam, 13, "bold"), "star": (fam, 19)}
+        spec = {"title": (fam, 15, "bold"), "h2": (fam, 11, "bold"),
+                "colhead": (fam, 10, "bold"),          # 栏标题条：13px/600
+                "seclab": (fam, 9, "bold"),            # 栏内小节标签：12px/600
+                "body": (fam, 10), "small": (fam, 9), "tiny": (fam, 8),
+                "stat": (fam, 13, "bold"), "star": (fam, 19)}
         s = spec[name]
         kw = dict(family=s[0], size=s[1])
         if len(s) > 2:
@@ -600,7 +627,8 @@ class Segmented(_Slider, tk.Canvas):
             if j == i:
                 self.itemconfig(item, fill=t["accent_text"])
             else:
-                self.itemconfig(item, fill=t["accent"] if j == self._hover else t["muted"])
+                # 悬停只把文字提亮到正文色（强调色纪律：accent 不给悬停）
+                self.itemconfig(item, fill=t["text"] if j == self._hover else t["muted"])
 
     def _refresh_thumb(self):
         self._thumb_img = self._thumb_photo()
@@ -870,7 +898,7 @@ class Pill(tk.Canvas):
     """
 
     def __init__(self, master, text, command=None, theme=None, font=None,
-                 kind="primary", padx=20, pady=10, radius=10, bg_key="bg",
+                 kind="primary", padx=20, pady=10, radius=6, bg_key="bg",
                  shadow=6, depth=None, hit_h=0):
         super().__init__(master, highlightthickness=0, bd=0, takefocus=0)
         self.text, self.command, self.theme = text, command, theme
@@ -915,13 +943,12 @@ class Pill(tk.Canvas):
         self._draw()
 
     def _colors(self):
-        """按钮视觉配方（照 Material 3 / AntD，2026-09-15 重做）：
+        """按钮视觉配方（StoryVia 口径：**一套蓝只管主操作**）：
 
-        - ghost（次要）：白底 + 1px 细边框，**零投影**；悬停 = 边框加深 + 底色微变；
-          按下 = 品牌浅底 + 品牌字。次要动作靠边框和文字站位，不靠影子。
-        - primary（主动作）：实心品牌色 + 白字，**上缘 1px 高光**（光从上来的立体），
-          投影用**主色**而不是黑色 —— 黑投影在浅底上就是"脏盒子"。
-        - danger：白底 + 红字 + 红细边；悬停 = 红浅底。
+        - ghost（次要）：底色 + 1px 边框，零投影；悬停 = 边框加深一档；按下 = 再压深一点。
+          以前按下会变"品牌浅底 + 品牌字"，等于一屏多出好几处主色；现在全走灰阶。
+        - primary（主动作）：实心主色 + 主色文字，hover 同色压深（`accent_hover`）。
+        - danger：白底 + 红字 + 红细边；悬停 = 红浅底（红色是状态色，不算装饰）。
         """
         t = self.theme
         if not getattr(self, "_enabled", True):
@@ -929,20 +956,18 @@ class Pill(tk.Canvas):
             return _mix(t["muted"], t["surface"], 0.45), t["surface"], None
         if self.kind == "primary":
             if self._press:
-                return _dim(t["accent"], 0.12), t["accent_text"], None
+                return t["accent_hover"], t["accent_text"], None
             return t["accent"], t["accent_text"], None
         if self.kind == "danger":
-            if self._press:
-                return t["accent_soft"], t["bad"], None
-            if self._hover:
+            if self._press or self._hover:
                 return t["accent_soft"], t["bad"], None
             return t[self.bg_key], t["bad"], t["bad"]
         # ghost
         if self._press:
-            return t["accent_soft"], t["accent"], t["accent"]
+            return _mix(t["surface_hover"], t["text"], 0.06), t["text"], t["border_str"]
         if self._hover:
-            return t["surface_hover"], t["text"], t["muted"]
-        return t[self.bg_key], t["text"], t["border"]
+            return t["surface_hover"], t["text"], t["border_str"]
+        return t[self.bg_key], t["text"], t["border_mid"]
 
     def _draw(self):
         t = self.theme
@@ -1106,7 +1131,11 @@ def icon_font(size=12):
 
 
 class Toast(tk.Toplevel):
-    """右下角自动消失的提示条（照拾光 .toast）：不打断、不用点确定。"""
+    """底部居中自动消失的提示条（StoryVia 口径：近黑底 + 白字，类型只换色相）。
+
+    原先 info 用主色底 —— 一屏弹一次提示就多一处蓝。StoryVia 的 toast 常态是
+    `rgba(0,0,0,.85)`，成功/失败只是把黑换成 95% 的绿/红，所以这里照做。
+    """
 
     def __init__(self, master, text, theme, ms=2400, kind="ok"):
         super().__init__(master)
@@ -1115,8 +1144,8 @@ class Toast(tk.Toplevel):
             self.attributes("-topmost", True)
         except tk.TclError:
             pass
-        bg = {"ok": theme["ok"], "bad": theme["bad"], "info": theme["accent"]}.get(
-            kind, theme["text"])
+        neutral = _mix("#000000", theme["surface"], 0.14)     # 近黑（深浅主题都压得住）
+        bg = {"ok": theme["ok"], "bad": theme["bad"], "info": neutral}.get(kind, neutral)
         tk.Label(self, text=text, font=F("small"), bg=bg, fg="#FFFFFF",
                  padx=16, pady=9).pack()
         self.update_idletasks()
@@ -1169,15 +1198,20 @@ class IconBtn(tk.Canvas):
 
     def _colors(self):
         t = self.theme
-        if self._press:
-            return t["accent"], t["accent_text"], None
-        if self._hover:
-            return t["accent_soft"], t["accent"], None
+        # 图标按钮是"次要动作"：悬停/按下只走灰阶（强调色纪律），主色留给 kind=primary
         if self.kind == "primary":
+            if self._press:
+                return t["accent_hover"], t["accent_text"], None
             return t["accent"], t["accent_text"], None
         if self.kind == "danger":
+            if self._press or self._hover:
+                return t["accent_soft"], t["bad"], None
             return t["surface"], t["bad"], t["border"]
-        return t[self.bg_key], t["muted"], t["border"]
+        if self._press:
+            return t["surface_hover"], t["text"], t["border_str"]
+        if self._hover:
+            return t["surface_hover"], t["text"], t["border_str"]
+        return t[self.bg_key], t["sub"], t["border"]
 
     def _draw(self):
         t = self.theme
@@ -1387,16 +1421,16 @@ class FeedbackWin(tk.Toplevel):
                            highlightthickness=1, wrap="word")
         self.box.pack(fill="both", expand=True)
         self.box.configure(bg=t["surface"], fg=t["text"], insertbackground=t["accent"],
-                           highlightbackground=t["border"], highlightcolor=t["accent"])
+                           highlightbackground=t["border_mid"], highlightcolor=t["accent"])
         row = tk.Frame(self, bg=t["surface"])
         row.pack(fill="x", padx=14, pady=(0, 12))
         Pill(row, "提交并让 agent 再出一版", self._send_and_close, theme=t, font=F("small"),
-             kind="primary", padx=16, pady=8, radius=9, bg_key="surface", depth=4).pack(
+             kind="primary", padx=16, pady=8, radius=6, bg_key="surface", depth=4).pack(
                  side="left")
         Pill(row, "只记待办", self._save_only, theme=t, font=F("small"), kind="ghost",
-             padx=12, pady=8, radius=9, bg_key="surface", depth=2).pack(side="left", padx=6)
+             padx=12, pady=8, radius=6, bg_key="surface", depth=2).pack(side="left", padx=6)
         Pill(row, "✕ 关闭", self.destroy, theme=t, font=F("small"), kind="ghost",
-             padx=14, pady=8, radius=9, bg_key="surface", depth=2).pack(side="right")
+             padx=14, pady=8, radius=6, bg_key="surface", depth=2).pack(side="right")
         self.box.focus_force()
 
     def _take(self):
@@ -1431,7 +1465,7 @@ class FeedbackWin(tk.Toplevel):
 class App:
     def __init__(self, root, preselect=None):
         self.root = root
-        self.theme = THEMES[load_theme_name()]
+        self.theme = tokens(THEMES[load_theme_name()])
         self._loading = False
         self.dirty = False
         self.drafts = {}
@@ -1562,7 +1596,7 @@ class App:
         # 主题：一颗按钮展开收起（原先是横排 8 个分段，太占地方）
         self.theme_btn = Pill(hr, "主题 · %s  ▼" % load_theme_name(),
                               lambda: self.open_theme_menu(self.theme_btn), theme=t,
-                              font=F("small"), kind="ghost", padx=14, pady=8, radius=999,
+                              font=F("small"), kind="ghost", padx=14, pady=8, radius=6,
                               bg_key="header", depth=2)
         self.theme_btn.pack(side="left")
         self._dyn.append(self.theme_btn)
@@ -1571,7 +1605,7 @@ class App:
         self.root_path_lab.pack(anchor="w", padx=22, pady=(10, 0))
 
         body = tk.Frame(self.root, bg=t["bg"])
-        body.pack(fill="both", expand=True, padx=20, pady=12)
+        body.pack(fill="both", expand=True, padx=0, pady=0)   # 工作台满幅贴边（StoryVia 口径）
         self._frames.append((body, "bg", "bg"))
 
         # ── 四栏工作台（照 StoryVia 形制：四栏 + 4px 隐形拖缝 + 全高）──────
@@ -1597,7 +1631,7 @@ class App:
         self._stat = {}
         for key, cap in (("mat", "素材"), ("gen", "成片"), ("round", "轮次")):
             cell = tk.Frame(statrow, bg=t["surface"], highlightthickness=1,
-                            highlightbackground=t["border"], highlightcolor=t["border"])
+                            highlightbackground=t["border_mid"], highlightcolor=t["border"])
             cell.pack(side="left", fill="both", expand=True, padx=(0, 5))
             num = tk.Label(cell, text="—", font=F("stat"), bg=t["surface"],
                            fg=t["text"], anchor="w")   # 强调色纪律：非交互元素不用 accent
@@ -1632,13 +1666,13 @@ class App:
         rrow.pack(fill="x", padx=12, pady=(0, 12))
         self._frames.append((rrow, "surface", "bg"))
         self.refresh_pill = Pill(rrow, "刷新", self.reload, theme=t, font=F("small"),
-                                 kind="ghost", padx=12, pady=8, radius=10,
+                                 kind="ghost", padx=12, pady=8, radius=6,
                                  bg_key="surface", depth=3)
         self.refresh_pill.pack(side="left")
         self._dyn.append(self.refresh_pill)
         self.detail_pill = Pill(rrow, "详细…", lambda: self.open_material(self.proj_dir),
                                 theme=t, font=F("small"), kind="ghost", padx=12, pady=8,
-                                radius=10, bg_key="surface", depth=3)
+                                radius=6, bg_key="surface", depth=3)
         self.detail_pill.pack(side="right")
         self._dyn.append(self.detail_pill)
 
@@ -1661,7 +1695,7 @@ class App:
         # ④ 评分栏（原有表单原样搬进来，不改逻辑）
         rightcard = self._col(body, t, c4w)
         right = tk.Frame(rightcard, bg=t["surface"])
-        right.pack(fill="both", expand=True, padx=1, pady=1)
+        right.pack(fill="both", expand=True, padx=0, pady=0)
         self._frames.append((right, "surface", "bg"))
         self._col_head(right, t, "评分", [
             ("save", "保存评分", self.save, "primary"),
@@ -1748,7 +1782,7 @@ class App:
             pass
         self.status.pack(side="left")
         self.save_pill = Pill(footer, "保存评分", self.save, theme=t, font=F("h2"),
-                              kind="primary", padx=26, pady=11, radius=11,
+                              kind="primary", padx=26, pady=10, radius=6,
                               bg_key="bg", depth=4)
         self.save_pill.pack(side="right")
         self._dyn.append(self.save_pill)
@@ -1762,7 +1796,7 @@ class App:
     def apply_theme(self, name, first=False):
         if name not in THEMES:
             return
-        self.theme = THEMES[name]
+        self.theme = tokens(THEMES[name])
         t = self.theme
         for w, bg_key, _ in self._frames:
             try:
@@ -1793,23 +1827,23 @@ class App:
             (getattr(self, "intake_lb", None), dict(bg=t["surface"], fg=t["text"],
                                                     selectbackground=t["accent_soft"],
                                                     selectforeground=t["text"],
-                                                    highlightbackground=t["border"])),
+                                                    highlightbackground=t["border_mid"])),
             (getattr(self, "_isb", None), dict(bg=t["surface"], troughcolor=t["bg"],
                                                activebackground=t["muted"],
                                                highlightbackground=t["surface"])),
             (getattr(self, "prompt", None), dict(bg=t["surface"], fg=t["text"],
                                                  insertbackground=t["accent"],
-                                                 highlightbackground=t["border"])),
+                                                 highlightbackground=t["border_mid"])),
             (getattr(self, "_psb", None), dict(bg=t["surface"], troughcolor=t["bg"],
                                                activebackground=t["muted"],
                                                highlightbackground=t["surface"])),
             (getattr(self, "fb", None), dict(bg=t["surface"], fg=t["text"],
                                              insertbackground=t["accent"],
-                                             highlightbackground=t["border"],
+                                             highlightbackground=t["border_mid"],
                                              highlightcolor=t["accent"])),
             (getattr(self, "log", None), dict(bg=t["surface"], fg=t["text"],
                                               insertbackground=t["accent"],
-                                              highlightbackground=t["border"])),
+                                              highlightbackground=t["border_mid"])),
             (getattr(self, "_lsb", None), dict(bg=t["surface"], troughcolor=t["bg"],
                                                activebackground=t["muted"],
                                                highlightbackground=t["surface"])),
@@ -1820,13 +1854,13 @@ class App:
                 w.config(**kw)
             except tk.TclError:
                 pass
-        self.video_menu.config(bg=t["surface"], fg=t["text"], highlightbackground=t["border"],
+        self.video_menu.config(bg=t["surface"], fg=t["text"], highlightbackground=t["border_mid"],
                                activebackground=t["surface_hover"], activeforeground=t["text"])
         self.video_menu["menu"].config(bg=t["surface"], fg=t["text"],
                                        activebackground=t["accent_soft"],
                                        activeforeground=t["text"])
         self.note.config(bg=t["surface"], fg=t["text"], insertbackground=t["accent"],
-                         highlightbackground=t["border"], highlightcolor=t["accent"],
+                         highlightbackground=t["border_mid"], highlightcolor=t["accent"],
                          disabledbackground=t["surface"])
         for d in self._dyn:
             d.apply_theme(t)
@@ -1844,8 +1878,10 @@ class App:
             except tk.TclError:
                 pass
         self._recolor_list()
-        for c in getattr(self, "_cols", []):               # 换肤后重画卡片阴影与描边
+        for c in getattr(self, "_cols", []):               # 换肤后重画分栏面与分栏线
             self._paint_card(c[0])
+        for gb in getattr(self, "_gradbars", []):          # 标题条渐变随主题重铺
+            self._paint_gradbar(gb)
         self._paint_drop(False)
         if not first:
             save_theme_name(name)
@@ -1874,11 +1910,12 @@ class App:
 
     # ---- 四栏框架 ---------------------------------------------------------
     def _col(self, body, t, w):
-        """一栏：软阴影圆角卡 + 固定宽度 + 登记进 _cols（拖缝就是改这里存的宽度）。
+        """一栏：**齐平的白面 + 1px 分栏线**（StoryVia 口径），宽度存进 _cols 给拖缝用。
 
-        阴影用「按背景色分层的混合色」画，不生成贴图：拖缝调宽会频繁触发 Configure，
-        贴图方案每次都要逐像素重算（卡顿），分层混合色只是几条画布图元，随便重画。
-        观感口径：**大而淡**（6 层、每层 3% 上下）——小而深的阴影显廉价。
+        原先是「漂浮圆角卡 + 6 层阴影」，四张卡各自浮在底色上、彼此没有分栏关系，
+        看上去像四个部件而不是一张工作台。StoryVia 的做法是 `.column{background:#fff;
+        border-right:1px solid #d0d0d0}` + 容器底色从缝里透出来 —— 秩序感来自
+        **分栏线**，不是影子；所以这里把圆角/投影全部去掉，只留白面与一条右分栏线。
         """
         cv = tk.Canvas(body, width=w, bg=t["bg"], highlightthickness=0, bd=0)
         cv.pack(side="left", fill="y")
@@ -1887,10 +1924,14 @@ class App:
         cv.bind("<Configure>", lambda e, c=cv: self._paint_card(c))
         return cv
 
-    CARD_PAD, CARD_R = 3, 12          # 画布留白（放阴影）/ 圆角
+    CARD_PAD, CARD_R = 2, 0           # 内容内缩 2px：给分栏线与拖拽虚线框留出可见的边
 
     def _paint_card(self, cv):
-        """画一张卡：外圈 6 层淡阴影 + 圆角卡面 + 1px 描边。"""
+        """画一栏的底：整幅白面 + 右缘 1px 分栏线（末栏不画，避免贴着窗口边）。
+
+        内容框内缩 2px（CARD_PAD），这圈留白同时承担两件事：分栏线可见、
+        拖拽时的容器虚线框有地方画（`_paint_col_drag`）。
+        """
         t = self.theme
         try:
             w, h = cv.winfo_width(), cv.winfo_height()
@@ -1899,55 +1940,75 @@ class App:
         if w < 16 or h < 16:
             return
         cv.delete("card")
-        pad, r = self.CARD_PAD, self.CARD_R
-        x1, y1, x2, y2 = pad, pad, w - pad, h - pad
-        layers = 6
-        for i in range(layers, 0, -1):                 # 由外到内，逐层更实
-            a = 0.030 * (1.0 - (i - 1) / float(layers))
-            g = i * 1.7
-            _rr(cv, x1 - g, y1 - g + 1.5, x2 + g, y2 + g + 1.5, r + g,
-                fill=_mix(t["bg"], t["text"], a), outline="", tags="card")
-        _rr(cv, x1, y1, x2, y2, r, fill=t["surface"], outline=t["border"],
-            width=1, tags="card")
+        cv.create_rectangle(0, 0, w, h, fill=t["surface"], outline="", tags="card")
+        cols = getattr(self, "_cols", [])
+        last = bool(cols) and cols[-1][0] is cv
+        if not last:
+            cv.create_line(w - 0.5, 0, w - 0.5, h, fill=t["border_mid"], tags="card")
+        if getattr(self, "_drag_hot", False):          # 拖拽中换栏宽/换主题也要保住虚线框
+            self._paint_col_drag(True)
 
     def _inner(self, card, t):
-        p = self.CARD_PAD + 1
+        p = self.CARD_PAD
         f = tk.Frame(card, bg=t["surface"])
         f.place(x=p, y=p, relwidth=1, relheight=1, width=-2 * p, height=-2 * p)
         self._frames.append((f, "surface", "bg"))
         return f
 
     def _col_head(self, parent, t, title, items=(), note=None):
-        """栏标题条：标题在左，**带文字的药丸按钮**在右。
+        """栏标题条：44px + 上光渐变 + 13px/600 标题，动作按钮右对齐。
 
-        AntD：空间够时不要用纯图标按钮（那是小空间的妥协）；
-        这里空间够，所以文字按钮 + 图标字体只在按钮里当前缀（识别更快）。
+        StoryVia 的列头是 `.column-header{height:44px;background:linear-gradient(
+        180deg,#fafafa,#f5f5f5);border-bottom:1px solid #e0e0e0}` + `h2{13px/600;
+        letter-spacing:.3px}`。Tk 的 Frame 画不了渐变，所以标题条改自绘 Canvas：
+        44 条 1px 横线铺出真渐变 + 一条底边线，标题用 Label **place** 上去
+        （Canvas 不能 pack 子控件，只能 place）。四栏共用这一个函数，样式必然一致。
+
         items 每项 = (图标名, 按钮文字, 回调) 或 (图标名, 按钮文字, 回调, kind)。
         """
-        bar = tk.Frame(parent, bg=t["header"], height=44)
+        bar = tk.Canvas(parent, height=44, bg=t["header"], highlightthickness=0, bd=0)
         bar.pack(fill="x")
-        bar.pack_propagate(False)
         self._frames.append((bar, "header", "surface"))
-        self._lab(bar, title, "h2").pack(side="left", padx=(13, 0))
+        self._gradbars = getattr(self, "_gradbars", [])
+        self._gradbars.append(bar)
+        bar.bind("<Configure>", lambda e, c=bar: self._paint_gradbar(c))
+        self._lab(bar, title, "colhead").place(x=13, y=22, anchor="w")
         holder = tk.Frame(bar, bg=t["header"])
-        holder.pack(side="right", padx=(0, 8))
         self._frames.append((holder, "header", "surface"))
+        holder.place(relx=1.0, x=-10, y=22, anchor="e")
         for it in items:
             _glyph, label, cmd = it[0], it[1], it[2]
             kind = it[3] if len(it) > 3 else "ghost"
             btn = Pill(holder, label, cmd, theme=t, font=F("small"),
                        kind="primary" if kind == "primary" else
                        ("danger" if kind == "danger" else "ghost"),
-                       padx=11, pady=5, radius=999, bg_key="header",
-                       depth=4 if kind == "primary" else 2, hit_h=44)
-            btn.pack(side="left", padx=3)      # 条本身 44 高，热区正好铺满
+                       padx=11, pady=4, radius=6, bg_key="header",
+                       depth=4 if kind == "primary" else 2, hit_h=30)
+            btn.pack(side="left", padx=3)      # 条本身 44 高，热区 30 铺满视觉中段
             self._dyn.append(btn)
             self._head_pills = getattr(self, "_head_pills", {})
             self._head_pills[label] = btn
         if note is not None:
-            self.col_note_lab = self._lab(bar, note, "small", "muted")
-            self.col_note_lab.pack(side="right", padx=(0, 8))
+            self.col_note_lab = self._lab(holder, note, "small", "muted")
+            self.col_note_lab.pack(side="left", padx=(0, 8))
         return bar
+
+    def _paint_gradbar(self, cv):
+        """标题条的「上光」渐变：上浅下深的 1px 横线 + 1px 底边（StoryVia 口径）。"""
+        t = self.theme
+        try:
+            w, h = cv.winfo_width(), cv.winfo_height()
+        except tk.TclError:
+            return
+        if w < 4 or h < 4:
+            return
+        cv.delete("grad")
+        top, bot = _lit(t["header"], 0.55), t["header"]
+        for y in range(h - 1):
+            cv.create_line(0, y, w, y, fill=_mix(top, bot, y / float(max(1, h - 2))),
+                           tags="grad")
+        cv.create_line(0, h - 0.5, w, h - 0.5, fill=t["border_mid"], tags="grad")
+        cv.tag_lower("grad")
 
     def open_theme_menu(self, anchor):
         ThemeMenu(anchor, self.theme, load_theme_name(), self.apply_theme)
@@ -1985,19 +2046,23 @@ class App:
         self._drop_zone = drop
         self._drop_canvas = drop
         self._drop_off_job = None
-        self._lab(drop, "把素材拖到这里", "body").place(relx=0.5, y=42, anchor="center")
-        self._lab(drop, "支持图片 / 视频 / 音频 / 文本，整文件夹也行", "small",
-                  "muted").place(relx=0.5, y=66, anchor="center")
+        self._col_drag_canvas = self._cols[1][0]        # ②栏整面：拖拽时画容器级虚线框
+        self._drop_title_lab = self._lab(drop, "把素材拖到这里", "body")
+        self._drop_title_lab.place(relx=0.5, y=42, anchor="center")
+        self._drop_title_lab._cold_text = "把素材拖到这里"
+        self._drop_hint_lab = self._lab(
+            drop, "支持图片 / 视频 / 音频 / 文本，整文件夹也行", "small", "muted")
+        self._drop_hint_lab.place(relx=0.5, y=66, anchor="center")
 
         db = tk.Frame(drop, bg=t["surface"], highlightthickness=1,
-                      highlightbackground=t["border"], highlightcolor=t["accent"])
+                      highlightbackground=t["border_mid"], highlightcolor=t["accent"])
         db.place(relx=0.5, y=102, anchor="center")
         self._lab(db, "选择素材", "small").pack(padx=16, pady=6)
         try:
             db.configure(cursor="hand2")
             db.bind("<Button-1>", lambda e: self.intake_pick(False))
             db.bind("<Enter>", lambda e: db.configure(highlightbackground=t["accent"]))
-            db.bind("<Leave>", lambda e: db.configure(highlightbackground=t["border"]))
+            db.bind("<Leave>", lambda e: db.configure(highlightbackground=t["border_mid"]))
         except tk.TclError:
             pass
         self._drop_ok = self._enable_drop(drop)
@@ -2008,7 +2073,7 @@ class App:
         self.drag_lab.place(relx=0.5, y=136, anchor="center")
         drop.bind("<Configure>", lambda e: self._paint_drop(False))
 
-        self._lab(parent, "待投放 · 角色识别", "h2").pack(anchor="w", padx=13, pady=(4, 4))
+        self._lab(parent, "待投放 · 角色识别", "seclab", "sub").pack(anchor="w", padx=13, pady=(4, 4))
         box = tk.Frame(parent, bg=t["surface"])
         box.pack(fill="both", expand=True, padx=13, pady=(0, 8))
         self._frames.append((box, "surface", "bg"))
@@ -2026,7 +2091,7 @@ class App:
         foot.pack(fill="x", padx=13, pady=(0, 10))
         self._frames.append((foot, "surface", "bg"))
         Pill(foot, "清空", self.intake_clear, theme=t, font=F("small"), kind="ghost",
-             padx=10, pady=5, radius=999, bg_key="surface", depth=2).pack(side="left")
+             padx=10, pady=5, radius=6, bg_key="surface", depth=2).pack(side="left")
         self.intake_hint = self._lab(foot, "—", "small", "muted")
         self.intake_hint.pack(side="left", padx=(8, 0))
         # 拖放：tkdnd 只认「鼠标正下方那个控件」，所以要把整棵控件树都注册成投放目标。
@@ -2067,10 +2132,11 @@ class App:
         return n[0]
 
     def _paint_drop(self, hot):
-        """画投放区的虚线框。
+        """画投放区的虚线框（StoryVia 拖拽四态里的「②空态框」）。
 
-        常态＝中性色虚线；**拖拽悬停时＝强调色虚线 + 4% 淡底**（StoryVia 口径：
-        拖进来要给"能放哪"的明确反馈）。
+        常态＝中性色 2px 虚线；悬停＝强调色虚线 + 4% 淡底 + 文案切「松开即投放」。
+        容器级（①整栏虚线框）由 `_paint_col_drag` 另画——StoryVia 是两层同时给：
+        外层告诉"能放到这一栏"，内层告诉"松手就落在框里"。
         """
         cv = getattr(self, "_drop_canvas", None)
         if cv is None:
@@ -2084,10 +2150,49 @@ class App:
             if hot:
                 cv.create_rectangle(0, 0, w, h, outline="",
                                     fill=_mix(t["surface"], t["accent"], 0.04), tags="zone")
-            _dashed_rr(cv, 2, 2, w - 2, h - 2, 10,
+            _dashed_rr(cv, 2, 2, w - 2, h - 2, 8,
                        t["accent"] if hot else _mix(t["border"], t["muted"], 0.55),
                        dash=(6, 4), width=2, tags="zone")
             cv.tag_lower("zone")
+        except tk.TclError:
+            pass
+        lab = getattr(self, "_drop_title_lab", None)
+        if lab is not None:
+            try:                       # 文案即"落点提示"：松手会发生什么，直接写出来
+                lab.config(text="松开即投放 → 自动归类" if hot
+                           else getattr(lab, "_cold_text", "把素材拖到这里"),
+                           fg=t["accent"] if hot else t["text"])
+                hl = getattr(self, "_drop_hint_lab", None)
+                if hl is not None:
+                    hl.config(fg=t["accent"] if hot else t["muted"])
+            except tk.TclError:
+                pass
+
+    def _paint_col_drag(self, hot):
+        """容器级拖拽反馈：整栏 2px 强调色虚线框 + 2% 强调色淡底（StoryVia 口径）。
+
+        StoryVia 的 `.assets-content.drag-over{background:rgba(0,122,255,.02);
+        outline:2px dashed #007aff; outline-offset:-2px}` —— 用户拖到哪一栏、
+        松手会落到哪，靠这一整片框回答；只给投放区画框的话，鼠标在栏里别处时
+        界面是"死的"。
+        """
+        cv = getattr(self, "_col_drag_canvas", None)
+        self._drag_hot = bool(hot)
+        if cv is None:
+            return
+        t = self.theme
+        try:
+            cv.delete("dragzone")
+            if not hot:
+                return
+            w, h = cv.winfo_width(), cv.winfo_height()
+            if w < 24 or h < 24:
+                return
+            cv.create_rectangle(0, 0, w, h, outline="",
+                                fill=_mix(t["surface"], t["accent"], 0.02), tags="dragzone")
+            _dashed_rr(cv, 1, 1, w - 1, h - 1, 8, t["accent"],
+                       dash=(7, 5), width=2, tags="dragzone")
+            cv.tag_raise("dragzone")        # 压在栏面之上（内容框是独立控件，天然在画布上方）
         except tk.TclError:
             pass
 
@@ -2114,7 +2219,7 @@ class App:
             return False
 
     def _drop_hover(self, frame, on):
-        """拖拽悬停反馈：把投放区切成强调色虚线 + 淡底（StoryVia 口径）。
+        """拖拽悬停反馈：**容器级虚线框 + 投放区虚线**同时给（StoryVia 拖拽四态）。
 
         133 个投放点会连续发 Enter/Leave，所以"离开"延迟 90ms 再复位，
         否则在控件之间移动时会闪。
@@ -2125,12 +2230,19 @@ class App:
                     self.root.after_cancel(self._drop_off_job)
                     self._drop_off_job = None
                 self._paint_drop(True)
+                self._paint_col_drag(True)
             else:
                 if self._drop_off_job:
                     self.root.after_cancel(self._drop_off_job)
-                self._drop_off_job = self.root.after(90, lambda: self._paint_drop(False))
+                self._drop_off_job = self.root.after(90, self._drop_cold)
         except tk.TclError:
             pass
+
+    def _drop_cold(self):
+        """拖拽离开后复位两层反馈（延迟调用，避免控件间移动时闪烁）。"""
+        self._drop_off_job = None
+        self._paint_drop(False)
+        self._paint_col_drag(False)
 
     def _on_files_dropped(self, e):
         data = (getattr(e, "data", "") or "").strip()
@@ -2181,22 +2293,22 @@ class App:
         prow2.pack(fill="x", padx=13, pady=(0, 8))
         self._frames.append((prow2, "surface", "bg"))
         Pill(prow2, "读取提示词", self.wb_load_prompts, theme=t, font=F("small"),
-             kind="ghost", padx=10, pady=5, radius=999, bg_key="surface",
+             kind="ghost", padx=10, pady=5, radius=6, bg_key="surface",
              depth=2).pack(side="left")
         self._lab(prow2, "agent 写回框架后点这颗刷新", "small", "muted").pack(
             side="left", padx=(8, 0))
 
-        self._lab(parent, "成片 / 废片（收完自动弹反馈窗）", "h2").pack(
+        self._lab(parent, "成片 / 废片（收完自动弹反馈窗）", "seclab", "sub").pack(
             anchor="w", padx=13, pady=(2, 4))
         rr = tk.Frame(parent, bg=t["surface"])
         rr.pack(fill="x", padx=13)
         self._frames.append((rr, "surface", "bg"))
         self.rx_ok = Pill(rr, "收成片", lambda: self.wb_receive(True), theme=t,
-                          font=F("small"), kind="ghost", padx=10, pady=5, radius=999,
+                          font=F("small"), kind="ghost", padx=10, pady=5, radius=6,
                           bg_key="surface", depth=2, hit_h=32)
         self.rx_ok.pack(side="left")
         self.rx_bad = Pill(rr, "收废片", lambda: self.wb_receive(False), theme=t,
-                           font=F("small"), kind="danger", padx=10, pady=5, radius=999,
+                           font=F("small"), kind="danger", padx=10, pady=5, radius=6,
                            bg_key="surface", depth=2, hit_h=32)
         self.rx_bad.pack(side="left", padx=5)
         self._lab(rr, "废因", "small", "muted").pack(side="left", padx=(10, 4))
@@ -2204,7 +2316,7 @@ class App:
         tk.Entry(rr, textvariable=self.why_var, font=F("small"), width=8, relief="flat",
                  highlightthickness=1).pack(side="left")
 
-        self._lab(parent, "本轮反馈（提交后 agent 接着干）", "h2").pack(
+        self._lab(parent, "本轮反馈（提交后 agent 接着干）", "seclab", "sub").pack(
             anchor="w", padx=13, pady=(8, 4))
         self.fb = tk.Text(parent, height=3, font=F("small"), bd=0, relief="flat",
                           highlightthickness=1, wrap="word")
@@ -2216,11 +2328,11 @@ class App:
             side="left", padx=(0, 6))
         self.send_pill = Pill(fr, "提交反馈 · 再出一版", lambda: self.wb_submit(True),
                               theme=t, font=F("small"), kind="primary", padx=13, pady=7,
-                              radius=999, bg_key="surface", depth=4)
+                              radius=6, bg_key="surface", depth=4)
         self.send_pill.pack(side="right")
         self._dyn.append(self.send_pill)
 
-        self._lab(parent, "执行记录", "h2").pack(anchor="w", padx=13, pady=(4, 4))
+        self._lab(parent, "执行记录", "seclab", "sub").pack(anchor="w", padx=13, pady=(4, 4))
         lrow = tk.Frame(parent, bg=t["surface"])
         lrow.pack(fill="both", expand=True, padx=13, pady=(0, 12))
         self._frames.append((lrow, "surface", "bg"))
@@ -2297,15 +2409,11 @@ class App:
             return
         self._plan = plan
         t = self.theme
-        role_color = {"形象参考": t["accent"], "产品图": t["warn"],
-                      "参考视频": t["ok"], "台词配音": t["ok"],
-                      "音色参考": t["muted"], "文案": t["text"],
-                      "其它": t["muted"]}
         for i, it in enumerate(plan["items"]):
             try:
+                # 角色识别结果：层级靠色阶，不靠彩色（一列彩色 fg 会和一屏强调色抢焦点）
                 self.intake_lb.insert("end", "%-5s %s" % (it["role"], it["name"]))
-                self.intake_lb.itemconfig(
-                    "end", fg=role_color.get(it["role"], t["text"]))
+                self.intake_lb.itemconfig("end", fg=t["text"])
             except tk.TclError:
                 pass
         try:
