@@ -1793,24 +1793,49 @@ class App:
         return w
 
     # ---- 主题 -------------------------------------------------------------
+    def _bg_map(self):
+        """控件 → 底色键：登记过的用登记的，没登记的**继承最近的已登记祖先**。
+
+        原先换肤只遍历 `_frames`，没登记的控件（投放区画布、数字统计卡、违禁项小格、
+        废因输入框…）会留在"建它时"的配色上——浅色主题里看不出来，一切到深色就是
+        一块块白斑。这里改成整棵树推导：登记过的定调，其余按祖先继承。
+        Toplevel（模态/主题菜单）自己管配色，跳过。
+        """
+        key = {}
+        for w, bg_key, _ in self._frames:
+            key[w] = bg_key
+
+        def walk(w, inherit):
+            k = key.get(w, inherit)
+            key.setdefault(w, k)
+            for ch in w.winfo_children():
+                if isinstance(ch, tk.Toplevel):
+                    continue
+                walk(ch, k)
+
+        walk(self.root, "bg")
+        return key
+
     def apply_theme(self, name, first=False):
         if name not in THEMES:
             return
         self.theme = tokens(THEMES[name])
         t = self.theme
-        for w, bg_key, _ in self._frames:
+        km = self._bg_map()
+        for w, bkey in km.items():                  # 全树铺底（含未登记控件）
             try:
-                w.config(bg=t[bg_key])
+                w.config(bg=t[bkey])
             except tk.TclError:
                 pass
+            if w.winfo_class() in ("Entry", "Text", "Listbox"):   # 输入类：文字与插入符一起跟上
+                try:
+                    w.config(fg=t["text"], insertbackground=t["accent"],
+                             highlightbackground=t["border_mid"])
+                except tk.TclError:
+                    pass
         for w, color, parent in self._labels:
-            pkey = "bg"
-            for pw, pk, _ in self._frames:
-                if pw is parent:
-                    pkey = pk
-                    break
             try:
-                w.config(bg=t[pkey], fg=t[color])
+                w.config(bg=t[km.get(parent, "bg")], fg=t[color])
             except tk.TclError:
                 pass
         self.root.configure(bg=t["bg"])
@@ -1994,7 +2019,11 @@ class App:
         return bar
 
     def _paint_gradbar(self, cv):
-        """标题条的「上光」渐变：上浅下深的 1px 横线 + 1px 底边（StoryVia 口径）。"""
+        """标题条的「上光」渐变：上浅下深 + 1px 底边（StoryVia 口径）。
+
+        深色主题不能照搬"往白里提亮"——`#1B2028` 提亮 55% 会变成一块亮灰板，
+        深色下的上光要**往文字色方向抬一点点**（StoryVia 深色是 `#2d2d2d→#252525`）。
+        """
         t = self.theme
         try:
             w, h = cv.winfo_width(), cv.winfo_height()
@@ -2003,7 +2032,10 @@ class App:
         if w < 4 or h < 4:
             return
         cv.delete("grad")
-        top, bot = _lit(t["header"], 0.55), t["header"]
+        if _lum(t["header"]) < 0.5:
+            top, bot = _mix(t["header"], t["text"], 0.07), t["header"]
+        else:
+            top, bot = _lit(t["header"], 0.55), _mix(t["header"], t["text"], 0.035)
         for y in range(h - 1):
             cv.create_line(0, y, w, y, fill=_mix(top, bot, y / float(max(1, h - 2))),
                            tags="grad")
@@ -2061,8 +2093,11 @@ class App:
         try:
             db.configure(cursor="hand2")
             db.bind("<Button-1>", lambda e: self.intake_pick(False))
-            db.bind("<Enter>", lambda e: db.configure(highlightbackground=t["accent"]))
-            db.bind("<Leave>", lambda e: db.configure(highlightbackground=t["border_mid"]))
+            # 用 self.theme 而不是闭包里的 t：换肤后悬停仍是新主题的强调色
+            db.bind("<Enter>", lambda e: db.configure(
+                highlightbackground=self.theme["accent"]))
+            db.bind("<Leave>", lambda e: db.configure(
+                highlightbackground=self.theme["border_mid"]))
         except tk.TclError:
             pass
         self._drop_ok = self._enable_drop(drop)
