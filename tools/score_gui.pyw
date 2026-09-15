@@ -344,6 +344,8 @@ if core is None:
 
 # 项目骨架 / 素材投放核心（缺了不影响评分功能，只是「素材/骨架」不可用）
 pcore = _load_core("project_core.py", "project_core")
+# 程序 ↔ agent 通道（缺了就只能"只记待办"，不能一键叫 agent）
+abridge = _load_core("agent_bridge.py", "agent_bridge")
 
 DIMS = [(k, opts) for k, opts, _s in core.DIMS]
 FORBID = [k for k, _s in core.FORBID]
@@ -991,8 +993,8 @@ class MaterialPanel(tk.Toplevel):
         t = self.theme
         self.title("素材投放 · 建骨架")
         self.configure(bg=t["bg"])
-        self.geometry("860x640")
-        self.minsize(720, 520)
+        self.geometry("900x800")
+        self.minsize(760, 620)
         self.transient(master)
         self._pending = []                    # 待投放的文件/文件夹
         self._build()
@@ -1073,7 +1075,58 @@ class MaterialPanel(tk.Toplevel):
         Pill(r4, "开始投放", self._drop, theme=t, font=F("small"), kind="primary",
              padx=16, pady=7, radius=9, bg_key="surface", depth=3).pack(side="right")
 
-        # ③ 日志
+        # ③ 提示词（agent 写回骨架的 prompts + 文案/ 里的稿子）—— 用户直接在这里复制
+        self._lab(body, "提示词（agent 写回后在这里复制）", "h2").pack(anchor="w", pady=(10, 4))
+        prow = tk.Frame(body, bg=t["surface"])
+        prow.pack(fill="both", expand=True)
+        self.prompt = tk.Text(prow, height=10, font=F("small"), bd=0, relief="flat",
+                              highlightthickness=1, wrap="word")
+        self.prompt.pack(side="left", fill="both", expand=True)
+        psb = tk.Scrollbar(prow, orient="vertical", command=self.prompt.yview, width=10,
+                           bd=0, relief="flat", elementborderwidth=0)
+        psb.pack(side="right", fill="y", padx=(3, 0))
+        self.prompt.config(yscrollcommand=psb.set)
+        self._psb = psb
+        self.prompt.configure(state="disabled")
+
+        rp = self._row(body)
+        Pill(rp, "读取提示词", self.load_prompts, theme=t, font=F("small"), kind="ghost",
+             padx=12, pady=6, radius=8, bg_key="surface", depth=2).pack(side="left")
+        Pill(rp, "复制全部", self.copy_prompts, theme=t, font=F("small"), kind="primary",
+             padx=14, pady=6, radius=8, bg_key="surface", depth=3).pack(side="left", padx=6)
+        self.state_lab = self._lab(rp, "—", "small", "muted")
+        self.state_lab.pack(side="right")
+
+        # ④ 成片 / 废片接收（接收完自动弹反馈窗口）
+        self._lab(body, "成片 / 废片接收", "h2").pack(anchor="w", pady=(10, 4))
+        rc = self._row(body)
+        Pill(rc, "接收成片（可用）", lambda: self.receive(True), theme=t, font=F("small"),
+             kind="primary", padx=13, pady=6, radius=8, bg_key="surface", depth=3).pack(side="left")
+        Pill(rc, "接收废片", lambda: self.receive(False), theme=t, font=F("small"),
+             kind="danger", padx=13, pady=6, radius=8, bg_key="surface", depth=3).pack(
+                 side="left", padx=6)
+        self._lab(rc, "废因", "small", "muted").pack(side="left", padx=(14, 4))
+        self.why_var = tk.StringVar()
+        tk.Entry(rc, textvariable=self.why_var, font=F("small"), width=16,
+                 relief="flat", highlightthickness=1).pack(side="left")
+
+        # ⑤ 反馈 → 交给 agent
+        self._lab(body, "本轮反馈（提交后 agent 会接着干）", "h2").pack(anchor="w", pady=(10, 4))
+        self.fb = tk.Text(body, height=5, font=F("small"), bd=0, relief="flat",
+                          highlightthickness=1, wrap="word")
+        self.fb.pack(fill="x")
+        rf = self._row(body)
+        Pill(rf, "提交反馈 · 让 agent 再出一版", lambda: self.submit_feedback(True),
+             theme=t, font=F("small"), kind="primary", padx=16, pady=8, radius=9,
+             bg_key="surface", depth=4).pack(side="left")
+        Pill(rf, "只记待办（不叫 agent）", lambda: self.submit_feedback(False),
+             theme=t, font=F("small"), kind="ghost", padx=12, pady=8, radius=9,
+             bg_key="surface", depth=2).pack(side="left", padx=6)
+        Pill(rf, "叫 agent 出提示词", lambda: self.ask_agent("prompt"),
+             theme=t, font=F("small"), kind="ghost", padx=12, pady=8, radius=9,
+             bg_key="surface", depth=2).pack(side="left")
+
+        # ⑥ 日志
         self._lab(body, "执行记录", "h2").pack(anchor="w", pady=(10, 4))
         self.log = tk.Text(body, height=9, font=F("small"), bd=0, relief="flat",
                            highlightthickness=1, wrap="word")
@@ -1112,6 +1165,11 @@ class MaterialPanel(tk.Toplevel):
                            selectbackground=t["accent_soft"], selectforeground=t["text"])
             self._sb.config(bg=t["surface"], troughcolor=t["bg"], relief="flat")
             self.log.config(bg=t["surface"], fg=t["text"], insertbackground=t["accent"])
+            self.prompt.config(bg=t["surface"], fg=t["text"], insertbackground=t["accent"],
+                               highlightbackground=t["border"])
+            self.fb.config(bg=t["surface"], fg=t["text"], insertbackground=t["accent"],
+                           highlightbackground=t["border"], highlightcolor=t["accent"])
+            self._psb.config(bg=t["surface"], troughcolor=t["bg"], relief="flat")
         except tk.TclError:
             pass
 
@@ -1217,6 +1275,218 @@ class MaterialPanel(tk.Toplevel):
             self._refresh_pending()
         except Exception as e:                        # noqa: BLE001
             self._log("!! 投放失败：%s" % e)
+
+    # ---- 提示词 -----------------------------------------------------------
+    def load_prompts(self):
+        proj = self.proj_var.get().strip()
+        if not (pcore and proj) or not os.path.isdir(proj):
+            self._log("先建骨架 / 填好项目目录")
+            return
+        parts = []
+        sk = pcore.load_skeleton(proj)
+        if sk:
+            for pr in sk["project"].get("prompts", []):
+                parts.append("【%s】\n%s" % (pr.get("name", "提示词"), pr.get("text", "")))
+        wenan = os.path.join(proj, "文案")
+        if os.path.isdir(wenan):
+            for fn in sorted(os.listdir(wenan)):
+                if fn.lower().endswith((".txt", ".md")):
+                    try:
+                        body = open(os.path.join(wenan, fn), encoding="utf-8-sig").read()
+                    except OSError:
+                        continue
+                    parts.append("── 文案/%s ──\n%s" % (fn, body.strip()))
+        txt = "\n\n".join(parts) if parts else "（还没有提示词。等 agent 写回 骨架.json 的 prompts，或放进 文案/）"
+        self.prompt.configure(state="normal")
+        self.prompt.delete("1.0", "end")
+        self.prompt.insert("1.0", txt)
+        self.prompt.configure(state="disabled")
+        self.refresh_state()
+        self._log("已读取提示词（%d 段）" % len(parts))
+
+    def copy_prompts(self):
+        txt = self.prompt.get("1.0", "end").strip()
+        if not txt:
+            self._log("没有可复制的内容")
+            return
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(txt)
+            self._log("已复制到剪贴板（%d 字），去即梦粘贴即可" % len(txt))
+        except tk.TclError as e:
+            self._log("复制失败：%s" % e)
+
+    # ---- 状态 -------------------------------------------------------------
+    def refresh_state(self):
+        proj = self.proj_var.get().strip()
+        if not (pcore and proj) or not os.path.isdir(proj):
+            return
+        st = pcore.read_state(proj)
+        pend = len(pcore.read_todos(proj))
+        self.state_lab.config(
+            text="阶段 %s · 第 %s 轮 · 待办 %d%s"
+                 % (st.get("stage", "新建"), st.get("round", 0), pend,
+                    " · exe 在线" if st.get("exeAlive") else ""))
+
+    # ---- 成片 / 废片接收 ---------------------------------------------------
+    def receive(self, good):
+        proj = self.proj_var.get().strip()
+        if not (pcore and proj):
+            self._log("先建骨架 / 填好项目目录")
+            return
+        verb = "成片" if good else "废片"
+        ps = filedialog.askopenfilenames(title="选要接收的%s（可多选）" % verb)
+        if not ps:
+            return
+        placed, log = pcore.accept_deliverables(
+            proj, list(ps), verdict="good" if good else "bad",
+            note=self.why_var.get().strip(), on_log=self._log)
+        if not placed:
+            return
+        self._log("---- 已接收 %d 个到 %s/ ----" % (len(placed), verb))
+        self.refresh_state()
+        # 接收完就弹反馈窗口（可按 × 随时关掉）
+        FeedbackWin(self.master, self, proj, placed, good)
+
+    # ---- 反馈 → 叫 agent --------------------------------------------------
+    def submit_feedback(self, call_agent):
+        proj = self.proj_var.get().strip()
+        if not (pcore and proj):
+            self._log("先建骨架 / 填好项目目录")
+            return
+        text = self.fb.get("1.0", "end").strip()
+        if not text:
+            self._log("反馈还是空的，先写两句")
+            return
+        n = pcore.new_round(proj, text)
+        pcore.push_todo(proj, "反馈", text)
+        self._log("已记入 第 %d 轮 反馈（_会话/轮次/%03d-反馈.txt）" % (n, n))
+        self.fb.delete("1.0", "end")
+        self.refresh_state()
+        if call_agent:
+            self.ask_agent("feedback", text)
+
+    def ask_agent(self, what, feedback=""):
+        """把 agent 叫起来干活：读待办 → 出提示词/按反馈再出一版 → 写回执。"""
+        proj = self.proj_var.get().strip()
+        if not (pcore and abridge and proj):
+            self._log("通道不可用（缺 project_core / agent_bridge）")
+            return
+        ok, why = abridge.available()
+        if not ok:
+            self._log("叫不动 agent：%s" % why)
+            return
+        st = pcore.read_state(proj)
+        sid = st.get("agentSession") or None
+        if what == "feedback":
+            todo = ("用户在界面上给了第 %s 轮反馈：\n%s\n\n"
+                    "请按反馈重出一版提示词：更新 %s\\文案\\ 下的稿子与 骨架.json 的 prompts，"
+                    "并把这一版放进 即梦上传\\（含上传说明.txt）。做完用一句话说明改了什么。"
+                    % (st.get("round", 1), feedback, proj))
+        else:
+            todo = ("用户点了「叫 agent 出提示词」。请扫描 %s\\ 下的 骨架.json 与 素材/、文案/，"
+                    "按 skill 规则出一版提示词，写回 骨架.json 的 prompts 与 文案/，"
+                    "并把要上传的文件副本按引用编号放进 即梦上传\\。" % proj)
+        self._log("→ 正在叫 agent …（可继续用界面，跑完会写回执）")
+        self.refresh_state()
+
+        def worker():
+            res = abridge.ask(todo, session_id=sid, cwd=proj, timeout=900,
+                              permission_mode="acceptEdits")
+            def done():
+                if res.get("session_id") and res["session_id"] != sid:
+                    pcore.write_state(proj, agentSession=res["session_id"])
+                if res.get("ok"):
+                    pcore.push_receipt(proj, res.get("text", ""), kind="出提示词")
+                    pcore.mark_todos_done(proj)
+                    self._log("✅ agent 回来了：%s" % (res.get("text") or "")[:300])
+                    self.load_prompts()
+                else:
+                    self._log("!! agent 没跑成：%s" % (res.get("error") or res.get("stderr", "")[:300]))
+                self.refresh_state()
+            try:
+                self.after(10, done)
+            except tk.TclError:
+                pass
+
+        try:
+            import threading
+            threading.Thread(target=worker, daemon=True).start()
+        except Exception as e:                        # noqa: BLE001
+            self._log("!! 起线程失败：%s" % e)
+
+
+class FeedbackWin(tk.Toplevel):
+    """接收完成片/废片后弹的本轮反馈窗口。
+
+    右上角有系统标题栏的 ×，窗口内也放一个「✕ 关闭」——用户随时能关。
+    """
+
+    def __init__(self, master, panel, project, placed, good):
+        super().__init__(master)
+        self.panel, self.project, self.placed = panel, project, list(placed)
+        t = panel.theme
+        self.title("本轮反馈 · %s" % ("成片已接收" if good else "废片已接收"))
+        self.configure(bg=t["surface"])
+        self.geometry("560x420+220+160")
+        self.transient(master)
+        head = tk.Frame(self, bg=t["header"])
+        head.pack(fill="x")
+        tk.Label(head, text="本轮情况怎么样？", font=F("title"), bg=t["header"],
+                 fg=t["text"]).pack(side="left", padx=16, pady=(12, 0))
+        tk.Label(head, text="（想跳过就点右上角 × 或下面的「✕ 关闭」）",
+                 font=F("small"), bg=t["header"], fg=t["muted"]).pack(side="left",
+                                                                     padx=8, pady=(14, 0))
+        body = tk.Frame(self, bg=t["surface"])
+        body.pack(fill="both", expand=True, padx=14, pady=12)
+        tk.Label(body, text="已接收：%s" % "、".join(os.path.basename(p) for p in self.placed),
+                 font=F("small"), bg=t["surface"], fg=t["ok"], anchor="w",
+                 justify="left", wraplength=500).pack(anchor="w")
+        tk.Label(body, text="这轮哪里好、哪里不对？（写清现象，agent 好照着改）",
+                 font=F("small"), bg=t["surface"], fg=t["muted"], anchor="w").pack(
+                     anchor="w", pady=(8, 4))
+        self.box = tk.Text(body, height=9, font=F("small"), bd=0, relief="flat",
+                           highlightthickness=1, wrap="word")
+        self.box.pack(fill="both", expand=True)
+        self.box.configure(bg=t["surface"], fg=t["text"], insertbackground=t["accent"],
+                           highlightbackground=t["border"], highlightcolor=t["accent"])
+        row = tk.Frame(self, bg=t["surface"])
+        row.pack(fill="x", padx=14, pady=(0, 12))
+        Pill(row, "提交并让 agent 再出一版", self._send_and_close, theme=t, font=F("small"),
+             kind="primary", padx=16, pady=8, radius=9, bg_key="surface", depth=4).pack(
+                 side="left")
+        Pill(row, "只记待办", self._save_only, theme=t, font=F("small"), kind="ghost",
+             padx=12, pady=8, radius=9, bg_key="surface", depth=2).pack(side="left", padx=6)
+        Pill(row, "✕ 关闭", self.destroy, theme=t, font=F("small"), kind="ghost",
+             padx=14, pady=8, radius=9, bg_key="surface", depth=2).pack(side="right")
+        self.box.focus_force()
+
+    def _take(self):
+        text = self.box.get("1.0", "end").strip()
+        if not text:
+            return ""
+        try:
+            self.clipboard_clear()                    # 顺手留一份在剪贴板，万一界面关了也不丢
+            self.clipboard_append(text)
+        except tk.TclError:
+            pass
+        return text
+
+    def _save_only(self):
+        text = self._take()
+        if text:
+            self.panel.fb.insert("end", text)
+            self.panel.submit_feedback(False)
+        self.destroy()
+
+    def _send_and_close(self):
+        text = self._take()
+        if text:
+            self.panel.fb.insert("end", text)
+            self.panel.submit_feedback(True)
+        else:
+            self.panel._log("反馈为空，没有提交")
+        self.destroy()
 
 
 # ── 主界面 ──────────────────────────────────────────────────────────────────
