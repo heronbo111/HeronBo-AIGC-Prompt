@@ -2517,7 +2517,7 @@ class App:
 
         def worker():
             res = abridge.ask(todo, session_id=sid, cwd=proj, timeout=900,
-                              permission_mode="acceptEdits")
+                              permission_mode="bypassPermissions")
 
             def done():
                 try:

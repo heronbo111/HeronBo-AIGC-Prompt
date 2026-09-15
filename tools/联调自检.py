@@ -135,6 +135,13 @@ def main():
         st = pc.read_state(pd)
         check("状态里 pending > 0", (st or {}).get("pending", 0) >= 1, str(st))
 
+        # 命令行路径也要过一遍（exe、agent 都可能走 CLI；2026-09-15 演示时这里出过重复待办）
+        subprocess.run([sys.executable, os.path.join(HERE, "project_core.py"),
+                        "--project", pd, "--new-round", "命令行路径自检"],
+                       capture_output=True, text=True)
+        dup = [t for t in pc.read_todos(pd) if "命令行路径自检" in (t.get("text") or "")]
+        check("CLI --new-round 只落一条待办（不重复）", len(dup) == 1, str(dup))
+
         # ④ agent 侧
         print("\n④ agent 侧（读 → 干 → 回执 → 标 done）")
         pc.push_receipt(pd, "已按反馈重切段，台词减 4 字", ["文案/提示词.txt"], kind="出提示词")

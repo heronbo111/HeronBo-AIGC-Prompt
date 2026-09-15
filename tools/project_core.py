@@ -1167,8 +1167,7 @@ def _cli(argv):
             return 2
         proj = os.path.normpath(a.project)
         if a.new_round:
-            n = new_round(proj, a.new_round)
-            push_todo(proj, "反馈", a.new_round)      # 顺手落待办，agent 才看得到
+            n = new_round(proj, a.new_round)          # 留档 + 落待办（new_round 内部已经做了）
             out["round"] = n
             if not a.json:
                 print("[会话] 本轮反馈已留档：第 %d 轮（并已落一条待办给 agent）" % n)
