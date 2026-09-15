@@ -110,12 +110,38 @@ def available(prefer=None):
 
 
 def agent_info():
-    """给界面看的完整信息：候选列表 + 选中谁 + 为什么。"""
+    """给界面看的完整信息：候选列表 + 选中谁 + 为什么 + 用户是否已明确指定过。"""
     key, why = pick_agent()
+    chosen = _local_cfg().get("agent") or ""
     return {"picked": key,
             "label": (ADAPTERS.get(key) or {}).get("label", ""),
             "why": why,
+            "chosen": chosen,          # 空 = 还没让用户选过（界面据此决定要不要先问）
             "list": list_agents()}
+
+
+def set_agent(key):
+    """把"用哪个 agent"写进 agent_bridge.local.json（保留 node/cli_js/cmd 等其它键）。
+
+    界面在"点出提示词前"让用户选一次，选完写这里；以后各次直接读，不再重复问。
+    key 传空字符串表示恢复自动挑选。
+    """
+    cfg = _local_cfg()
+    if key:
+        rows = {r["key"]: r for r in list_agents()}
+        if key not in rows:
+            return False, "未知的 agent：%s" % key
+        if not rows[key]["ok"]:
+            return False, "%s 现在不可用：%s" % (rows[key]["label"], rows[key]["why"])
+        cfg["agent"] = key
+    else:
+        cfg.pop("agent", None)
+    try:
+        with open(LOCAL_CFG, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+    except OSError as e:
+        return False, "写不进 %s：%s" % (LOCAL_CFG, e)
+    return True, (ADAPTERS[key]["label"] if key else "自动挑选")
 
 
 def free_port():
@@ -189,9 +215,9 @@ def skill_name():
 def _skill_root():
     """技能仓库根：**靠找 SKILL.md，不靠 HERE/..**。
 
-    frozen 之后 HERE 落在 %TEMP%\_MEIxxxx，HERE/.. 就成了 %TEMP%，于是
+    frozen 之后 HERE 落在临时解包目录 _MEIxxxx 里，HERE/.. 就成了 %TEMP%，于是
     "哪个 agent 装了本技能"永远查不到（2026-09-15 实测：exe 里 host_agents()
-    返回空，因为它在找 %TEMP%\skills\Temp）。与 project_core.find_skill_root 同一套判据。
+    返回空，因为它在找临时目录下的 skills 子目录）。与 project_core.find_skill_root 同一套判据。
     """
     env = os.environ.get("HERONBO_SKILL_ROOT")
     if env and os.path.isfile(os.path.join(env, "SKILL.md")):

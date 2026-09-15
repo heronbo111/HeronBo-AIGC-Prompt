@@ -524,6 +524,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(self.receive(self._body()))
         if path == "/api/feedback":
             return self._json(self.feedback(self._body()))
+        if path == "/api/agent/set":
+            b = self._body()
+            if not abridge:
+                return self._json({"ok": False, "error": "缺 agent_bridge.py"})
+            ok, why = abridge.set_agent((b.get("key") or "").strip())
+            return self._json({"ok": ok, "why": why, "agent": self.agent_ok()})
         if path == "/api/agent":
             b = self._body()
             pdir = b.get("project") or self._proj()

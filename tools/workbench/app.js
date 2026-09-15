@@ -122,7 +122,8 @@ function renderFlow() {
            (i < STEPS.length - 1 ? '<span class="sep">›</span>' : "");
   }).join("");
   const c = currentStep();
-  $("nextText").innerHTML = `<b>${STEPS[c.i].n}</b>：${esc(c.why)}`;
+  const who = (c.i === 1 && S.agent && S.agent.label) ? `（用 ${esc(S.agent.label)}）` : "";
+  $("nextText").innerHTML = `<b>${STEPS[c.i].n}</b>：${esc(c.why)}${who}`;
   const b = $("nextBtn");
   b.disabled = false;
   b.textContent = ["建框架归类", "出提示词", "复制提示词", "收成片", "去打分"][c.i];
@@ -174,8 +175,13 @@ function renderAgent(agent) {
   const ok = agent && agent.ok;
   chip.classList.toggle("bad", !ok);
   chip.textContent = ok ? `agent ${agent.label}` : "agent 不可用";
-  chip.title = ok ? (agent.why || "") : (agent && agent.why) || "没找到可用的 agent";
+  const usable = (((agent || {}).list) || []).filter((r) => r.ok).length;
+  chip.title = ok
+    ? ((agent.chosen ? "已选定：" : "自动挑选：") + (agent.why || "")
+       + (usable > 1 && !agent.chosen ? "（点一下可改）" : ""))
+    : ((agent && agent.why) || "没找到可用的 agent");
   $("btnAsk").disabled = !ok;
+  $("btnAsk").title = ok ? ("用 " + (agent.label || "") + " 出提示词") : "agent 不可用";
   S.agent = agent;
 }
 
@@ -185,8 +191,12 @@ function agentModal() {
     const tag = r.host ? '<span class="who" style="border-color:#cfe0ff;background:var(--accent-soft);color:var(--accent)">装了本技能</span>' : "";
     const st = r.ok ? '<span style="color:var(--ok)">可用</span>'
                     : `<span class="meta">${esc(r.why)}</span>`;
+    const now = r.key === a.picked;
+    const btn = (r.ok && !now)
+      ? `<button class="btn ghost sm" data-k="${esc(r.key)}">换成这个</button>`
+      : (now ? '<span class="meta">当前</span>' : "");
     return `<div class="step"><b style="flex:0 0 96px">${esc(r.label)}</b>
-      <span>${tag} ${st}</span></div>`;
+      <span style="flex:1">${tag} ${st}</span>${btn}</div>`;
   }).join("");
   const m = document.createElement("div");
   m.className = "modal";
@@ -196,14 +206,31 @@ function agentModal() {
       —— ${esc(a.ok ? (a.why || "") : (a.why || "没找到可用的 agent"))}</span></div>
     ${rows}
     <p class="note" style="margin-top:12px">
-      想指定别的 agent：在 <code>tools\\agent_bridge.local.json</code> 里写
-      <code>{"agent": "codex"}</code>；要接没适配的 CLI，就写
+      选择记在 <code>tools\agent_bridge.local.json</code>。要接没适配的 CLI（比如以后
+      ZCode、DSH 提供了无头入口），在那份 json 里写
       <code>{"cmd": ["你的命令", "{prompt}"], "cmd_mode": "text"}</code>（{prompt}/{cwd} 是占位符）。</p>
-    <div style="text-align:right;margin-top:12px"><button class="btn" id="mclose">知道了</button></div>
+    <div style="text-align:right;margin-top:12px">
+      ${a.chosen ? '<button class="btn ghost" id="mauto">恢复自动挑选</button>' : ""}
+      <button class="btn" id="mclose">知道了</button></div>
     </div>`;
   document.body.appendChild(m);
   m.querySelector("#mclose").onclick = () => m.remove();
   m.onclick = (e) => { if (e.target === m) m.remove(); };
+  m.querySelectorAll("button[data-k]").forEach((b) => {
+    b.onclick = async () => {
+      const r = await api("/api/agent/set", {key: b.dataset.k});
+      if (!r.ok) return toast(r.why || "设置失败");
+      S.agent = r.agent; renderAgent(S.agent); m.remove();
+      toast("已换成 " + (S.agent.label || ""));
+    };
+  });
+  const auto = m.querySelector("#mauto");
+  if (auto) auto.onclick = async () => {
+    const r = await api("/api/agent/set", {key: ""});
+    if (!r.ok) return toast(r.why || "设置失败");
+    S.agent = r.agent; renderAgent(S.agent); m.remove();
+    toast("已恢复自动挑选（当前 " + (S.agent.label || "") + "）");
+  };
 }
 
 function renderProject() {
@@ -405,14 +432,64 @@ async function uploadFile(file) {
   }
 }
 
-async function askAgent(what, feedback) {
-  const r = await api("/api/agent", {what, feedback});
-  if (r.error) return toast(r.error);
-  $("prog").hidden = false;
-  logLine(what === "feedback" ? "→ 正在按反馈重出一版…" : "→ 正在叫 agent 出提示词…");
-  toast(`已叫 agent（预计 ${Math.round((r.eta || 180) / 60)} 分钟`
-        + (r.eta_n ? "，按本项目 ${r.eta_n} 次历史" : "") + "）");
-  watchAgent();
+/* ── agent 选择门 ──────────────────────────────────────────────────
+   本机检索到多个可用 agent 时，第一次点"出提示词"先问一次用哪个，选完写进
+   agent_bridge.local.json 记住；以后不再问（想换就点③栏 agent 徽章）。只有一个
+   可用时直接用它，不打断。 */
+function usableAgents() { return (((S.agent || {}).list) || []).filter((r) => r.ok); }
+
+function ensureAgent(cb) {
+  const a = S.agent || {};
+  const use = usableAgents();
+  if (!use.length) return toast("没找到可用的 agent：" + (a.why || ""));
+  if (a.chosen || use.length === 1) return cb();
+  pickAgentModal(cb);
+}
+
+function pickAgentModal(cb) {
+  const rows = (((S.agent || {}).list) || []).map((r) => {
+    const tags = (r.host ? '<span class="who">装了本技能</span> ' : "") +
+      (r.ok ? '<span style="color:var(--ok)">可用</span>'
+            : '<span class="meta">' + esc(r.why) + "</span>");
+    const btn = r.ok ? '<button class="btn sm" data-k="' + esc(r.key) + '">用它</button>' : "";
+    return '<div class="step"><b style="flex:0 0 92px">' + esc(r.label) +
+           '</b><span style="flex:1">' + tags + "</span>" + btn + "</div>";
+  }).join("");
+  const m = document.createElement("div");
+  m.className = "modal";
+  m.innerHTML = '<div class="box"><h3>这次用哪个 agent？</h3>' +
+    '<p class="meta">本机检索到多个可用 agent。选一个我就记住，以后不再问；想换点③栏的 agent 徽章。</p>' +
+    rows +
+    '<div style="text-align:right;margin-top:12px"><button class="btn ghost" id="mclose">取消</button></div></div>';
+  document.body.appendChild(m);
+  m.querySelector("#mclose").onclick = () => m.remove();
+  m.onclick = (e) => { if (e.target === m) m.remove(); };
+  m.querySelectorAll("button[data-k]").forEach((b) => {
+    b.onclick = async () => {
+      const r = await api("/api/agent/set", {key: b.dataset.k});
+      if (!r.ok) return toast(r.why || "设置失败");
+      S.agent = r.agent;
+      renderAgent(S.agent);
+      m.remove();
+      toast("以后就用 " + (S.agent.label || ""));
+      cb();
+    };
+  });
+}
+
+function askAgent(what, feedback) {
+  ensureAgent(async () => {
+    const r = await api("/api/agent", {what, feedback});
+    if (r.error) return toast(r.error);
+    $("prog").hidden = false;
+    const who = (S.agent && S.agent.label) ? "（" + S.agent.label + "）" : "";
+    logLine(what === "feedback" ? "→ 正在按反馈重出一版…" + who
+                               : "→ 正在叫 agent 出提示词…" + who);
+    toast(`已叫 ${S.agent && S.agent.label || "agent"} 出提示词，预计 `
+          + Math.round((r.eta || 180) / 60) + " 分钟"
+          + (r.eta_n ? `（按本项目 ${r.eta_n} 次历史）` : ""));
+    watchAgent();
+  });
 }
 
 function watchAgent() {
@@ -466,13 +543,11 @@ async function receive(good) {
 async function submitFeedback() {
   const text = $("fb").value.trim();
   if (!text) return toast("先写两句反馈");
-  const r = await api("/api/feedback", {text, callAgent: true});
+  const r = await api("/api/feedback", {text, callAgent: false});
   if (!r.ok) return toast(r.error || "提交失败");
   $("fb").value = "";
   logLine(`已记入第 ${r.round} 轮反馈`);
-  if (r.agent && r.agent.error) { logLine(r.agent.error, "bad"); return; }
-  $("prog").hidden = false;
-  watchAgent();
+  askAgent("feedback", text);
 }
 
 async function saveScore() {
