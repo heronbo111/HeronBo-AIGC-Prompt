@@ -265,6 +265,32 @@ def codex_exe():
     return _glob_first(pats)
 
 
+def dsh_pkg():
+    """找 DSH（DeepSeek Harness）的启动脚本。
+
+    DSH 是 npm 包 @deepseek-ai/dsh（用户平时用 `npx @deepseek-ai/dsh web --no-open` 起网页端）。
+    它自带无头档：`dsh --profile headless "<任务>"` —— stderr 流推理、stdout 出最终答复、跑完退出。
+    这里直接找到包里的 lib/bin.js，用 node 调（**不走 npx/cmd**，免得提示词里的引号被 shell 吃掉）。
+    """
+    cfg = _local_cfg().get("dsh")
+    if cfg and os.path.isfile(cfg):
+        return cfg
+    import glob as _glob
+    pats = [os.path.join(os.environ.get("LOCALAPPDATA", ""), "npm-cache", "_npx", "*",
+                         "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js"),
+            os.path.join(os.environ.get("APPDATA", ""), "npm", "node_modules",
+                         "@deepseek-ai", "dsh", "lib", "bin.js")]
+    return _glob_first(pats)
+
+
+def _probe_dsh():
+    if not dsh_pkg():
+        return False, "没找到 DSH（需要 npx @deepseek-ai/dsh 跑过一次，或全局安装）"
+    if not node_exe():
+        return False, "没找到 node 可执行文件"
+    return True, dsh_pkg()
+
+
 def _probe_codex():
     exe = codex_exe()
     if not exe:
@@ -285,8 +311,13 @@ ADAPTERS = {
     "codex": {"label": "Codex CLI", "probe": _probe_codex},
     # 这两个先留探测位：ZCode / DSH 目前没在安装目录暴露无头 CLI。
     # 找得到就把命令写进 agent_bridge.local.json 的 cmd 字段（见 pick_agent 的说明）。
-    "zcode": {"label": "ZCode", "probe": lambda: (False, "ZCode 未提供命令行入口（可用 local.json 的 cmd 自定义）")},
-    "dsh": {"label": "DSH", "probe": lambda: (False, "DSH 未提供命令行入口（可用 local.json 的 cmd 自定义）")},
+    # ZCode（2026-09-15 实证）：桌面端主进程认的启动参数只有 --open-workspace / --exit-log /
+    # --file-uri / --folder-uri 等桌面项，**没有"跑一个任务"的无头入口**（bundle 里那处
+    # --headless 是它给内部 Chrome 传的 --headless=new，做浏览器自动化用的）。所以 ZCode
+    # 暂时只能在其界面里用；哪天它提供 CLI，用 local.json 的 cmd 接上即可。
+    "zcode": {"label": "ZCode", "probe": lambda: (
+        False, "ZCode 桌面端没有无头入口（可用 local.json 的 cmd 自定义接别的命令）")},
+    "dsh": {"label": "DSH（DeepSeek Harness）", "probe": _probe_dsh},
 }
 
 
@@ -311,11 +342,11 @@ def pick_agent(prefer=None):
         if r["ok"]:
             return want, ("按配置用 %s" % r["label"]) if prefer or cfg.get("agent")                 else r["label"]
         return None, "配置指定的 %s 不可用：%s" % (r["label"], r["why"])
-    for key in ("workbuddy", "codex"):
+    for key in ("workbuddy", "codex", "dsh"):
         r = rows.get(key)
         if r and r["ok"] and r["host"]:
             return key, "%s（本 skill 就装在它名下）" % r["label"]
-    for key in ("workbuddy", "codex"):
+    for key in ("workbuddy", "codex", "dsh"):
         r = rows.get(key)
         if r and r["ok"]:
             return key, "%s（本机可用；本 skill 未装在任何 agent 名下）" % r["label"]
@@ -331,6 +362,12 @@ def build_cmd_for(key, prompt, session_id=None, cwd=None, permission_mode=None,
         cmd = [str(x).replace("{prompt}", prompt).replace("{cwd}", cwd or "")
                for x in cfg["cmd"]]
         return cmd, cfg.get("cmd_mode") or "text"
+    if key == "dsh":
+        pkg = dsh_pkg()
+        if not pkg:
+            raise RuntimeError("DSH 不可用（没找到 @deepseek-ai/dsh）")
+        cmd = [node_exe(), pkg, "--profile", "headless", prompt]
+        return cmd, "text"          # stdout = 最终答复；stderr = 推理过程（当进度用）
     if key == "codex":
         exe = codex_exe()
         if not exe:
@@ -513,6 +550,25 @@ def ask(prompt, session_id=None, cwd=None, timeout=DEFAULT_TIMEOUT,
         except OSError:
             pass
 
+    err_lines = []
+
+    def _drain_err():
+        """stderr 必须单独抽干：DSH 无头档把**推理过程**全写 stderr，量大到能灌满管道
+        （管道满了子进程会阻塞 → 看起来"卡住不动"）。同时把它当进度喂给界面。"""
+        try:
+            for line in p.stderr:
+                line = line.rstrip().rstrip(chr(13) + chr(10))
+                if not line.strip():
+                    continue
+                err_lines.append(line)
+                if len(err_lines) > 400:
+                    del err_lines[:-400]
+                if on_line and mode == "text":
+                    on_line(chr(183) + " " + line.strip()[:200])
+        except Exception:                                        # noqa: BLE001
+            pass
+
+    threading.Thread(target=_drain_err, daemon=True).start()
     timer = threading.Timer(timeout, _kill)
     timer.start()
     try:
@@ -542,12 +598,17 @@ def ask(prompt, session_id=None, cwd=None, timeout=DEFAULT_TIMEOUT,
         pass
     finally:
         timer.cancel()
-        try:
-            err = p.stderr.read() or ""
-        except (OSError, ValueError):
-            err = ""
+        err = chr(10).join(err_lines)
     rc = p.returncode
     raw = chr(10).join(tail)
+    if mode == "text":                     # DSH：stdout 就是最终答复
+        text = raw.strip()
+        ok = (rc == 0) and bool(text)
+        return {"ok": ok, "agent": key, "agent_label": ADAPTERS[key]["label"],
+                "session_id": session_id, "text": text, "cmd": cmd, "returncode": rc,
+                "stderr": err[-2000:],
+                "error": "" if ok else ("超时 %ds 已终止" % timeout if killed["timeout"]
+                                        else (text or ("CLI 返回码 %s" % rc)))}
     if mode == "codex-json":
         text = (text_parts[-1] if text_parts else "").strip()
         if out_file and os.path.isfile(out_file):
