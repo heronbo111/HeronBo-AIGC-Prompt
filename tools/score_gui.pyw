@@ -1370,10 +1370,28 @@ class ThemeMenu(tk.Toplevel):
 
 # ── 素材投放 / 建框架 ───────────────────────────────────────────────────────
 def skill_root():
-    """技能根目录：exe 从 dist 往上两级；源码从 tools 往上一级。"""
-    if getattr(sys, "frozen", False):
-        return os.path.normpath(os.path.join(os.path.dirname(sys.executable), ".."))
-    return os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+    """技能仓库根目录。
+
+    原先 frozen 时算的是 `dist\\..` = `tools\\`，于是给 agent 的提示里写的
+    `SKILL.md` 路径变成 `tools\\SKILL.md`（**这个文件不存在**，真身在上一级）——
+    2026-09-15 实测发现。现在统一交给 project_core.find_skill_root()：从自身
+    往上找含 SKILL.md 的目录，exe 放在 `tools\\dist\\` 里也能定位到仓库根。
+    """
+    if pcore is not None:
+        try:
+            return pcore.SKILL_ROOT
+        except AttributeError:
+            pass
+    here = os.path.dirname(os.path.abspath(__file__))
+    d = here
+    for _ in range(6):
+        if os.path.isfile(os.path.join(d, "SKILL.md")):
+            return d
+        nd = os.path.dirname(d)
+        if nd == d:
+            break
+        d = nd
+    return os.path.normpath(os.path.join(here, ".."))
 
 
 def app_root_hint():

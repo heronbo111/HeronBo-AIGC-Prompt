@@ -28,10 +28,12 @@
   <section class="col">
     <div class="colhead"><h2><span class="no">1</span>项目</h2>
       <div class="acts">
-        <span class="meta" id="rootPath"></span>
-        <button class="btn ghost" id="btnRefresh">刷新</button></div></div>
+        <button class="ibtn" id="btnRefresh" title="重新扫描样本库" data-icon="refresh"></button>
+      </div></div>
     <div class="colbody">
-      <div class="seclab">样本库（点一下切过去）</div>
+      <div class="seclab">样本库</div>
+      <div class="pathtext" id="rootPath" title=""></div>
+      <div class="note bad" id="rootIssue" hidden></div>
       <div id="sampleList" class="list"></div>
       <div class="seclab">当前项目</div>
       <div id="projCard" class="card"></div>
@@ -44,8 +46,8 @@
     <div class="colbody" id="col2">
       <div class="dropzone" id="dz">
         <b>把素材拖到这里</b>
-        图片 / 视频 / 音频 / 文本，整文件夹也行
-        <small></small>
+        图片 / 视频 / 音频 / 文本，也可整文件夹
+        <small id="dzHint">文件夹请用下面的「选文件夹」（浏览器拿不到文件夹路径）</small>
         <button class="btn ghost" id="btnPick">选择素材</button>
         <button class="btn ghost" id="btnPickDir" style="margin-left:6px">选文件夹</button>
       </div>
@@ -59,8 +61,9 @@
   <section class="col">
     <div class="colhead"><h2><span class="no">3</span>分镜 / 提示词</h2>
       <div class="acts">
-        <span class="meta" id="stageLab"></span>
-        <button class="btn ghost" id="btnLoadPrompts">读取</button>
+        <button class="agentchip" id="btnAgent" title="点一下看本机有哪些 agent">agent —</button>
+        <button class="ibtn" id="btnLoadPrompts" title="重新读取提示词" data-icon="reload"></button>
+        <button class="ibtn" id="btnCopy" title="复制提示词 + 上传清单" data-icon="copy"></button>
         <button class="btn" id="btnAsk">出提示词</button></div></div>
     <div class="colbody">
       <div class="prog" id="prog" hidden>
@@ -69,9 +72,9 @@
         <div class="bar"><i id="pfill"></i></div>
         <div class="stages" id="pstages"></div>
       </div>
-      <div class="seclab">提示词正文</div>
+      <div class="seclab">提示词正文 <span class="meta" id="stageLab"></span></div>
       <div class="prompt" id="promptBox">（还没有提示词。先在②栏丢素材 → 建框架归类 → 点右上「出提示词」。）</div>
-      <div class="seclab">即梦上传清单（点「复制」会连素材名一起给你）</div>
+      <div class="seclab">即梦上传清单（点右上复制图标会连素材名一起给你）</div>
       <div id="upList" class="list"></div>
       <div class="seclab">成片 / 废片</div>
       <div class="rowline">
@@ -92,8 +95,8 @@
 
   <section class="col">
     <div class="colhead"><h2><span class="no">4</span>评分</h2>
-      <div class="acts"><button class="btn" id="btnSave">保存评分</button>
-        <button class="btn ghost" id="btnReload">重新载入</button></div></div>
+      <div class="acts"><button class="ibtn" id="btnReload" title="重新载入上次评分" data-icon="reload"></button>
+        <button class="btn" id="btnSave">保存评分</button></div></div>
     <div class="colbody" id="scoreCol">
       <div class="fld"><label>成片</label><select id="videoSel"></select></div>
       <div id="dimBox"></div>

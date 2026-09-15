@@ -16,6 +16,67 @@ function toast(msg) {
   const el = $("toast"); el.textContent = msg; el.classList.add("on");
   clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove("on"), 2600);
 }
+
+/* 图标按钮：栏标题那排"小动作"用图标（主按钮仍带文字——一个按钮区最多一个主按钮） */
+const ICON = {
+  refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>',
+  reload: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 12a8 8 0 0 1 13.7-5.7L20 8"/><path d="M20 3v5h-5"/><path d="M20 12a8 8 0 0 1-13.7 5.7L4 16"/><path d="M4 21v-5h5"/></svg>',
+  copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
+};
+function paintIcons() {
+  document.querySelectorAll("[data-icon]").forEach((b) => {
+    if (!b.dataset.done) { b.innerHTML = ICON[b.dataset.icon] || ""; b.dataset.done = "1"; }
+  });
+}
+
+/* ── 滑动变阻器：一条轨道 + 一个滑块，点一下或拖着走 ──────────────────
+   为什么要拖：三选一的评测项用"一排按钮"每次都要瞄准点，拖起来更像调档位；
+   点任意格仍然可用（不强迫拖）。滑块位置由 transform 控制，跟着指针走。 */
+function mkRheostat(box, options, colors, value, onChange) {
+  box.className = "rh";
+  box.innerHTML = `<span class="knob"></span>` +
+    options.map((o, i) => `<button data-i="${i}" data-c="${colors[i] || ""}">${esc(o)}</button>`).join("");
+  const btns = [...box.querySelectorAll("button")];
+  const knob = box.querySelector(".knob");
+  let cur = Math.max(0, options.indexOf(value));
+  const paint = () => {
+    const w = box.clientWidth - 6;
+    const seg = w / options.length;
+    knob.style.width = seg + "px";
+    knob.style.transform = `translateX(${cur * seg}px)`;
+    btns.forEach((b, i) => {
+      b.classList.toggle("on", i === cur);
+      b.classList.toggle(b.dataset.c || "x", i === cur);
+      if (i !== cur) b.classList.remove("g", "y", "r");
+    });
+  };
+  const setIdx = (i, fire) => {
+    i = Math.max(0, Math.min(options.length - 1, i));
+    if (i === cur && fire !== "force") { paint(); return; }
+    cur = i;
+    paint();
+    if (fire !== false && onChange) onChange(options[cur]);
+  };
+  const idxAt = (clientX) => {
+    const r = box.getBoundingClientRect();
+    const w = r.width / options.length;
+    return Math.floor((clientX - r.left) / w);
+  };
+  let dragging = false;
+  box.addEventListener("pointerdown", (e) => {
+    dragging = true; box.classList.add("drag");
+    try { box.setPointerCapture(e.pointerId); } catch (err) {}
+    setIdx(idxAt(e.clientX));
+  });
+  box.addEventListener("pointermove", (e) => { if (dragging) setIdx(idxAt(e.clientX)); });
+  const stop = (e) => { dragging = false; box.classList.remove("drag"); };
+  box.addEventListener("pointerup", stop);
+  box.addEventListener("pointercancel", stop);
+  btns.forEach((b) => { b.onclick = () => setIdx(+b.dataset.i); });
+  requestAnimationFrame(paint);
+  return {set: (v) => setIdx(options.indexOf(v), false), paint};
+}
+
 function logLine(text, cls) {
   const el = $("log");
   el.insertAdjacentHTML("beforeend",
@@ -24,7 +85,8 @@ function logLine(text, cls) {
 }
 
 /* ── 状态 ─────────────────────────────────────────────────────────── */
-const S = {state: null, pending: [], review: {}, dims: [], video: "", agentTimer: null};
+const S = {state: null, pending: [], review: {}, dims: [], video: "", agentTimer: null,
+           rh: {}, agent: null};
 
 const STEPS = [
   {n: "丢素材", who: "你", man: "把素材（文案/形象图/音频/原片）拖进②栏，然后点「建框架归类」"},
@@ -76,16 +138,72 @@ function renderFlow() {
 /* ── 渲染 ─────────────────────────────────────────────────────────── */
 function renderSamples() {
   const st = S.state;
-  $("rootPath").textContent = st.root || "（未配置样本库根）";
+  const rp = $("rootPath");
+  rp.textContent = st.root || st.rootConfigured || "（未配置样本库根）";
+  rp.title = st.root || st.rootConfigured || "";
+  const issue = $("rootIssue");
+  if (st.rootIssue) {
+    issue.hidden = false;
+    issue.innerHTML = "<span>" + esc(st.rootIssue) + "</span>" +
+      '<button class="btn ghost sm" id="btnSetRoot">选样本库根</button>';
+    issue.querySelector("#btnSetRoot").onclick = async () => {
+      const r = await api("/api/pick", {kind: "dir"});
+      if (!r.paths || !r.paths.length) return;
+      const w = await api("/api/root", {dir: r.paths[0]});
+      if (!w.ok) return toast(w.error || "设置失败");
+      toast("样本库根已设为 " + w.root);
+      await loadState();
+    };
+  } else {
+    issue.hidden = true;
+  }
   const cur = st.project ? st.project.dir : "";
   $("sampleList").innerHTML = (st.samples || []).map((s) =>
     `<div class="row ${s.dir === cur ? "on" : ""}" data-dir="${esc(s.dir)}">
        <span class="g">${esc(s.name)}</span>
-       <span class="m">素材 ${s.materials} · 成片 ${s.videos} · 评分 ${s.reviews}</span></div>`).join("")
+       <span class="m">素材 ${s.materials} · 成片 ${s.videos}</span></div>`).join("")
     || '<div class="meta">样本库里还没项目。把素材拖进②栏就能建。</div>';
   $("sampleList").querySelectorAll(".row").forEach((el) => {
     el.onclick = () => selectProject(el.dataset.dir);
   });
+}
+
+/* agent 通道：显示选中谁，点开看候选（exe 跟着 skill 走，谁装了本技能就用谁） */
+function renderAgent(agent) {
+  const chip = $("btnAgent");
+  const ok = agent && agent.ok;
+  chip.classList.toggle("bad", !ok);
+  chip.textContent = ok ? `agent ${agent.label}` : "agent 不可用";
+  chip.title = ok ? (agent.why || "") : (agent && agent.why) || "没找到可用的 agent";
+  $("btnAsk").disabled = !ok;
+  S.agent = agent;
+}
+
+function agentModal() {
+  const a = S.agent || {};
+  const rows = (a.list || []).map((r) => {
+    const tag = r.host ? '<span class="who" style="border-color:#cfe0ff;background:var(--accent-soft);color:var(--accent)">装了本技能</span>' : "";
+    const st = r.ok ? '<span style="color:var(--ok)">可用</span>'
+                    : `<span class="meta">${esc(r.why)}</span>`;
+    return `<div class="step"><b style="flex:0 0 96px">${esc(r.label)}</b>
+      <span>${tag} ${st}</span></div>`;
+  }).join("");
+  const m = document.createElement("div");
+  m.className = "modal";
+  m.innerHTML = `<div class="box"><h3>agent 通道</h3>
+    <p class="meta">这个工作台跟着 skill 走：谁把本技能装在自己名下、且命令行可用，就用谁。</p>
+    <div class="step"><b style="flex:0 0 96px">当前</b><span>${esc(a.label || "无")}
+      —— ${esc(a.ok ? (a.why || "") : (a.why || "没找到可用的 agent"))}</span></div>
+    ${rows}
+    <p class="note" style="margin-top:12px">
+      想指定别的 agent：在 <code>tools\\agent_bridge.local.json</code> 里写
+      <code>{"agent": "codex"}</code>；要接没适配的 CLI，就写
+      <code>{"cmd": ["你的命令", "{prompt}"], "cmd_mode": "text"}</code>（{prompt}/{cwd} 是占位符）。</p>
+    <div style="text-align:right;margin-top:12px"><button class="btn" id="mclose">知道了</button></div>
+    </div>`;
+  document.body.appendChild(m);
+  m.querySelector("#mclose").onclick = () => m.remove();
+  m.onclick = (e) => { if (e.target === m) m.remove(); };
 }
 
 function renderProject() {
@@ -138,42 +256,37 @@ function renderPrompts() {
   $("promptBox").textContent = ps.length
     ? ps.map((p) => `【${p.ver || "v"}】\n${p.text || ""}`).join("\n\n")
     : "（还没有提示词。先在②栏丢素材 → 建框架归类 → 点右上「出提示词」。）";
+  $("promptBox").scrollTop = 0;                 // 重新读取后回到开头，别停在半截
   const ups = S.uploads || [];
   $("upList").innerHTML = ups.length ? ups.map((u) =>
     `<div class="row plain"><span class="g">${esc(u.name)}</span>
       <span class="m">${size(u.size)}</span></div>`).join("")
     : '<div class="meta">还没生成（agent 出提示词时会按引用编号把副本放进来）</div>';
   const st = S.state.project ? (S.state.project.state || {}) : {};
-  $("stageLab").textContent = `阶段 ${st.stage || "—"} · 第 ${st.round || 0} 轮 · 待办 ${st.pending || 0}`;
+  $("stageLab").textContent = `· 阶段 ${st.stage || "—"} · 第 ${st.round || 0} 轮 · 待办 ${st.pending || 0}`;
 }
 
 function renderScoreForm() {
   const st = S.state;
-  $("dimBox").innerHTML = (st.dims || []).map((d) => {
+  S.rh = {};
+  $("dimBox").innerHTML = (st.dims || []).map((d) =>
+    `<div class="fld"><label title="${esc(d.hint || "")}">${esc(d.key)}</label>
+      <div class="rhbox" data-key="${esc(d.key)}"></div></div>`).join("");
+  (st.dims || []).forEach((d) => {
     const colors = (d.options || []).map((o, i, a) =>
       i === 0 ? "g" : (i === a.length - 1 ? "r" : "y"));
-    return `<div class="fld"><label title="${esc(d.hint || "")}">${esc(d.key)}</label>
-      <span class="seg" data-key="${esc(d.key)}">` +
-      (d.options || []).map((o, i) =>
-        `<button data-v="${esc(o)}" data-c="${colors[i]}">${esc(o)}</button>`).join("") +
-      "</span></div>";
-  }).join("");
+    const box = $("dimBox").querySelector(`.rhbox[data-key="${CSS.escape(d.key)}"]`);
+    S.rh[d.key] = mkRheostat(box, d.options || [], colors, (d.options || [])[0],
+                             (v) => { S.review.六维[d.key] = v; });
+  });
   $("forbidBox").innerHTML = (st.forbid || []).map((k) =>
     `<span class="sw" data-key="${esc(k)}"><i></i>${esc(k)}</span>`).join("");
-  $("conclBox").innerHTML = (st.concl || []).map((o, i) =>
-    `<button data-v="${esc(o)}" data-c="${["g", "y", "r"][i] || ""}">${esc(o)}</button>`).join("");
+  const conclBox = $("conclBox");
+  S.rh["结论"] = mkRheostat(conclBox, st.concl || ["可用", "可改", "作废"],
+                            ["g", "y", "r"], (st.concl || ["可用"])[0],
+                            (v) => { S.review.结论 = v; });
   $("stars").innerHTML = [1, 2, 3, 4, 5].map((i) =>
     `<span data-v="${i}">★</span>`).join("");
-  // 事件
-  $("dimBox").querySelectorAll(".seg").forEach((seg) => {
-    seg.querySelectorAll("button").forEach((b) => {
-      b.onclick = () => {
-        seg.querySelectorAll("button").forEach((x) => x.classList.remove("on"));
-        b.classList.add("on", b.dataset.c);
-        S.review.六维[seg.dataset.key] = b.dataset.v;
-      };
-    });
-  });
   $("forbidBox").querySelectorAll(".sw").forEach((sw) => {
     sw.onclick = () => {
       sw.classList.toggle("on");
@@ -181,17 +294,13 @@ function renderScoreForm() {
         ? st.forbid_on || "有" : st.forbid_default || "无";
     };
   });
-  $("conclBox").querySelectorAll("button").forEach((b) => {
-    b.onclick = () => {
-      $("conclBox").querySelectorAll("button").forEach((x) => x.classList.remove("on"));
-      b.classList.add("on", b.dataset.c);
-      S.review.结论 = b.dataset.v;
-    };
-  });
   $("stars").querySelectorAll("span").forEach((sp) => {
     sp.onclick = () => { S.review.整体评分 = +sp.dataset.v; paintStars(); };
   });
   paintStars();
+  window.addEventListener("resize", () => {
+    Object.values(S.rh).forEach((r) => r && r.paint && r.paint());
+  });
 }
 
 function paintStars() {
@@ -209,21 +318,13 @@ function fillReview(rev) {
               违禁项: Object.assign({}, rev["违禁项"] || {}),
               整体评分: rev["整体评分"] || 4, 结论: rev["结论"] || "可改",
               备注: rev["备注"] || ""};
-  $("dimBox").querySelectorAll(".seg").forEach((seg) => {
-    const v = S.review.六维[seg.dataset.key];
-    seg.querySelectorAll("button").forEach((b) => {
-      b.classList.toggle("on", b.dataset.v === v);
-      if (b.dataset.v === v) b.classList.add(b.dataset.c);
-      else b.classList.remove("g", "y", "r");
-    });
+  (S.state.dims || []).forEach((d) => {
+    const v = S.review.六维[d.key];
+    if (S.rh[d.key]) S.rh[d.key].set(v || (d.options || [])[0]);
   });
+  if (S.rh["结论"]) S.rh["结论"].set(S.review.结论);
   $("forbidBox").querySelectorAll(".sw").forEach((sw) => {
-    const on = (S.review.违禁项[sw.dataset.key] || "无") === "有";
-    sw.classList.toggle("on", on);
-  });
-  $("conclBox").querySelectorAll("button").forEach((b) => {
-    b.classList.toggle("on", b.dataset.v === S.review.结论);
-    if (b.dataset.v === S.review.结论) b.classList.add(b.dataset.c);
+    sw.classList.toggle("on", (S.review.违禁项[sw.dataset.key] || "无") === "有");
   });
   $("note").value = S.review.备注;
   paintStars();
@@ -239,8 +340,9 @@ async function loadState(scrollTop) {
   const rv = await api("/api/review");
   renderSamples(); renderProject(); renderPrompts();
   renderScoreForm(); fillReview(rv.review);
-  renderFlow(); renderPending();
-  $("buildStamp").textContent = `构建 ${st.build.stamp}` + (st.agent.ok ? "" : " · 通道不可用");
+  renderFlow(); renderPending(); renderAgent(st.agent);
+  paintIcons();
+  $("buildStamp").textContent = `构建 ${st.build.stamp}`;
   if (!st.agent.ok) logLine("agent 通道不可用：" + st.agent.why, "bad");
 }
 
@@ -284,16 +386,23 @@ async function intakeGo() {
 }
 
 async function uploadFile(file) {
+  /* 直接送 File 对象（浏览器会带 Content-Length）；**别用 file.stream()**：
+     fetch 的流式 body 必须配 duplex:"half"，否则 Chromium 直接抛 TypeError →
+     界面只会显示"投递失败"（2026-09-15 用户截图里的那条提示就是这个原因）。*/
   try {
     const r = await fetch("/api/upload", {
       method: "POST",
       headers: {"X-File-Name": encodeURIComponent(file.name)},
-      body: file.stream ? file.stream() : file,
+      body: file,
     });
     const j = await r.json();
     if (j.ok) { S.pending = j.pending || []; renderPending(); renderFlow(); }
+    else logLine("上传失败：" + (j.error || ""), "bad");
     return j.ok;
-  } catch (e) { return false; }
+  } catch (e) {
+    logLine("上传出错：" + e.message, "bad");
+    return false;
+  }
 }
 
 async function askAgent(what, feedback) {
@@ -411,21 +520,29 @@ function helpModal() {
 function bindDrop() {
   const dz = $("dz"), col2 = $("col2"), col = col2.closest(".col");
   let depth = 0;
-  const set = (on) => {
+  const set = (on, extra) => {
     dz.classList.toggle("hot", on); col.classList.toggle("hot", on);
-    $("dz").querySelector("b").textContent = on ? "松开即投放 → 自动归类" : "把素材拖到这里";
+    dz.querySelector("b").textContent = on ? "松开即投放 → 自动归类" : "把素材拖到这里";
+    if (extra !== undefined) $("dzHint").textContent = extra;
   };
   window.addEventListener("dragenter", (e) => { e.preventDefault(); depth++; set(true); });
   window.addEventListener("dragover", (e) => { e.preventDefault(); });
   window.addEventListener("dragleave", () => { if (--depth <= 0) { depth = 0; set(false); } });
   window.addEventListener("drop", async (e) => {
     e.preventDefault(); depth = 0; set(false);
-    const files = [...(e.dataTransfer ? e.dataTransfer.files : [])];
-    if (!files.length) return;
+    const items = [...((e.dataTransfer && e.dataTransfer.items) || [])];
+    const dirs = items.filter((it) => it.kind === "file"
+      && it.webkitGetAsEntry && (it.webkitGetAsEntry() || {}).isDirectory);
+    const files = [...((e.dataTransfer && e.dataTransfer.files) || [])];
+    if (dirs.length && !files.length) {
+      return toast("文件夹请用「选文件夹」按钮——浏览器不把文件夹路径交给网页");
+    }
+    if (!files.length) return toast("这次拖拽里没有可用的文件");
     toast(`正在投递 ${files.length} 个文件…`);
     let ok = 0;
     for (const f of files) { if (await uploadFile(f)) ok++; }
-    toast(ok ? `收下 ${ok} 个文件，点「建框架归类」落位` : "投递失败，改用「选择素材」");
+    if (ok) toast(`收下 ${ok} 个文件，点「建框架归类」落位`);
+    else toast("投递失败，改用「选择素材」");
   });
 }
 
@@ -437,8 +554,10 @@ $("btnRefresh").onclick = () => loadState();
 $("btnLoadPrompts").onclick = async () => {
   const pr = await api("/api/prompts");
   S.prompts = pr.prompts || []; S.uploads = pr.uploads || [];
-  renderPrompts(); renderFlow(); toast("已读取提示词");
+  renderPrompts(); renderFlow(); toast("已重新读取提示词");
 };
+$("btnCopy").onclick = () => copyPrompt();
+$("btnAgent").onclick = () => agentModal();
 $("btnAsk").onclick = () => askAgent("prompt");
 $("btnIntakeGo").onclick = () => intakeGo();
 $("btnPick").onclick = () => pickFiles("files");
@@ -450,15 +569,16 @@ $("btnSave").onclick = () => saveScore();
 $("btnReload").onclick = async () => {
   const rv = await api("/api/review");
   fillReview(rv.review);
-  toast("已重新载入评分");
+  toast("已重新载入上次评分");
 };
 $("btnHelp").onclick = () => helpModal();
 $("btnClassic").onclick = () => {
   fetch("/api/classic", {method: "POST"}).catch(() => {});
-  toast("经典界面需要重新启动 exe（下个版本给这个按钮接上）");
+  toast("经典界面要重新启动：用 score-tool.exe --classic");
 };
 $("note").oninput = () => { S.review.备注 = $("note").value; };
 
 bindDrop();
+paintIcons();
 loadState();
 logLine("工作台已就绪");

@@ -512,6 +512,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/pick":
             b = self._body()
             return self._json(picker().ask(b.get("kind") or "files"))
+        if path == "/api/root":
+            return self._json(self.set_root(self._body()))
         if path == "/api/intake":
             return self._json(self.intake(self._body()))
         if path == "/api/intake/go":
@@ -542,16 +544,46 @@ class Handler(BaseHTTPRequestHandler):
         d.update({"root": root, "samples": _samples(root), "project": proj,
                   "build": build_info(), "agent": self.agent_ok(),
                   "theme": self.theme_name(), "stages": [n for n, _w in STAGES]})
+        d.update(self.root_issue(root))
         return d
 
+    def root_issue(self, root):
+        """样本库根的问题要说清楚：**配置指向的目录不存在**时最容易被误判成"没配"。
+
+        2026-09-15 实踩：paths.local.md 被写成某个临时目录（测试脚本用 auto_build 时
+        顺手改的），临时目录一清，界面就只剩"未配置样本库根 / 0 个样本"——用户
+        根本不知道发生了什么。这里把"配了什么、为什么不可用"原样报出来。
+        """
+        out = {"rootConfigured": "", "rootIssue": ""}
+        if pcore:
+            try:
+                out["rootConfigured"] = (pcore.read_local() or {}).get("SAMPLES_ROOT") or ""
+            except Exception:                                    # noqa: BLE001
+                pass
+        cfg = out["rootConfigured"]
+        if root and os.path.isdir(root):
+            return out
+        if cfg and not os.path.isdir(cfg):
+            out["rootIssue"] = "配置里的样本库根不存在（可能被删/被改）：%s" % cfg
+        elif not cfg:
+            out["rootIssue"] = "还没配置样本库根——选一个目录，我会记进 references/paths.local.md"
+        return out
+
     def agent_ok(self):
+        """界面用：选中的 agent + 候选清单（哪个装了本技能、哪个可用）。
+
+        "exe 跟着 skill 走"就体现在这里：exe 先看本机哪些 agent 把本技能装在自己
+        名下（~/.zcode / ~/.codex / ~/.dsh / ~/.workbuddy 的 skills/<技能名>），
+        再挑一个可用的来干活，并把理由显示给用户。
+        """
         if not abridge:
-            return {"ok": False, "why": "缺 agent_bridge.py"}
+            return {"ok": False, "why": "缺 agent_bridge.py", "picked": None, "list": []}
         try:
-            ok, why = abridge.available()
-            return {"ok": bool(ok), "why": why}
+            info = abridge.agent_info()
+            info["ok"] = bool(info.get("picked"))
+            return info
         except Exception as e:                                   # noqa: BLE001
-            return {"ok": False, "why": str(e)}
+            return {"ok": False, "why": str(e), "picked": None, "list": []}
 
     def theme_name(self):
         p = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
@@ -563,6 +595,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def _pending(self):
         return self.server.pending
+
+    def set_root(self, b):
+        """改样本库根：写进技能仓库的 references/paths.local.md（本机取值，不进 git）。"""
+        d = (b.get("dir") or "").strip()
+        if not d or not os.path.isdir(d):
+            return {"ok": False, "error": "目录不存在：%s" % d}
+        d = os.path.abspath(d)
+        if not pcore:
+            return {"ok": False, "error": "缺 project_core.py"}
+        try:
+            pcore.write_local(SAMPLES_ROOT=d)
+        except Exception as e:                                   # noqa: BLE001
+            return {"ok": False, "error": "写配置失败：%s" % e}
+        Handler.root = d
+        return {"ok": True, "root": d,
+                "samples": _samples(d), "wrote": pcore.LOCAL_MD}
 
     def intake(self, b):
         paths = b.get("paths") or []
@@ -601,7 +649,14 @@ class Handler(BaseHTTPRequestHandler):
                          "count": (plan or {}).get("count")}}
 
     def upload(self):
-        """浏览器拖进来的文件：请求体就是文件字节，名字放 X-File-Name（URL 编码）。"""
+        """浏览器拖进来的文件：请求体就是文件字节，名字放 X-File-Name（URL 编码）。
+
+        两种投递方式都要认：
+        - `fetch(url, {body: file})` → 带 Content-Length（常规路径）；
+        - `fetch(url, {body: file.stream(), duplex:"half"})` → **分块传输、没有
+          Content-Length**，这时读到 EOF 为止（2026-09-15：前端先前用流式上传
+          但没给 duplex，请求直接抛错 → 界面弹"投递失败"，两处都修了）。
+        """
         name = urllib.parse.unquote(self.headers.get("X-File-Name") or "")
         pdir = self._proj()
         if not (name and pdir):
@@ -610,6 +665,7 @@ class Handler(BaseHTTPRequestHandler):
             n = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             n = 0
+        chunked = (not n) and ("chunked" in (self.headers.get("Transfer-Encoding") or ""))
         dest_dir = os.path.join(pdir, "素材")
         os.makedirs(dest_dir, exist_ok=True)
         target = os.path.join(dest_dir, os.path.basename(name))
@@ -619,13 +675,31 @@ class Handler(BaseHTTPRequestHandler):
             target = "%s(%d)%s" % (base, i, ext)
             i += 1
         left = n
+        total = 0
         with open(target + ".part", "wb") as f:
-            while left > 0:
-                chunk = self.rfile.read(min(1 << 20, left))
-                if not chunk:
-                    break
-                f.write(chunk)
-                left -= len(chunk)
+            if chunked:                          # 无 Content-Length：读到 EOF
+                while True:
+                    chunk = self.rfile.read(1 << 20)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    total += len(chunk)
+                    if total > (8 << 30):        # 8GB 上限，防呆
+                        break
+            else:
+                while left > 0:
+                    chunk = self.rfile.read(min(1 << 20, left))
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    left -= len(chunk)
+                    total += len(chunk)
+        if total == 0:
+            try:
+                os.remove(target + ".part")
+            except OSError:
+                pass
+            return {"ok": False, "error": "没收到文件内容（前端要带 Content-Length 或用 duplex 流式）"}
         os.replace(target + ".part", target)
         pend = self._pending()
         if target not in pend:

@@ -156,3 +156,34 @@ textarea{width:100%;resize:vertical}
   border-top-color:var(--accent);border-radius:50%;animation:sp 0.8s linear infinite;
   vertical-align:-1px;margin-right:6px}
 @keyframes sp{to{transform:rotate(360deg)}}
+
+/* ── 图标按钮（栏标题那排小动作）─────────────────────────────────── */
+.ibtn{width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;
+  border:1px solid transparent;border-radius:7px;background:transparent;color:var(--muted);
+  cursor:pointer;padding:0}
+.ibtn:hover{background:var(--surface2);border-color:var(--border);color:var(--text)}
+.ibtn svg{width:15px;height:15px;display:block}
+.ibtn.on{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
+.agentchip{border:1px solid var(--border);background:var(--surface2);color:var(--muted);
+  border-radius:999px;padding:2px 9px;font-size:11px;cursor:pointer;font-family:inherit;
+  max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.agentchip:hover{border-color:var(--accent);color:var(--accent)}
+.agentchip.bad{border-color:#f2c6c8;background:var(--bad-soft);color:var(--bad)}
+
+/* 样本库路径：整行截断，别去挤栏标题的按钮（原来把「刷新」挤成两行）*/
+.pathtext{font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;direction:rtl;text-align:left;margin:-2px 0 6px}
+.pathtext:hover{color:var(--text)}
+
+/* ── 滑动变阻器：轨 + 滑块，可拖（照 Tk 版那条"槽里坐着滑块"的观感）────── */
+.rh{position:relative;display:grid;grid-template-columns:repeat(3,1fr);
+  background:#eef2f8;border:1px solid var(--border);border-radius:9px;padding:3px;
+  user-select:none;touch-action:none}
+.rh .knob{position:absolute;top:3px;bottom:3px;left:3px;border-radius:7px;background:var(--surface);
+  box-shadow:0 1px 2px rgba(16,24,40,.14);transition:transform .18s ease,width .06s;
+  pointer-events:none}
+.rh button{border:0;background:transparent;color:var(--muted);font:12.5px/1.5 inherit;
+  padding:5px 2px;cursor:pointer;border-radius:6px;text-align:center;position:relative;z-index:1}
+.rh button.on{font-weight:600}
+.rh button.on.g{color:var(--ok)} .rh button.on.y{color:var(--warn)} .rh button.on.r{color:var(--bad)}
+.rh.drag .knob{transition:none}
