@@ -181,6 +181,28 @@ def _rr(cv, x1, y1, x2, y2, r, **kw):
     return cv.create_polygon(pts, smooth=True, **kw)
 
 
+def _dashed_rr(cv, x1, y1, x2, y2, r, color, dash=(6, 4), width=2, tags=None):
+    """虚线圆角框：4 条直线 + 4 段圆弧拼出来。
+
+    Tk 的 polygon(smooth) 不支持 dash，所以圆角虚线框只能这么画
+    （StoryVia 的拖拽投放框就是 2px 虚线圆角框）。
+    ⚠️ 直线用 `fill` 着色、圆弧用 `outline`——搞混会抛 TclError（unknown option）。
+    """
+    kw = {"width": width, "dash": dash}
+    if tags:
+        kw["tags"] = tags
+    line_kw = dict(kw, fill=color)
+    arc_kw = dict(kw, outline=color)
+    cv.create_line(x1 + r, y1, x2 - r, y1, **line_kw)
+    cv.create_line(x2, y1 + r, x2, y2 - r, **line_kw)
+    cv.create_line(x2 - r, y2, x1 + r, y2, **line_kw)
+    cv.create_line(x1, y2 - r, x1, y1 + r, **line_kw)
+    for cx, cy, start in ((x1 + r, y1 + r, 90), (x2 - r, y1 + r, 0),
+                          (x2 - r, y2 - r, 270), (x1 + r, y2 - r, 180)):
+        cv.create_arc(cx - r, cy - r, cx + r, cy + r, start=start, extent=90,
+                      style="arc", **arc_kw)
+
+
 # ── 颜色工具（做立体感用：渐变 / 提亮 / 压暗）────────────────────────────────
 def _hx(c):
     c = c.lstrip("#")
@@ -1821,6 +1843,9 @@ class App:
             except tk.TclError:
                 pass
         self._recolor_list()
+        for c in getattr(self, "_cols", []):               # 换肤后重画卡片阴影与描边
+            self._paint_card(c[0])
+        self._paint_drop(False)
         if not first:
             save_theme_name(name)
 
@@ -1848,17 +1873,46 @@ class App:
 
     # ---- 四栏框架 ---------------------------------------------------------
     def _col(self, body, t, w):
-        """一栏：外层描边 + 固定宽度 + 登记进 _cols（拖缝就是改这里存的宽度）。"""
-        card = tk.Frame(body, bg=t["border"], width=w)
-        card.pack(side="left", fill="y")
-        card.pack_propagate(False)
-        self._frames.append((card, "border", "bg"))
-        self._cols.append([card, w])
-        return card
+        """一栏：软阴影圆角卡 + 固定宽度 + 登记进 _cols（拖缝就是改这里存的宽度）。
+
+        阴影用「按背景色分层的混合色」画，不生成贴图：拖缝调宽会频繁触发 Configure，
+        贴图方案每次都要逐像素重算（卡顿），分层混合色只是几条画布图元，随便重画。
+        观感口径：**大而淡**（6 层、每层 3% 上下）——小而深的阴影显廉价。
+        """
+        cv = tk.Canvas(body, width=w, bg=t["bg"], highlightthickness=0, bd=0)
+        cv.pack(side="left", fill="y")
+        self._frames.append((cv, "bg", "bg"))
+        self._cols.append([cv, w])
+        cv.bind("<Configure>", lambda e, c=cv: self._paint_card(c))
+        return cv
+
+    CARD_PAD, CARD_R = 3, 12          # 画布留白（放阴影）/ 圆角
+
+    def _paint_card(self, cv):
+        """画一张卡：外圈 6 层淡阴影 + 圆角卡面 + 1px 描边。"""
+        t = self.theme
+        try:
+            w, h = cv.winfo_width(), cv.winfo_height()
+        except tk.TclError:
+            return
+        if w < 16 or h < 16:
+            return
+        cv.delete("card")
+        pad, r = self.CARD_PAD, self.CARD_R
+        x1, y1, x2, y2 = pad, pad, w - pad, h - pad
+        layers = 6
+        for i in range(layers, 0, -1):                 # 由外到内，逐层更实
+            a = 0.030 * (1.0 - (i - 1) / float(layers))
+            g = i * 1.7
+            _rr(cv, x1 - g, y1 - g + 1.5, x2 + g, y2 + g + 1.5, r + g,
+                fill=_mix(t["bg"], t["text"], a), outline="", tags="card")
+        _rr(cv, x1, y1, x2, y2, r, fill=t["surface"], outline=t["border"],
+            width=1, tags="card")
 
     def _inner(self, card, t):
+        p = self.CARD_PAD + 1
         f = tk.Frame(card, bg=t["surface"])
-        f.pack(fill="both", expand=True, padx=1, pady=1)
+        f.place(x=p, y=p, relwidth=1, relheight=1, width=-2 * p, height=-2 * p)
         self._frames.append((f, "surface", "bg"))
         return f
 
@@ -1924,17 +1978,19 @@ class App:
         self.intake_root_lab = self._lab(parent, "样本库：—", "small", "muted")
         self.intake_root_lab.pack(anchor="w", padx=13, pady=(8, 0))
 
-        # 投放区：虚线框 + 居中提示 + 虚线按钮（AntD：虚线按钮用于引导添加内容）
-        drop = tk.Frame(parent, bg=t["surface"], highlightthickness=2,
-                        highlightbackground=t["border"], highlightcolor=t["border"])
+        # 投放区：StoryVia 式虚线圆角框（Tk 的 highlight 画不出虚线，所以自绘 Canvas）
+        drop = tk.Canvas(parent, height=156, bg=t["surface"], highlightthickness=0, bd=0)
         drop.pack(fill="x", padx=13, pady=(8, 8))
-        self._lab(drop, "把素材拖到这里", "body").pack(pady=(16, 2))
+        self._drop_zone = drop
+        self._drop_canvas = drop
+        self._drop_off_job = None
+        self._lab(drop, "把素材拖到这里", "body").place(relx=0.5, y=42, anchor="center")
         self._lab(drop, "支持图片 / 视频 / 音频 / 文本，整文件夹也行", "small",
-                  "muted").pack(pady=(0, 4))
+                  "muted").place(relx=0.5, y=66, anchor="center")
 
         db = tk.Frame(drop, bg=t["surface"], highlightthickness=1,
                       highlightbackground=t["border"], highlightcolor=t["accent"])
-        db.pack(pady=(0, 16))
+        db.place(relx=0.5, y=102, anchor="center")
         self._lab(db, "选择素材", "small").pack(padx=16, pady=6)
         try:
             db.configure(cursor="hand2")
@@ -1943,13 +1999,13 @@ class App:
             db.bind("<Leave>", lambda e: db.configure(highlightbackground=t["border"]))
         except tk.TclError:
             pass
-        self._drop_zone = drop
         self._drop_ok = self._enable_drop(drop)
         self.drag_lab = self._lab(
             drop, "· 拖拽已启用（拖到窗口任意位置都行）" if self._drop_ok
             else "· 本机拖拽不可用，用下面按钮选",
             "small", "muted" if self._drop_ok else "bad")
-        self.drag_lab.pack(pady=(0, 10))
+        self.drag_lab.place(relx=0.5, y=136, anchor="center")
+        drop.bind("<Configure>", lambda e: self._paint_drop(False))
 
         self._lab(parent, "待投放 · 角色识别", "h2").pack(anchor="w", padx=13, pady=(4, 4))
         box = tk.Frame(parent, bg=t["surface"])
@@ -2009,6 +2065,31 @@ class App:
         self._log("拖放已就绪：%d 个投放点（拖到窗口任何位置都算）" % n[0])
         return n[0]
 
+    def _paint_drop(self, hot):
+        """画投放区的虚线框。
+
+        常态＝中性色虚线；**拖拽悬停时＝强调色虚线 + 4% 淡底**（StoryVia 口径：
+        拖进来要给"能放哪"的明确反馈）。
+        """
+        cv = getattr(self, "_drop_canvas", None)
+        if cv is None:
+            return
+        t = self.theme
+        try:
+            cv.delete("zone")
+            w, h = cv.winfo_width(), cv.winfo_height()
+            if w < 24 or h < 24:
+                return
+            if hot:
+                cv.create_rectangle(0, 0, w, h, outline="",
+                                    fill=_mix(t["surface"], t["accent"], 0.04), tags="zone")
+            _dashed_rr(cv, 2, 2, w - 2, h - 2, 10,
+                       t["accent"] if hot else _mix(t["border"], t["muted"], 0.55),
+                       dash=(6, 4), width=2, tags="zone")
+            cv.tag_lower("zone")
+        except tk.TclError:
+            pass
+
     def _enable_drop(self, widget):
         """给控件挂拖放（tkinterdnd2）。失败不炸——拖拽是增强，不是必需。
 
@@ -2032,10 +2113,21 @@ class App:
             return False
 
     def _drop_hover(self, frame, on):
-        """拖进来时投放区高亮（StoryVia：拖拽要有视觉反馈）。"""
+        """拖拽悬停反馈：把投放区切成强调色虚线 + 淡底（StoryVia 口径）。
+
+        133 个投放点会连续发 Enter/Leave，所以"离开"延迟 90ms 再复位，
+        否则在控件之间移动时会闪。
+        """
         try:
-            frame.configure(highlightbackground=self.theme["accent"],
-                            highlightcolor=self.theme["accent"] if on else self.theme["border"])
+            if on:
+                if self._drop_off_job:
+                    self.root.after_cancel(self._drop_off_job)
+                    self._drop_off_job = None
+                self._paint_drop(True)
+            else:
+                if self._drop_off_job:
+                    self.root.after_cancel(self._drop_off_job)
+                self._drop_off_job = self.root.after(90, lambda: self._paint_drop(False))
         except tk.TclError:
             pass
 
@@ -2891,7 +2983,27 @@ def _dnd_selftest(app, root):
                                                     for x in getattr(app, "_pending", [])]
     except Exception as e:                                       # noqa: BLE001
         out["intoIntake"] = "error: %s" % e
-    ok = bool(out.get("dropTargets")) and out.get("intoIntake") is True and bool(ret)
+
+    # 投放区虚线框：常态 8 条图元（4 直线 + 4 圆弧），悬停态再加一块淡底
+    ok_zone = False
+    zc = getattr(app, "_drop_canvas", None)
+    if zc is not None:
+        try:
+            root.update_idletasks()
+            out["dropZoneSize"] = [zc.winfo_width(), zc.winfo_height()]
+            app._paint_drop(False)
+            root.update_idletasks()
+            cold = len(zc.find_withtag("zone"))
+            app._paint_drop(True)
+            root.update_idletasks()
+            hot = len(zc.find_withtag("zone"))
+            out["dropZoneCold"], out["dropZoneHot"] = cold, hot
+            out["dropZoneSize2"] = [zc.winfo_width(), zc.winfo_height()]
+            ok_zone = cold >= 8 and hot == cold + 1
+        except Exception as e:                                   # noqa: BLE001
+            out["dropZone"] = "error: %s" % e
+    ok = (bool(out.get("dropTargets")) and out.get("intoIntake") is True
+          and bool(ret) and ok_zone)
     out["ok"] = ok
     text = json.dumps(out, ensure_ascii=False, indent=2)
     print(text)
