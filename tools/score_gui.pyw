@@ -3059,7 +3059,7 @@ def _parse_args():
     """
     a, o = sys.argv[1:], {"sample": None, "material": False, "root": None, "name": None,
                           "project": None, "add": [], "note": "", "platform": "",
-                          "dnd_selftest": False}
+                          "dnd_selftest": False, "classic": False}
     i = 0
     while i < len(a):
         x = a[i]
@@ -3074,6 +3074,12 @@ def _parse_args():
             i += 1
         elif x == "--dnd-selftest":
             o["dnd_selftest"] = True
+            i += 1
+        elif x == "--classic":
+            o["classic"] = True
+            i += 1
+        elif x == "--web":
+            o["web"] = True
             i += 1
         elif x in ("--root", "--name", "--project", "--note", "--platform") and i + 1 < len(a):
             o[x[2:]] = a[i + 1]
@@ -3183,6 +3189,28 @@ def main():
     except Exception:                                            # noqa: BLE001
         pass
     opt = _parse_args()
+    # ── 入口分流（2026-09-15 起默认是 HTML 工作台）─────────────────────────
+    # Web 工作台：Python 起本地服务 + Edge app 窗口跑 HTML/CSS 界面（workbench/）。
+    # 老 Tk 界面：加 --classic。命令行批处理（--add/--root/--material/--dnd-selftest）
+    # 仍然走 Tk 那条无头路径，agent 与文档里的契约不受影响。
+    _batch = bool(opt.get("add") or opt.get("root") or opt.get("name")
+                  or opt.get("material") or opt.get("dnd_selftest"))
+    if not opt.get("classic") and not _batch:
+        try:
+            _ws = _load_core("workbench_server.py", "workbench_server")
+            if _ws is not None:
+                _ws.launch_web(root=opt.get("root") or "",
+                               project=opt.get("project") or "",
+                               hint=opt.get("sample") or "")
+                return
+        except Exception:                                        # noqa: BLE001
+            import traceback
+            try:
+                open(os.path.join(os.environ.get("TEMP", "."), "workbench_web_crash.log"),
+                     "w", encoding="utf-8").write(traceback.format_exc())
+            except OSError:
+                pass
+        # 起不来就静默退回 Tk 界面（别让用户对着什么都没有的桌面）
     root = _TkDnD.Tk() if _TkDnD is not None else tk.Tk()
     try:      # 拖拽诊断：冻结后 tkdnd 有没有真的加载，写文件给 agent 看
         _diag = {"tkinterdnd2": _TkDnD is not None,
