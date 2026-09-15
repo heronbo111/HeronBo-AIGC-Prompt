@@ -221,6 +221,26 @@ def wav_duration(path):
         return None
 
 
+def _no_window_kwargs():
+    """ffprobe 也是控制台程序：从 GUI（exe/pythonw）里起它会**弹一个终端窗口**。
+
+    与 `agent_bridge.no_window_kwargs()` 同款修法（那份是给 node 用的；这里独立一份，
+    免得 project_core 反向依赖 agent_bridge）。Win11 默认终端是 Windows Terminal，
+    归类素材时每个视频/音频都会闪一下，用户看到的就是"莫名其妙弹黑窗"。
+    """
+    kw = {}
+    if os.name == "nt":
+        kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        try:
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = 0                      # SW_HIDE
+            kw["startupinfo"] = si
+        except (AttributeError, ValueError):
+            pass
+    return kw
+
+
 def _ffprobe(path):
     """用 ffprobe 读宽高与时长；没装 ffprobe 就安静返回空。"""
     exe = ffprobe_exe()
@@ -231,7 +251,7 @@ def _ffprobe(path):
             [exe, "-v", "error", "-select_streams", "v:0",
              "-show_entries", "stream=width,height:format=duration",
              "-of", "json", path],
-            capture_output=True, timeout=20)
+            capture_output=True, timeout=20, **_no_window_kwargs())
         if p.returncode != 0:
             return {}
         data = json.loads(p.stdout.decode("utf-8", "replace") or "{}")
