@@ -24,7 +24,42 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SKILL_ROOT = os.path.normpath(os.path.join(HERE, ".."))
+
+
+def find_skill_root():
+    """技能仓库根目录（**exe 打包后也要找对**，否则会把配置写到临时目录）。
+
+    顺序：显式指定 → 从本文件往上找含 SKILL.md 的目录 → 从 exe 所在位置往上找
+    → 老行为（本文件的上一级）。
+
+    为什么非这样不可（2026-09-15 实测）：PyInstaller 打包后 `__file__` 落在
+    `%TEMP%\\_MEIxxxx`，于是 `HERE/..` 就是 %TEMP% —— 当时的表现是 exe 把
+    `paths.local.md` 写进了 `%TEMP%\\references\\`，Windows 一清临时目录，
+    "样本库根"就丢了。改成往上找 SKILL.md，exe 放在仓库的 tools\\dist\\ 里
+    也能正确定位到仓库根。
+    """
+    env = os.environ.get("HERONBO_SKILL_ROOT")
+    if env and os.path.isfile(os.path.join(env, "SKILL.md")):
+        return os.path.normpath(env)
+    starts = [HERE]
+    if getattr(sys, "frozen", False):
+        try:
+            starts.append(os.path.dirname(os.path.abspath(sys.executable)))
+        except (OSError, ValueError):
+            pass
+    for st in starts:
+        d = st
+        for _ in range(6):
+            if os.path.isfile(os.path.join(d, "SKILL.md")):
+                return d
+            nd = os.path.dirname(d)
+            if nd == d:
+                break
+            d = nd
+    return os.path.normpath(os.path.join(HERE, ".."))
+
+
+SKILL_ROOT = find_skill_root()
 LOCAL_MD = os.path.join(SKILL_ROOT, "references", "paths.local.md")
 PATHS_MD = os.path.join(SKILL_ROOT, "references", "paths.md")
 

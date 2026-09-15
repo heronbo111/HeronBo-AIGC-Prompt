@@ -22,6 +22,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -102,14 +103,19 @@ def node_exe():
     return _glob_first(pats)
 
 
-def available():
-    """返回 (可用?, 说明)。界面用它决定"交给 agent"按钮是否可点。"""
-    js, nd = cli_js(), node_exe()
-    if not js:
-        return False, "没找到 headless CLI（codebuddy-headless.js）"
-    if not nd:
-        return False, "没找到 node 可执行文件"
-    return True, "OK"
+def available(prefer=None):
+    """返回 (可用?, 说明)。界面用它决定"交给 agent"按钮是否可点、以及显示用的哪个 agent。"""
+    key, why = pick_agent(prefer)
+    return (bool(key), why)
+
+
+def agent_info():
+    """给界面看的完整信息：候选列表 + 选中谁 + 为什么。"""
+    key, why = pick_agent()
+    return {"picked": key,
+            "label": (ADAPTERS.get(key) or {}).get("label", ""),
+            "why": why,
+            "list": list_agents()}
 
 
 def free_port():
@@ -152,6 +158,188 @@ def build_cmd(prompt, session_id=None, permission_mode="acceptEdits",
         cmd += list(extra)
     cmd.append(prompt)
     return cmd
+
+
+# ── 多 agent 适配层 ─────────────────────────────────────────────────────────
+# 为什么要这层：这个 exe 是**跟着 skill 走的**——skill 装到哪个 agent 名下，就该用哪个
+# agent 干活。原先只认 WorkBuddy 的 headless CLI，换台机器/换个 agent 就"叫不动"。
+#
+# 判定顺序（都可被 agent_bridge.local.json 覆盖）：
+#   1) 显式配置 {"agent": "codex"} 或 {"cmd": [...]}（自己塞任意命令行）
+#   2) **装了本 skill 的 agent**（在 ~/.zcode、~/.codex、~/.dsh、~/.workbuddy 的
+#      skills/<技能名> 里能找到一个），且它的 CLI 可用
+#   3) 本机任一个可用的 agent（workbuddy → codex 顺序）
+#   4) 都没有 → UI 明确报「没找到 agent」，而不是点了没反应
+HOMES = {
+    "zcode": (".zcode", "skills"),
+    "codex": (".codex", "skills"),
+    "dsh": (".dsh", "skills"),
+    "workbuddy": (".workbuddy", "skills"),
+}
+
+
+def skill_name():
+    """本 skill 的名字（用仓库目录名，junction 也是这个名字）。"""
+    cfg = _local_cfg().get("skill_name")
+    if cfg:
+        return cfg
+    return os.path.basename(os.path.normpath(_skill_root()))
+
+
+def _skill_root():
+    """技能仓库根：**靠找 SKILL.md，不靠 HERE/..**。
+
+    frozen 之后 HERE 落在 %TEMP%\_MEIxxxx，HERE/.. 就成了 %TEMP%，于是
+    "哪个 agent 装了本技能"永远查不到（2026-09-15 实测：exe 里 host_agents()
+    返回空，因为它在找 %TEMP%\skills\Temp）。与 project_core.find_skill_root 同一套判据。
+    """
+    env = os.environ.get("HERONBO_SKILL_ROOT")
+    if env and os.path.isfile(os.path.join(env, "SKILL.md")):
+        return os.path.normpath(env)
+    starts = [HERE]
+    if getattr(sys, "frozen", False):
+        try:
+            starts.append(os.path.dirname(os.path.abspath(sys.executable)))
+        except (OSError, ValueError):
+            pass
+    for st in starts:
+        d = st
+        for _ in range(6):
+            if os.path.isfile(os.path.join(d, "SKILL.md")):
+                return d
+            nd = os.path.dirname(d)
+            if nd == d:
+                break
+            d = nd
+    return os.path.normpath(os.path.join(HERE, ".."))
+
+
+def host_agents():
+    """哪些 agent 把本 skill 装在自己名下（返回按 HOMES 顺序的 key 列表）。"""
+    name = skill_name()
+    out = []
+    home = os.path.expanduser("~")
+    for key, (d, sub) in HOMES.items():
+        p = os.path.join(home, d, sub, name)
+        if os.path.exists(p):
+            out.append(key)
+    return out
+
+
+def codex_exe():
+    """找 Codex CLI（PATH → 常见 npm 全局目录 → 配置）。"""
+    cfg = _local_cfg().get("codex")
+    if cfg and os.path.isfile(cfg):
+        return cfg
+    hit = shutil.which("codex.cmd") or shutil.which("codex")
+    if hit:
+        return hit
+    pats = [os.path.join(os.environ.get("APPDATA", ""), "npm", "codex.cmd"),
+            os.path.join(os.path.expanduser("~"), "AppData", "Roaming", "npm", "codex.cmd")]
+    return _glob_first(pats)
+
+
+def _probe_codex():
+    exe = codex_exe()
+    if not exe:
+        return False, "没找到 codex（需要先装 Codex CLI）"
+    return True, exe
+
+
+def _probe_workbuddy():
+    if not cli_js():
+        return False, "没找到 headless CLI（codebuddy-headless.js）"
+    if not node_exe():
+        return False, "没找到 node 可执行文件"
+    return True, "OK"
+
+
+ADAPTERS = {
+    "workbuddy": {"label": "WorkBuddy", "probe": _probe_workbuddy},
+    "codex": {"label": "Codex CLI", "probe": _probe_codex},
+    # 这两个先留探测位：ZCode / DSH 目前没在安装目录暴露无头 CLI。
+    # 找得到就把命令写进 agent_bridge.local.json 的 cmd 字段（见 pick_agent 的说明）。
+    "zcode": {"label": "ZCode", "probe": lambda: (False, "ZCode 未提供命令行入口（可用 local.json 的 cmd 自定义）")},
+    "dsh": {"label": "DSH", "probe": lambda: (False, "DSH 未提供命令行入口（可用 local.json 的 cmd 自定义）")},
+}
+
+
+def list_agents():
+    """本机探测结果：[{key,label,ok,why,host}]（host = 本 skill 装在这个 agent 名下）。"""
+    hosts = host_agents()
+    rows = []
+    for key, a in ADAPTERS.items():
+        ok, why = a["probe"]()
+        rows.append({"key": key, "label": a["label"], "ok": bool(ok), "why": why,
+                     "host": key in hosts})
+    return rows
+
+
+def pick_agent(prefer=None):
+    """选一个 agent 干活，返回 (key, why)。理由写清楚，界面直接显示给用户看。"""
+    cfg = _local_cfg()
+    want = prefer or cfg.get("agent")
+    rows = {r["key"]: r for r in list_agents()}
+    if want and want in rows:
+        r = rows[want]
+        if r["ok"]:
+            return want, ("按配置用 %s" % r["label"]) if prefer or cfg.get("agent")                 else r["label"]
+        return None, "配置指定的 %s 不可用：%s" % (r["label"], r["why"])
+    for key in ("workbuddy", "codex"):
+        r = rows.get(key)
+        if r and r["ok"] and r["host"]:
+            return key, "%s（本 skill 就装在它名下）" % r["label"]
+    for key in ("workbuddy", "codex"):
+        r = rows.get(key)
+        if r and r["ok"]:
+            return key, "%s（本机可用；本 skill 未装在任何 agent 名下）" % r["label"]
+    miss = "；".join("%s：%s" % (r["label"], r["why"]) for r in rows.values())
+    return None, "本机没找到可用的 agent（%s）" % miss
+
+
+def build_cmd_for(key, prompt, session_id=None, cwd=None, permission_mode=None,
+                  tools=None, extra=None):
+    """按 agent 拼命令行。返回 (cmd, mode)：mode 决定输出怎么解析。"""
+    cfg = _local_cfg()
+    if cfg.get("cmd"):                       # 自定义命令行：{prompt}/{cwd} 占位
+        cmd = [str(x).replace("{prompt}", prompt).replace("{cwd}", cwd or "")
+               for x in cfg["cmd"]]
+        return cmd, cfg.get("cmd_mode") or "text"
+    if key == "codex":
+        exe = codex_exe()
+        if not exe:
+            raise RuntimeError("codex 不可用")
+        cmd = [exe, "exec", "--json", "--skip-git-repo-check",
+               "--dangerously-bypass-approvals-and-sandbox"]
+        if cwd:
+            cmd += ["-C", cwd]
+        if session_id:
+            cmd += ["resume", session_id]
+        cmd.append(prompt)
+        return cmd, "codex-json"
+    return build_cmd(prompt, session_id=session_id, permission_mode=permission_mode or "acceptEdits",
+                     tools=tools, extra=extra), "workbuddy-json"
+
+
+def _extract_codex_line(line):
+    """从 codex --json 的一行里挖出「可读文本」和最终消息。"""
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        return line.strip(), None
+    if not isinstance(obj, dict):
+        return "", None
+    t = obj.get("type") or ""
+    msg = obj.get("message") or obj.get("msg") or ""
+    if isinstance(msg, dict):
+        msg = msg.get("content") or msg.get("text") or ""
+    if isinstance(msg, list):
+        msg = " ".join(str(x.get("text", "")) if isinstance(x, dict) else str(x) for x in msg)
+    text = " ".join(str(msg).split())
+    final = None
+    if t in ("agent_message", "message", "response.completed", "turn.completed"):
+        final = text or None
+    return text, final
 
 
 def _pick_session(obj):
@@ -255,33 +443,105 @@ def no_window_kwargs():
 
 
 def ask(prompt, session_id=None, cwd=None, timeout=DEFAULT_TIMEOUT,
-        permission_mode="acceptEdits", tools=None, on_line=None, extra=None):
-    """叫 agent 干一件事。
+        permission_mode="acceptEdits", tools=None, on_line=None, extra=None,
+        agent=None):
+    """叫 agent 干一件事（**边跑边回调每一行**，界面靠它显示实时进度）。
 
-    返回 dict: {ok, session_id, text, res, returncode, cmd, error}
-    res 里带 duration_ms / num_turns / total_cost_usd / usage，界面可以顺手显示花了多少。
-    on_line(text) 会收到每一行 stdout，界面可实时显示。
+    返回 dict: {ok, agent, session_id, text, res, returncode, cmd, error, seconds}
+    - 输出**真流式**：Popen 逐行读，`on_line(text)` 立刻拿到（原先用 subprocess.run，
+      行要等进程结束才一起回调，进度条会"卡在 0% 然后跳到 96%"——2026-09-15 修）。
+    - on_line 里改 UI 要小心：它跑在后台线程，GUI 侧要用 after/SSE 转一手。
+    - 超时就杀掉子进程，别留孤儿。
     """
+    key, why = pick_agent(agent)
+    if not key:
+        return {"ok": False, "error": why, "session_id": session_id, "text": "", "agent": None}
+    out_file = None
     try:
-        cmd = build_cmd(prompt, session_id=session_id, permission_mode=permission_mode,
-                        tools=tools, extra=extra)
+        cmd, mode = build_cmd_for(key, prompt, session_id=session_id, cwd=cwd,
+                                 permission_mode=permission_mode, tools=tools, extra=extra)
     except RuntimeError as e:
-        return {"ok": False, "error": str(e), "session_id": session_id, "text": ""}
+        return {"ok": False, "error": str(e), "session_id": session_id, "text": "",
+                "agent": key}
+    if mode == "codex-json":                    # codex 的最终消息落文件最稳（-o 在 cmd 末尾之前）
+        import tempfile
+        fd, out_file = tempfile.mkstemp(prefix="heronbo_last_", suffix=".txt")
+        os.close(fd)
+        cmd = cmd[:-1] + ["-o", out_file, cmd[-1]]
+    env = child_env()
+    text_parts, tail = [], []
     try:
-        p = subprocess.run(cmd, cwd=cwd or HERE, capture_output=True, timeout=timeout,
-                           encoding="utf-8", errors="replace", env=child_env(),
-                           stdin=subprocess.DEVNULL, **no_window_kwargs())
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "error": "超时 %ds，已放弃（agent 可能还在跑）" % timeout,
-                "session_id": session_id, "text": "", "cmd": cmd}
+        p = subprocess.Popen(cmd, cwd=cwd or HERE, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+                             encoding="utf-8", errors="replace", env=env,
+                             bufsize=1, **no_window_kwargs())
     except OSError as e:
         return {"ok": False, "error": "起不来：%s" % e, "session_id": session_id,
-                "text": "", "cmd": cmd}
-    out = p.stdout or ""
-    if on_line:
-        for line in out.splitlines():
-            on_line(line)
-    res = _parse_output(out)
+                "text": "", "cmd": cmd, "agent": key}
+    killed = {"timeout": False}
+
+    def _kill():
+        killed["timeout"] = True
+        try:
+            p.kill()
+        except OSError:
+            pass
+
+    timer = threading.Timer(timeout, _kill)
+    timer.start()
+    try:
+        for line in p.stdout:                   # 逐行读 = 真流式
+            line = line.rstrip().rstrip("\r\n")
+            if not line.strip():
+                continue
+            tail.append(line)
+            if len(tail) > 400:
+                del tail[:-400]
+            if mode == "codex-json":
+                txt, final = _extract_codex_line(line)
+                if final:
+                    text_parts.append(final)
+                if on_line and txt:
+                    on_line(txt)
+            else:
+                try:
+                    obj = json.loads(line)
+                    txt = _pick_text(obj) if isinstance(obj, dict) else ""
+                except ValueError:
+                    txt = line
+                if txt and on_line:
+                    on_line(txt)
+        p.wait(timeout=20)
+    except Exception:                                            # noqa: BLE001
+        pass
+    finally:
+        timer.cancel()
+        try:
+            err = p.stderr.read() or ""
+        except (OSError, ValueError):
+            err = ""
+    rc = p.returncode
+    raw = chr(10).join(tail)
+    if mode == "codex-json":
+        text = (text_parts[-1] if text_parts else "").strip()
+        if out_file and os.path.isfile(out_file):
+            try:
+                body = open(out_file, encoding="utf-8", errors="replace").read().strip()
+                if body:
+                    text = body
+            except OSError:
+                pass
+            try:
+                os.remove(out_file)
+            except OSError:
+                pass
+        ok = (rc == 0) and bool(text)
+        return {"ok": ok, "agent": key, "agent_label": ADAPTERS[key]["label"],
+                "session_id": session_id, "text": text, "cmd": cmd, "returncode": rc,
+                "stderr": err[-2000:],
+                "error": "" if ok else ("超时 %ds 已终止" % timeout if killed["timeout"]
+                                        else "CLI 返回码 %s" % rc)}
+    res = _parse_output(raw)
     sid = session_id
     text = ""
     if res:
@@ -291,14 +551,14 @@ def ask(prompt, session_id=None, cwd=None, timeout=DEFAULT_TIMEOUT,
             text = "".join(seg.get("text", "") if isinstance(seg, dict) else str(seg)
                            for seg in text)
     if not text:
-        text = out.strip()
+        text = raw.strip()
     is_err = bool(res and res.get("is_error"))
-    return {"ok": (p.returncode == 0) and (not is_err) and bool(text),
-            "session_id": sid, "text": text, "res": res,
-            "returncode": p.returncode, "cmd": cmd,
-            "stderr": (p.stderr or "")[-2000:],
-            "error": "" if (p.returncode == 0 and not is_err)
-                     else ("agent 报错" if is_err else "CLI 返回码 %d" % p.returncode)}
+    ok = (rc == 0) and (not is_err) and bool(text)
+    return {"ok": ok, "agent": key, "agent_label": ADAPTERS[key]["label"],
+            "session_id": sid, "text": text, "res": res, "returncode": rc, "cmd": cmd,
+            "stderr": err[-2000:],
+            "error": "" if ok else ("超时 %ds 已终止" % timeout if killed["timeout"]
+                                    else ("agent 报错" if is_err else "CLI 返回码 %s" % rc))}
 
 
 if __name__ == "__main__":                      # 命令行自检：python agent_bridge.py "问题"
