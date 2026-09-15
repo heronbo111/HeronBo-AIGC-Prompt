@@ -3040,7 +3040,8 @@ def main():
     selftest_res = {"code": None}
     try:
         app = App(root, opt.get("sample"))
-        if opt.get("material") or opt.get("add") or opt.get("name"):
+        if (opt.get("material") or opt.get("add") or opt.get("name")
+                or opt.get("project")):          # --project 单独给也要落到那个项目上
             root.after(120, lambda: _run_material_actions(app, opt))
     except Exception:                                            # noqa: BLE001
         import traceback
