@@ -17,6 +17,18 @@ import json         # noqa: F401
 import math
 import os
 import re
+
+# 拖拽支持（可选：tools/_vendor 里有 tkinterdnd2；没有就退化为只用按钮）
+try:
+    import sys as _sys
+    _VENDOR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_vendor")
+    if os.path.isdir(_VENDOR) and _VENDOR not in _sys.path:
+        _sys.path.insert(0, _VENDOR)
+    from tkinterdnd2 import COPY as _DND_COPY, DND_FILES, TkinterDnD as _TkDnD
+except Exception:                                     # noqa: BLE001
+    DND_FILES = None
+    _DND_COPY = None
+    _TkDnD = None
 import struct
 import sys
 import zlib
@@ -102,6 +114,12 @@ BASE = getattr(sys, "_MEIPASS", HERE)          # PyInstaller 打包后资源在 
 
 # ── 主题 ────────────────────────────────────────────────────────────────────
 THEMES = {
+    # 拾光式：暖米白底 + 一个品牌橙 + 一个墨绿，取自朋友那款 App 的实际取值
+    # （bg #F6F4F1 / card #FFF / line #EDE8E2 / ink 三级 / brand #E4622E / green #3E8E7E）
+    "拾光": dict(bg="#F6F4F1", surface="#FFFFFF", surface_hover="#FBFAF8", border="#EDE8E2",
+                 text="#26221E", muted="#7A7168", accent="#E4622E", accent_text="#FFFFFF",
+                 accent_soft="#FDEDE5", header="#FFFFFF", star_empty="#E4DED6",
+                 ok="#3E8E7E", warn="#D98B1F", bad="#C0392B"),
     "浅色": dict(bg="#F4F6F9", surface="#FFFFFF", surface_hover="#EDF1F8", border="#E2E7EF",
                  text="#1E2430", muted="#7A8497", accent="#2F6FED", accent_text="#FFFFFF",
                  accent_soft="#E8F0FE", header="#FFFFFF", star_empty="#D8DEE9",
@@ -137,7 +155,7 @@ THEMES = {
                  accent_soft="#E6E8FF", header="#E4EBFF", star_empty="#D5DDF0",
                  ok="#10B981", warn="#F59E0B", bad="#EF4444", game=True),
 }
-DEFAULT_THEME = "浅色"
+DEFAULT_THEME = "拾光"
 
 _FONTS = {}
 
@@ -342,7 +360,7 @@ core = _load_core("score_core.py", "score_core")
 if core is None:
     raise RuntimeError("找不到 score_core.py（应与本脚本同在 tools\\ 目录）")
 
-# 项目骨架 / 素材投放核心（缺了不影响评分功能，只是「素材/骨架」不可用）
+# 项目框架 / 素材投放核心（缺了不影响评分功能，只是「素材/框架」不可用）
 pcore = _load_core("project_core.py", "project_core")
 # 程序 ↔ agent 通道（缺了就只能"只记待办"，不能一键叫 agent）
 abridge = _load_core("agent_bridge.py", "agent_bridge")
@@ -482,6 +500,10 @@ class Segmented(_Slider, tk.Canvas):
         self.bind("<Leave>", self._on_leave)
         self._measure()
         self._build()
+        try:
+            self.root.after(80, self._refresh_actions)
+        except Exception:                                 # noqa: BLE001
+            pass
 
     # ---- 几何 -------------------------------------------------------------
     def _measure(self):
@@ -826,13 +848,15 @@ class Pill(tk.Canvas):
 
     def __init__(self, master, text, command=None, theme=None, font=None,
                  kind="primary", padx=20, pady=10, radius=10, bg_key="bg",
-                 shadow=6, depth=None):
+                 shadow=6, depth=None, hit_h=0):
         super().__init__(master, highlightthickness=0, bd=0, takefocus=0)
         self.text, self.command, self.theme = text, command, theme
         self.font = font or F("body")
         self.kind, self.padx, self.pady, self.radius, self.bg_key = (
             kind, padx, pady, radius, bg_key)
         self.shadow = max(3, int(depth) + 2) if depth else int(shadow)
+        self.hit_h = int(hit_h) if hit_h else 0      # 命中区高度（桌面端 44）
+        self._enabled = True
         self._hover = self._press = False
         self._img = None
         self.bind("<Enter>", lambda e: self._set(hover=True))
@@ -845,57 +869,83 @@ class Pill(tk.Canvas):
     def _build(self):
         game = bool(self.theme.get("game"))
         self._M = 14 if game else 0            # 游戏皮肤需要留白容纳外发光
+        # 圆角与内边距联动（视频口径：圆角越大内部越挤，pady 要跟着加）
+        eff_pady = self.pady
+        if 0 < self.radius <= 24:
+            eff_pady = max(eff_pady, int(self.radius * 0.4))
         self._bw = self.font.measure(self.text) + self.padx * 2
-        self._bh = self.font.metrics("linespace") + self.pady * 2
+        self._bh = self.font.metrics("linespace") + eff_pady * 2
         self._cw = self._bw + self._M * 2
         self._ch = self._bh + self._M * 2 + (self.shadow + 2 if self.shadow else 0)
+        # 命中区撑到 hit_h（桌面端 ≥44×44），视觉尺寸不变、按钮垂直居中
+        content_h = self._ch
+        self._yoff = 0
+        if self.hit_h and self.hit_h > content_h:
+            self._ch = self.hit_h
+            self._yoff = max(0, (self._ch - content_h) // 2)
         self.configure(width=self._cw, height=self._ch)
         self.delete("all")
         self._img_i = self.create_image(0, 0, anchor="nw")
-        self._txt_i = self.create_text(self._bw / 2.0 + self._M, self._bh / 2.0 + self._M,
+        self._txt_i = self.create_text(self._bw / 2.0 + self._M,
+                                       self._yoff + self._bh / 2.0 + self._M,
                                        text=self.text, font=self.font, anchor="center")
         self._draw()
 
     def _colors(self):
+        """按钮视觉配方（照 Material 3 / AntD，2026-09-15 重做）：
+
+        - ghost（次要）：白底 + 1px 细边框，**零投影**；悬停 = 边框加深 + 底色微变；
+          按下 = 品牌浅底 + 品牌字。次要动作靠边框和文字站位，不靠影子。
+        - primary（主动作）：实心品牌色 + 白字，**上缘 1px 高光**（光从上来的立体），
+          投影用**主色**而不是黑色 —— 黑投影在浅底上就是"脏盒子"。
+        - danger：白底 + 红字 + 红细边；悬停 = 红浅底。
+        """
         t = self.theme
+        if not getattr(self, "_enabled", True):
+            # 禁用态（视频口径：置灰 + 降不透明度），且不再响应悬停/按下
+            return _mix(t["muted"], t["surface"], 0.45), t["surface"], None
         if self.kind == "primary":
-            base, fg = t["accent"], t["accent_text"]
-        elif self.kind == "danger":
-            base, fg = t["bad"], t["accent_text"]
-        else:
-            base, fg = t["surface"], t["text"]
+            if self._press:
+                return _dim(t["accent"], 0.12), t["accent_text"], None
+            return t["accent"], t["accent_text"], None
+        if self.kind == "danger":
+            if self._press:
+                return t["accent_soft"], t["bad"], None
+            if self._hover:
+                return t["accent_soft"], t["bad"], None
+            return t[self.bg_key], t["bad"], t["bad"]
+        # ghost
         if self._press:
-            fill = _dim(base, 0.10)
-        elif self._hover:
-            fill = _mix(base, t["text"], 0.06) if self.kind == "ghost" else _lit(base, 0.10)
-        else:
-            fill = base
-        border = t["border"] if self.kind == "ghost" else None
-        shadow = t["text"] if self.kind == "ghost" else _dim(base, 0.55)
-        alpha = 0.16 if self.kind == "ghost" else 0.30
-        return fill, fg, border, shadow, alpha
+            return t["accent_soft"], t["accent"], t["accent"]
+        if self._hover:
+            return t["surface_hover"], t["text"], t["muted"]
+        return t[self.bg_key], t["text"], t["border"]
 
     def _draw(self):
         t = self.theme
         bg = t[self.bg_key]
-        fill, fg, border, sh, alpha = self._colors()
+        fill, fg, border = self._colors()
         game = bool(t.get("game"))
         M = getattr(self, "_M", 0)
-        glow = None
-        if game:
-            glow = t["accent"] if self.kind == "primary" else (
-                t["bad"] if self.kind == "danger" else None)
+        # 只有主动作有投影，而且投影是主色（黑投影在浅底上=脏盒子）
+        primary = self.kind == "primary"
+        shadow = None            # 用户裁定：投影太怪，全部不加（2026-09-15）
+        shadow_alpha = 0.0
         img = _rr_photo(self._cw, self._ch, self.radius, fill=fill, bg=bg,
                         border=border, border_w=1.0,
                         fill2=_dim(fill, 0.22) if game else None,
-                        glow=glow, glow_blur=11.0,
+                        glow=(t["accent"] if self.kind == "primary" else
+                              (t["bad"] if self.kind == "danger" else None)) if game else None,
+                        glow_blur=11.0,
                         glow_alpha=(0.20 if self._press else 0.40) if game else 0.0,
-                        inner_top=_lit(fill, 0.40) if game else None,
+                        inner_top=(_lit(fill, 0.35) if (primary or game) else None),
                         inner_alpha=0.55,
-                        shadow=sh if self.shadow else None,
+                        shadow=shadow if self.shadow else None,
                         shadow_dy=1.0 if self._press else 2.0,
-                        shadow_blur=float(self.shadow), shadow_alpha=alpha,
-                        box=(M, M, M + self._bw, M + self._bh))
+                        shadow_blur=7.0 if primary else float(self.shadow),
+                        shadow_alpha=shadow_alpha,
+                        box=(M, M + self._yoff, M + self._bw,
+                             M + self._yoff + self._bh))
         self.configure(bg=bg, height=self._ch)
         if img is not None:
             self._img = img
@@ -905,7 +955,16 @@ class Pill(tk.Canvas):
                 self.radius, outline=border or "", fill=fill)
         self.itemconfig(self._txt_i, fill=fg)
 
+    def set_text(self, text):
+        """改按钮文字（宽度会跟着重算）。"""
+        if text == self.text:
+            return
+        self.text = text
+        self._build()
+
     def _set(self, hover=None, press=None):
+        if not getattr(self, "_enabled", True):
+            hover = press = False
         if hover is not None:
             self._hover = hover
             self.configure(cursor="hand2" if hover else "")
@@ -913,7 +972,23 @@ class Pill(tk.Canvas):
             self._press = press
         self._draw()
 
+    def set_enabled(self, on):
+        """禁用态：置灰、不响应点击（比事后弹窗更符合规范）。"""
+        if getattr(self, "_enabled", True) == bool(on):
+            return
+        self._enabled = bool(on)
+        self._hover = self._press = False
+        try:
+            self.configure(cursor="" if self._enabled else "arrow")
+        except tk.TclError:
+            pass
+        self._draw()
+
     def _release(self, e):
+        if not getattr(self, "_enabled", True):
+            self._press = False
+            self._draw()
+            return
         was = self._press
         self._press = False
         self._draw()
@@ -976,7 +1051,274 @@ class Modal(tk.Toplevel):
         self.destroy()
 
 
-# ── 素材投放 / 建骨架 ───────────────────────────────────────────────────────
+# ── 图标（Segoe Fluent Icons → MDL2 → Symbol，单色矢量，比 emoji 干净）──────
+ICONS = {
+    "refresh": "\ue72c", "settings": "\ue713", "add": "\ue710", "delete": "\ue74d",
+    "copy": "\ue8c8", "save": "\ue74e", "folder": "\ue8b7", "file": "\ue8a5",
+    "download": "\ue896", "feedback": "\ue90a", "robot": "\ue99a", "edit": "\ue70f",
+    "play": "\ue768", "open": "\ue8e5", "theme": "\ue790", "close": "\ue711",
+    "chevron": "\ue70d", "check": "\ue73e", "image": "\ue91b", "video": "\ue714",
+    "audio": "\ue720", "upload": "\ue898", "undo": "\ue7a7", "star": "\ue735",
+}
+_ICON_FAMILY = None
+
+
+def icon_font(size=12):
+    fam = _ICON_FAMILY
+    if fam is None:
+        try:
+            fams = set(tkfont.families())
+        except tk.TclError:
+            fams = set()
+        fam = "Segoe UI Symbol"
+        for cand in ("Segoe Fluent Icons", "Segoe MDL2 Assets", "Segoe UI Symbol"):
+            if cand in fams:
+                fam = cand
+                break
+        globals()["_ICON_FAMILY"] = fam
+    key = ("icon", size)
+    if key not in _FONTS:
+        _FONTS[key] = tkfont.Font(family=fam, size=size)
+    return _FONTS[key]
+
+
+class Toast(tk.Toplevel):
+    """右下角自动消失的提示条（照拾光 .toast）：不打断、不用点确定。"""
+
+    def __init__(self, master, text, theme, ms=2400, kind="ok"):
+        super().__init__(master)
+        self.overrideredirect(True)
+        try:
+            self.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        bg = {"ok": theme["ok"], "bad": theme["bad"], "info": theme["accent"]}.get(
+            kind, theme["text"])
+        tk.Label(self, text=text, font=F("small"), bg=bg, fg="#FFFFFF",
+                 padx=16, pady=9).pack()
+        self.update_idletasks()
+        try:
+            x = master.winfo_rootx() + master.winfo_width() // 2 - self.winfo_width() // 2
+            y = master.winfo_rooty() + master.winfo_height() - 76
+            self.geometry("+%d+%d" % (max(0, x), max(0, y)))
+        except tk.TclError:
+            pass
+        self.after(ms, self.destroy)
+
+
+class IconBtn(tk.Canvas):
+    """圆角方形图标按钮。尺寸与观感照拾光：34×34 / r10 / 卡片底 + 极淡投影 / 图标 18px。
+
+    只有图标不好认，所以带上悬浮提示（tooltip）。
+    """
+
+    M = 12                      # 给投影留的余白
+
+    def __init__(self, master, glyph, command=None, theme=None, bg_key="surface",
+                 size=34, radius=10, tip="", kind="ghost"):
+        super().__init__(master, highlightthickness=0, bd=0, takefocus=0)
+        self.glyph = ICONS.get(glyph, glyph)
+        self.command = command
+        self.theme = theme
+        self.bg_key, self.size, self.radius, self.tip, self.kind = (
+            bg_key, size, radius, tip, kind)
+        self._hover = self._press = False
+        self._img = self._tipwin = self._tipjob = None
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<Button-1>", lambda e: self._set(press=True))
+        self.bind("<ButtonRelease-1>", self._release)
+        self._build()
+
+    # ---- 绘制 -------------------------------------------------------------
+    def _build(self):
+        t = self.theme
+        self._cw = self._ch = self.size + self.M * 2
+        try:
+            self.configure(width=self._cw, height=self._ch, bg=t[self.bg_key])
+        except tk.TclError:
+            return
+        self.delete("all")
+        self._img_i = self.create_image(0, 0, anchor="nw")
+        self._txt_i = self.create_text(self._cw / 2.0, self._ch / 2.0, text=self.glyph,
+                                       font=icon_font(13))
+        self._draw()
+
+    def _colors(self):
+        t = self.theme
+        if self._press:
+            return t["accent"], t["accent_text"], None
+        if self._hover:
+            return t["accent_soft"], t["accent"], None
+        if self.kind == "primary":
+            return t["accent"], t["accent_text"], None
+        if self.kind == "danger":
+            return t["surface"], t["bad"], t["border"]
+        return t[self.bg_key], t["muted"], t["border"]
+
+    def _draw(self):
+        t = self.theme
+        bg = t[self.bg_key]
+        fill, fg, ring = self._colors()
+        M = self.M
+        img = _rr_photo(self._cw, self._ch, self.radius, fill=fill, bg=bg,
+                        border=ring, border_w=1.0,
+                        shadow=None,
+                        box=(M, M, M + self.size, M + self.size))
+        if img is not None:
+            self._img = img
+            self.itemconfig(self._img_i, image=img)
+        self.itemconfig(self._txt_i, fill=fg)
+
+    # ---- 交互 -------------------------------------------------------------
+    def _set(self, hover=None, press=None):
+        if hover is not None:
+            self._hover = hover
+            try:
+                self.configure(cursor="hand2" if hover else "")
+            except tk.TclError:
+                pass
+        if press is not None:
+            self._press = press
+        self._draw()
+
+    def _release(self, _e):
+        was = self._press
+        self._set(press=False)
+        self._hide_tip()
+        if was and self.command:
+            self.command()
+
+    def _on_enter(self, _e=None):
+        self._set(hover=True)
+        if self.tip:
+            try:
+                self._tipjob = self.after(420, self._show_tip)
+            except tk.TclError:
+                pass
+
+    def _on_leave(self, _e=None):
+        self._set(hover=False)
+        self._hide_tip()
+
+    def _show_tip(self):
+        if not self.tip or not self.winfo_exists():
+            return
+        t = self.theme
+        try:
+            w = tk.Toplevel(self)
+            w.overrideredirect(True)
+            try:
+                w.attributes("-topmost", True)
+            except tk.TclError:
+                pass
+            tk.Label(w, text=self.tip, font=F("small"), bg=t["text"], fg=t["bg"],
+                     padx=8, pady=3).pack()
+            w.update_idletasks()
+            x = self.winfo_rootx() + self._cw // 2 - w.winfo_width() // 2
+            y = self.winfo_rooty() + self._ch - 4
+            w.geometry("+%d+%d" % (max(0, x), y))
+            self._tipwin = w
+        except tk.TclError:
+            self._tipwin = None
+
+    def _hide_tip(self):
+        if self._tipjob:
+            try:
+                self.after_cancel(self._tipjob)
+            except tk.TclError:
+                pass
+            self._tipjob = None
+        if self._tipwin is not None:
+            try:
+                self._tipwin.destroy()
+            except tk.TclError:
+                pass
+            self._tipwin = None
+
+    def apply_theme(self, theme):
+        self.theme = theme
+        self._hide_tip()
+        self._build()
+
+
+class ThemeMenu(tk.Toplevel):
+    """主题下拉菜单：一个按钮展开收起（替代原来横排 8 个分段控件）。"""
+
+    def __init__(self, anchor, theme, current, on_pick):
+        super().__init__(anchor)
+        self.overrideredirect(True)
+        try:
+            self.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        self.configure(bg=theme["border"])
+        body = tk.Frame(self, bg=theme["surface"])
+        body.pack(padx=1, pady=1)
+
+        def row_for(name):
+            th = THEMES[name]
+            r = tk.Frame(body, bg=theme["surface"])
+            r.pack(fill="x")
+            cv = tk.Canvas(r, width=16, height=16, highlightthickness=0, bd=0,
+                           bg=theme["surface"])
+            cv.create_oval(1, 1, 15, 15, fill=th["accent"], outline=th["border"], width=1)
+            cv.create_oval(9, 4, 15, 10, fill=th["surface"], outline="")
+            cv.pack(side="left", padx=(10, 8), pady=7)
+            lab = tk.Label(r, text=name, font=F("small"), bg=theme["surface"],
+                           fg=theme["text"], anchor="w", width=7)
+            lab.pack(side="left")
+            mark = tk.Label(r, text=ICONS["check"] if name == current else "",
+                            font=icon_font(10), bg=theme["surface"], fg=theme["accent"],
+                            width=2)
+            mark.pack(side="right", padx=(2, 8))
+
+            def on_enter(_e):
+                for w in (r, lab, cv, mark):
+                    w.configure(bg=theme["surface_hover"])
+
+            def on_leave(_e):
+                for w in (r, lab, cv, mark):
+                    w.configure(bg=theme["surface"])
+
+            def pick(_e, n=name):
+                try:
+                    self.destroy()
+                except tk.TclError:
+                    pass
+                on_pick(n)
+            for w in (r, lab, cv, mark):
+                w.bind("<Enter>", on_enter)
+                w.bind("<Leave>", on_leave)
+                w.bind("<Button-1>", pick)
+                try:
+                    w.configure(cursor="hand2")
+                except tk.TclError:
+                    pass
+            return r
+
+        for nm in THEMES:
+            row_for(nm)
+        self.update_idletasks()
+        try:
+            x = anchor.winfo_rootx() + anchor.winfo_width() - self.winfo_width()
+            y = anchor.winfo_rooty() + anchor.winfo_height() + 6
+            self.geometry("+%d+%d" % (max(0, x), y))
+            self.bind("<FocusOut>", lambda e: self.destroy())
+            self.bind("<Escape>", lambda e: self.destroy())
+            self.focus_force()
+        except tk.TclError:
+            pass
+
+
+# ── 素材投放 / 建框架 ───────────────────────────────────────────────────────
+def skill_root():
+    """技能根目录：exe 从 dist 往上两级；源码从 tools 往上一级。"""
+    if getattr(sys, "frozen", False):
+        return os.path.normpath(os.path.join(os.path.dirname(sys.executable), ".."))
+    return os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
+
 def app_root_hint():
     """样本库根的默认值：先问 project_core，再退回评分工具自己的探测结果。"""
     if pcore is not None:
@@ -1177,7 +1519,7 @@ class App:
         except OSError:
             pass
 
-    # ---- 界面骨架 ---------------------------------------------------------
+    # ---- 界面框架 ---------------------------------------------------------
     def _build(self):
         t = self.theme
         self._frames, self._labels, self._dyn = [], [], []
@@ -1188,18 +1530,19 @@ class App:
         hl = tk.Frame(header, bg=t["header"])
         hl.pack(side="left", padx=(20, 0), pady=14)
         self._frames.append((hl, "header", "bg"))
-        self._lab(hl, "Seedance 成片六维评分", "title").pack(anchor="w")
-        self._lab(hl, "点分 → 保存 → agent 按 json 优化规则", "small", "muted").pack(anchor="w", pady=(2, 0))
+        self._lab(hl, "HeronBo · AI 视频工作台", "title").pack(anchor="w")
+        self._lab(hl, "① 丢素材建框架 → ② 出提示词 → ③ 交付成片 → ④ 打分反馈，闭环由 agent 接力", "small", "muted").pack(anchor="w", pady=(2, 0))
 
         hr = tk.Frame(header, bg=t["header"])
-        hr.pack(side="right", padx=(0, 20), pady=14)
+        hr.pack(side="right", padx=(0, 20), pady=11)
         self._frames.append((hr, "header", "bg"))
-        self._lab(hr, "主题", "small", "muted").pack(side="left", padx=(0, 8))
-        self.theme_seg = Segmented(hr, list(THEMES.keys()), value=load_theme_name(),
-                                   on_change=self.apply_theme, theme=t, font=F("small"),
-                                   padx=12, height=26, bg_key="header")
-        self.theme_seg.pack(side="left")
-        self._dyn.append(self.theme_seg)
+        # 主题：一颗按钮展开收起（原先是横排 8 个分段，太占地方）
+        self.theme_btn = Pill(hr, "主题 · %s  ▼" % load_theme_name(),
+                              lambda: self.open_theme_menu(self.theme_btn), theme=t,
+                              font=F("small"), kind="ghost", padx=14, pady=8, radius=999,
+                              bg_key="header", depth=2)
+        self.theme_btn.pack(side="left")
+        self._dyn.append(self.theme_btn)
 
         self.root_path_lab = self._lab(self.root, "", "small", "muted")
         self.root_path_lab.pack(anchor="w", padx=22, pady=(10, 0))
@@ -1218,11 +1561,35 @@ class App:
         self._leftcard = self._col(body, t, c1w)
         self._left_w = c1w
         left = self._inner(self._leftcard, t)
-        self._lab(left, "项目", "h2").pack(anchor="w", padx=12, pady=(12, 4))
-        self.proj_lab = self._lab(left, "未选项目 · 骨架未建", "small", "muted")
-        self.proj_lab.pack(anchor="w", padx=12, pady=(0, 8))
+        self._col_head(left, t, "项目", [
+            ("refresh", "刷新", self.reload),
+            ("folder", "换样本库根", self.change_root),
+        ])
+        self.proj_lab = self._lab(left, "未选项目 · 框架未建", "small", "muted")
+        self.proj_lab.pack(anchor="w", padx=13, pady=(8, 6))
+        # 数字统计卡（照《生成高级感页面》示例：stat 卡让左栏有层次、不空）
+        statrow = tk.Frame(left, bg=t["surface"])
+        statrow.pack(fill="x", padx=13, pady=(0, 8))
+        self._frames.append((statrow, "surface", "bg"))
+        self._stat = {}
+        for key, cap in (("mat", "素材"), ("gen", "成片"), ("round", "轮次")):
+            cell = tk.Frame(statrow, bg=t["surface"], highlightthickness=1,
+                            highlightbackground=t["border"], highlightcolor=t["border"])
+            cell.pack(side="left", fill="both", expand=True, padx=(0, 5))
+            num = tk.Label(cell, text="—", font=F("stat"), bg=t["surface"],
+                           fg=t["text"], anchor="w")   # 强调色纪律：非交互元素不用 accent
+            num.pack(anchor="w", padx=8, pady=(6, 0))
+            capl = tk.Label(cell, text=cap, font=F("small"), bg=t["surface"],
+                            fg=t["muted"], anchor="w")
+            capl.pack(anchor="w", padx=8, pady=(0, 6))
+            self._stat[key] = num
+        thead = tk.Frame(left, bg=t["surface_hover"])
+        thead.pack(fill="x", padx=12, pady=(0, 0))
+        self._frames.append((thead, "surface_hover", "surface"))
+        self._lab(thead, "样本", "small", "muted").pack(side="left", padx=(2, 0), pady=4)
+        self._lab(thead, "成片/评价", "small", "muted").pack(side="right", padx=(0, 8), pady=4)
         lrow = tk.Frame(left, bg=t["surface"])
-        lrow.pack(fill="both", expand=True, padx=(12, 6), pady=(0, 12))
+        lrow.pack(fill="both", expand=True, padx=(12, 6), pady=(4, 12))
         self._frames.append((lrow, "surface", "bg"))
         self.lb = tk.Listbox(lrow, width=22, activestyle="none", bd=0, highlightthickness=0,
                              exportselection=False, font=F("body"))
@@ -1273,6 +1640,11 @@ class App:
         right = tk.Frame(rightcard, bg=t["surface"])
         right.pack(fill="both", expand=True, padx=1, pady=1)
         self._frames.append((right, "surface", "bg"))
+        self._col_head(right, t, "评分", [
+            ("save", "保存评分", self.save, "primary"),
+            ("undo", "重新载入（丢弃未保存改动）", self.on_sample),
+            ("copy", "复制JSON", self.copy_review_json),
+        ])
         form = tk.Frame(right, bg=t["surface"])
         form.pack(fill="both", expand=True, padx=18, pady=16)
         self._frames.append((form, "surface", "bg"))
@@ -1343,6 +1715,14 @@ class App:
         footer.pack(fill="x", padx=20, pady=(0, 16))
         self._frames.append((footer, "bg", "bg"))
         self.status = self._lab(footer, "选一个样本 → 逐项点分 → 保存", "small", "muted")
+        try:      # 构建戳：一眼看出 exe 新旧（用户曾被两份 exe 的旧版坑过）
+            _srcf = sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__)
+            _stamp = datetime.datetime.fromtimestamp(os.path.getmtime(_srcf)).strftime("%m-%d %H:%M")
+            _dragok = "拖拽✓" if _TkDnD is not None else "拖拽✗"
+            self.status.config(text="构建 %s · %s · 选一个样本 → 逐项点分 → 保存"
+                                     % (_stamp, _dragok))
+        except Exception:                                         # noqa: BLE001
+            pass
         self.status.pack(side="left")
         self.save_pill = Pill(footer, "保存评分", self.save, theme=t, font=F("h2"),
                               kind="primary", padx=26, pady=11, radius=11,
@@ -1427,7 +1807,12 @@ class App:
                          disabledbackground=t["surface"])
         for d in self._dyn:
             d.apply_theme(t)
-        self.theme_seg.set(name)
+        seg = getattr(self, "theme_seg", None)      # 主题已改成按钮，保住旧路径不炸
+        if seg is not None:
+            seg.set(name)
+        btn = getattr(self, "theme_btn", None)
+        if btn is not None:
+            btn.set_text("主题 · %s  ▼" % name)
         wp = getattr(self, "_mat_win", None)                # 素材窗口跟着换肤
         if wp is not None:
             try:
@@ -1461,7 +1846,7 @@ class App:
             self._recolor_list()
             self.lb.config(cursor="hand2" if idx is not None else "")
 
-    # ---- 四栏骨架 ---------------------------------------------------------
+    # ---- 四栏框架 ---------------------------------------------------------
     def _col(self, body, t, w):
         """一栏：外层描边 + 固定宽度 + 登记进 _cols（拖缝就是改这里存的宽度）。"""
         card = tk.Frame(body, bg=t["border"], width=w)
@@ -1476,6 +1861,41 @@ class App:
         f.pack(fill="both", expand=True, padx=1, pady=1)
         self._frames.append((f, "surface", "bg"))
         return f
+
+    def _col_head(self, parent, t, title, items=(), note=None):
+        """栏标题条：标题在左，**带文字的药丸按钮**在右。
+
+        AntD：空间够时不要用纯图标按钮（那是小空间的妥协）；
+        这里空间够，所以文字按钮 + 图标字体只在按钮里当前缀（识别更快）。
+        items 每项 = (图标名, 按钮文字, 回调) 或 (图标名, 按钮文字, 回调, kind)。
+        """
+        bar = tk.Frame(parent, bg=t["header"], height=44)
+        bar.pack(fill="x")
+        bar.pack_propagate(False)
+        self._frames.append((bar, "header", "surface"))
+        self._lab(bar, title, "h2").pack(side="left", padx=(13, 0))
+        holder = tk.Frame(bar, bg=t["header"])
+        holder.pack(side="right", padx=(0, 8))
+        self._frames.append((holder, "header", "surface"))
+        for it in items:
+            _glyph, label, cmd = it[0], it[1], it[2]
+            kind = it[3] if len(it) > 3 else "ghost"
+            btn = Pill(holder, label, cmd, theme=t, font=F("small"),
+                       kind="primary" if kind == "primary" else
+                       ("danger" if kind == "danger" else "ghost"),
+                       padx=11, pady=5, radius=999, bg_key="header",
+                       depth=4 if kind == "primary" else 2, hit_h=44)
+            btn.pack(side="left", padx=3)      # 条本身 44 高，热区正好铺满
+            self._dyn.append(btn)
+            self._head_pills = getattr(self, "_head_pills", {})
+            self._head_pills[label] = btn
+        if note is not None:
+            self.col_note_lab = self._lab(bar, note, "small", "muted")
+            self.col_note_lab.pack(side="right", padx=(0, 8))
+        return bar
+
+    def open_theme_menu(self, anchor):
+        ThemeMenu(anchor, self.theme, load_theme_name(), self.apply_theme)
 
     def _splitter(self, body, t, i):
         """8px 命中区 / 4px 视觉 的隐形拖缝；拖它改「左边那一栏」的宽度。"""
@@ -1497,32 +1917,45 @@ class App:
 
     # ---- ② 素材栏 ---------------------------------------------------------
     def _build_intake(self, parent, t):
-        self._lab(parent, "素材", "h2").pack(anchor="w", padx=12, pady=(12, 4))
+        # 标题条只放本栏主动作（AntD：一个按钮区最多一个主按钮）
+        self._col_head(parent, t, "素材", [
+            ("add", "建框架归类", self.intake_go, "primary"),
+        ])
         self.intake_root_lab = self._lab(parent, "样本库：—", "small", "muted")
-        self.intake_root_lab.pack(anchor="w", padx=12)
+        self.intake_root_lab.pack(anchor="w", padx=13, pady=(8, 0))
 
+        # 投放区：虚线框 + 居中提示 + 虚线按钮（AntD：虚线按钮用于引导添加内容）
         drop = tk.Frame(parent, bg=t["surface"], highlightthickness=2,
                         highlightbackground=t["border"], highlightcolor=t["border"])
-        drop.pack(fill="x", padx=12, pady=(8, 6))
-        self._lab(drop, "把素材（文件或整个文件夹）丢进来", "small").pack(pady=(12, 2))
-        self._lab(drop, "软件自己判角色、起项目名、建骨架", "small", "muted").pack(pady=(0, 12))
+        drop.pack(fill="x", padx=13, pady=(8, 8))
+        self._lab(drop, "把素材拖到这里", "body").pack(pady=(16, 2))
+        self._lab(drop, "支持图片 / 视频 / 音频 / 文本，整文件夹也行", "small",
+                  "muted").pack(pady=(0, 4))
 
-        row = tk.Frame(parent, bg=t["surface"])
-        row.pack(fill="x", padx=12)
-        self._frames.append((row, "surface", "bg"))
-        Pill(row, "选文件", lambda: self.intake_pick(False), theme=t, font=F("small"),
-             kind="ghost", padx=11, pady=7, radius=8, bg_key="surface", depth=2).pack(side="left")
-        Pill(row, "选文件夹", lambda: self.intake_pick(True), theme=t, font=F("small"),
-             kind="ghost", padx=11, pady=7, radius=8, bg_key="surface", depth=2).pack(
-                 side="left", padx=5)
-        Pill(row, "清空", self.intake_clear, theme=t, font=F("small"), kind="ghost",
-             padx=11, pady=7, radius=8, bg_key="surface", depth=2).pack(side="left")
+        db = tk.Frame(drop, bg=t["surface"], highlightthickness=1,
+                      highlightbackground=t["border"], highlightcolor=t["accent"])
+        db.pack(pady=(0, 16))
+        self._lab(db, "选择素材", "small").pack(padx=16, pady=6)
+        try:
+            db.configure(cursor="hand2")
+            db.bind("<Button-1>", lambda e: self.intake_pick(False))
+            db.bind("<Enter>", lambda e: db.configure(highlightbackground=t["accent"]))
+            db.bind("<Leave>", lambda e: db.configure(highlightbackground=t["border"]))
+        except tk.TclError:
+            pass
+        self._drop_zone = drop
+        self._drop_ok = self._enable_drop(drop)
+        self.drag_lab = self._lab(
+            drop, "· 拖拽已启用（拖到窗口任意位置都行）" if self._drop_ok
+            else "· 本机拖拽不可用，用下面按钮选",
+            "small", "muted" if self._drop_ok else "bad")
+        self.drag_lab.pack(pady=(0, 10))
 
-        self._lab(parent, "待投放 · 角色识别", "h2").pack(anchor="w", padx=12, pady=(12, 4))
+        self._lab(parent, "待投放 · 角色识别", "h2").pack(anchor="w", padx=13, pady=(4, 4))
         box = tk.Frame(parent, bg=t["surface"])
-        box.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+        box.pack(fill="both", expand=True, padx=13, pady=(0, 8))
         self._frames.append((box, "surface", "bg"))
-        self.intake_lb = tk.Listbox(box, height=9, activestyle="none", bd=0,
+        self.intake_lb = tk.Listbox(box, height=8, activestyle="none", bd=0,
                                     highlightthickness=1, font=F("small"),
                                     exportselection=False)
         self.intake_lb.pack(side="left", fill="both", expand=True)
@@ -1532,25 +1965,105 @@ class App:
         self.intake_lb.config(yscrollcommand=isb.set)
         self._isb = isb
 
-        self.go_pill = Pill(parent, "自动建骨架并归类", self.intake_go, theme=t,
-                            font=F("small"), kind="primary", padx=14, pady=9, radius=10,
-                            bg_key="surface", depth=4)
-        self.go_pill.pack(fill="x", padx=12, pady=(0, 8))
-        self._dyn.append(self.go_pill)
-        self.intake_hint = self._lab(parent, "选定素材后点上面这颗按钮", "small", "muted")
-        self.intake_hint.pack(anchor="w", padx=12, pady=(0, 8))
+        foot = tk.Frame(parent, bg=t["surface"])
+        foot.pack(fill="x", padx=13, pady=(0, 10))
+        self._frames.append((foot, "surface", "bg"))
+        Pill(foot, "清空", self.intake_clear, theme=t, font=F("small"), kind="ghost",
+             padx=10, pady=5, radius=999, bg_key="surface", depth=2).pack(side="left")
+        self.intake_hint = self._lab(foot, "—", "small", "muted")
+        self.intake_hint.pack(side="left", padx=(8, 0))
+        # 拖放：tkdnd 只认「鼠标正下方那个控件」，所以要把整棵控件树都注册成投放目标。
+        # 只注册顶层窗口时，拖到四栏工作台的任何子控件上都会被拒绝（2026-09-15 定位）。
+        self.root.after_idle(self._enable_drop_all)
 
-    # ---- ③ 分镜 / 提示词栏 ------------------------------------------------
+    def _enable_drop_all(self):
+        """把整棵控件树登记为投放目标；返回成功登记数（0 = 拖放不可用）。"""
+        if DND_FILES is None:
+            self._log("拖放不可用（没装 tkinterdnd2），用「选文件」按钮替代")
+            return 0
+        n = [0]
+
+        def walk(w):
+            if self._enable_drop(w):
+                n[0] += 1
+            for ch in w.winfo_children():
+                walk(ch)
+
+        try:
+            walk(self.root)
+        except tk.TclError:
+            pass
+        try:                     # 写进诊断文件，agent 可直接核对（不必靠肉眼）
+            p = os.path.join(os.environ.get("TEMP", "."), "score_tool_drag_diag.txt")
+            d = {}
+            if os.path.isfile(p):
+                try:
+                    d = json.load(open(p, encoding="utf-8")) or {}
+                except (ValueError, OSError):
+                    d = {}
+            d["dropTargets"] = n[0]
+            d["tkinterdnd2"] = True
+            open(p, "w", encoding="utf-8").write(json.dumps(d, ensure_ascii=False, indent=2))
+        except OSError:
+            pass
+        self._log("拖放已就绪：%d 个投放点（拖到窗口任何位置都算）" % n[0])
+        return n[0]
+
+    def _enable_drop(self, widget):
+        """给控件挂拖放（tkinterdnd2）。失败不炸——拖拽是增强，不是必需。
+
+        两个必须照做的点（2026-09-15 实测定位，"拖不进去"就是这两条没做）：
+        1. **用 dnd_bind，别用 bind**：DnD 事件带的是 tkdnd 自己的 18 个替换字段，
+           普通 bind 会按 tkinter 标准字段去取 `%#`（serial）→ 每次拖过都抛
+           `TclError: expected integer but got "%#"`，回调根本进不去。
+        2. **回调要返回动作**（COPY）：`<<Drop>>` / `<<DropEnter>>` 不返回动作会被拒收。
+        """
+        if DND_FILES is None or not hasattr(widget, "drop_target_register"):
+            return False          # 普通 tk.Tk（测试/无 tkdnd）没有这个方法
+        try:
+            widget.drop_target_register(DND_FILES)
+            widget.dnd_bind("<<DropEnter>>",
+                            lambda e, w=widget: (self._drop_hover(w, True), _DND_COPY)[1])
+            widget.dnd_bind("<<DropLeave>>",
+                            lambda e, w=widget: self._drop_hover(w, False))
+            widget.dnd_bind("<<Drop>>", self._on_files_dropped)
+            return True
+        except (tk.TclError, AttributeError):
+            return False
+
+    def _drop_hover(self, frame, on):
+        """拖进来时投放区高亮（StoryVia：拖拽要有视觉反馈）。"""
+        try:
+            frame.configure(highlightbackground=self.theme["accent"],
+                            highlightcolor=self.theme["accent"] if on else self.theme["border"])
+        except tk.TclError:
+            pass
+
+    def _on_files_dropped(self, e):
+        data = (getattr(e, "data", "") or "").strip()
+        pairs = re.findall(r"\{([^}]*)\}|(\S+)", data)
+        got = [(a or b) for a, b in pairs]
+        n = 0
+        for p in got:
+            if p and (os.path.isdir(p) or os.path.isfile(p)):
+                self._pending.append(os.path.normpath(p))
+                n += 1
+        if n:
+            self.intake_refresh()
+            self.toast("收到 %d 个素材，点「建框架并归类」落位" % n, "info")
+        else:
+            self.toast("没识别到可用的文件", "bad")
+        return _DND_COPY          # 必须回一个动作（COPY），否则这次投递会被系统拒绝
+
     def _build_prompt_col(self, parent, t):
-        head = tk.Frame(parent, bg=t["surface"])
-        head.pack(fill="x", padx=12, pady=(12, 2))
-        self._frames.append((head, "surface", "bg"))
-        self._lab(head, "分镜 / 提示词", "h2").pack(side="left")
-        self.wb_state_lab = self._lab(head, "—", "small", "muted")
-        self.wb_state_lab.pack(side="right")
+        self._col_head(parent, t, "分镜 / 提示词", [
+            ("robot", "出提示词", lambda: self.wb_ask("prompt"), "primary"),
+            ("copy", "复制", self.wb_copy),
+        ], note="—")
+        self.wb_state_lab = self.col_note_lab
 
         prow = tk.Frame(parent, bg=t["surface"])
-        prow.pack(fill="both", expand=True, padx=12, pady=(4, 6))
+        prow.pack(fill="both", expand=True, padx=13, pady=(8, 4))
         self._frames.append((prow, "surface", "bg"))
         self.prompt = tk.Text(prow, height=9, font=F("small"), bd=0, relief="flat",
                               highlightthickness=1, wrap="word")
@@ -1561,59 +2074,64 @@ class App:
         self.prompt.config(yscrollcommand=psb.set)
         self._psb = psb
         self.prompt.configure(state="disabled")
+        try:
+            self.prompt.configure(state="normal")
+            self.prompt.insert(
+                "1.0", "（还没有提示词。\n\n"
+                       "流程：②栏丢素材 → 软件建框架 → agent 出提示词写回框架 → "
+                       "这里点「读取提示词」就能看到，点「复制」去即梦粘贴。\n\n"
+                       "现在就可以点右上角「出提示词」让 agent 先干起来。）")
+            self.prompt.configure(state="disabled")
+        except tk.TclError:
+            pass
+        prow2 = tk.Frame(parent, bg=t["surface"])
+        prow2.pack(fill="x", padx=13, pady=(0, 8))
+        self._frames.append((prow2, "surface", "bg"))
+        Pill(prow2, "读取提示词", self.wb_load_prompts, theme=t, font=F("small"),
+             kind="ghost", padx=10, pady=5, radius=999, bg_key="surface",
+             depth=2).pack(side="left")
+        self._lab(prow2, "agent 写回框架后点这颗刷新", "small", "muted").pack(
+            side="left", padx=(8, 0))
 
-        pr = tk.Frame(parent, bg=t["surface"])
-        pr.pack(fill="x", padx=12, pady=(0, 8))
-        self._frames.append((pr, "surface", "bg"))
-        Pill(pr, "读取提示词", self.wb_load_prompts, theme=t, font=F("small"), kind="ghost",
-             padx=11, pady=7, radius=8, bg_key="surface", depth=2).pack(side="left")
-        self.copy_pill = Pill(pr, "复制全部", self.wb_copy, theme=t, font=F("small"),
-                              kind="primary", padx=13, pady=7, radius=8, bg_key="surface",
-                              depth=3)
-        self.copy_pill.pack(side="left", padx=5)
-        self._dyn.append(self.copy_pill)
-
-        self._lab(parent, "成片 / 废片接收（收完会自动弹反馈窗）", "h2").pack(
-            anchor="w", padx=12, pady=(6, 4))
+        self._lab(parent, "成片 / 废片（收完自动弹反馈窗）", "h2").pack(
+            anchor="w", padx=13, pady=(2, 4))
         rr = tk.Frame(parent, bg=t["surface"])
-        rr.pack(fill="x", padx=12)
+        rr.pack(fill="x", padx=13)
         self._frames.append((rr, "surface", "bg"))
-        Pill(rr, "接收成片", lambda: self.wb_receive(True), theme=t, font=F("small"),
-             kind="primary", padx=12, pady=7, radius=8, bg_key="surface", depth=3).pack(
-                 side="left")
-        Pill(rr, "接收废片", lambda: self.wb_receive(False), theme=t, font=F("small"),
-             kind="danger", padx=12, pady=7, radius=8, bg_key="surface", depth=3).pack(
-                 side="left", padx=5)
+        self.rx_ok = Pill(rr, "收成片", lambda: self.wb_receive(True), theme=t,
+                          font=F("small"), kind="ghost", padx=10, pady=5, radius=999,
+                          bg_key="surface", depth=2, hit_h=32)
+        self.rx_ok.pack(side="left")
+        self.rx_bad = Pill(rr, "收废片", lambda: self.wb_receive(False), theme=t,
+                           font=F("small"), kind="danger", padx=10, pady=5, radius=999,
+                           bg_key="surface", depth=2, hit_h=32)
+        self.rx_bad.pack(side="left", padx=5)
         self._lab(rr, "废因", "small", "muted").pack(side="left", padx=(10, 4))
         self.why_var = tk.StringVar()
-        tk.Entry(rr, textvariable=self.why_var, font=F("small"), width=14, relief="flat",
+        tk.Entry(rr, textvariable=self.why_var, font=F("small"), width=8, relief="flat",
                  highlightthickness=1).pack(side="left")
 
         self._lab(parent, "本轮反馈（提交后 agent 接着干）", "h2").pack(
-            anchor="w", padx=12, pady=(10, 4))
+            anchor="w", padx=13, pady=(8, 4))
         self.fb = tk.Text(parent, height=3, font=F("small"), bd=0, relief="flat",
                           highlightthickness=1, wrap="word")
-        self.fb.pack(fill="x", padx=12)
+        self.fb.pack(fill="x", padx=13)
         fr = tk.Frame(parent, bg=t["surface"])
-        fr.pack(fill="x", padx=12, pady=(6, 8))
+        fr.pack(fill="x", padx=13, pady=(6, 6))
         self._frames.append((fr, "surface", "bg"))
-        self.send_pill = Pill(fr, "提交反馈 · 让 agent 再出一版", lambda: self.wb_submit(True),
-                              theme=t, font=F("small"), kind="primary", padx=13, pady=8,
-                              radius=9, bg_key="surface", depth=4)
-        self.send_pill.pack(side="left")
+        self._lab(fr, "写清现象（哪里不对/哪里好）", "small", "muted").pack(
+            side="left", padx=(0, 6))
+        self.send_pill = Pill(fr, "提交反馈 · 再出一版", lambda: self.wb_submit(True),
+                              theme=t, font=F("small"), kind="primary", padx=13, pady=7,
+                              radius=999, bg_key="surface", depth=4)
+        self.send_pill.pack(side="right")
         self._dyn.append(self.send_pill)
-        Pill(fr, "只记待办", lambda: self.wb_submit(False), theme=t, font=F("small"),
-             kind="ghost", padx=10, pady=8, radius=9, bg_key="surface", depth=2).pack(
-                 side="left", padx=5)
-        Pill(fr, "叫 agent 出提示词", lambda: self.wb_ask("prompt"), theme=t,
-             font=F("small"), kind="ghost", padx=10, pady=8, radius=9, bg_key="surface",
-             depth=2).pack(side="left")
 
-        self._lab(parent, "执行记录", "h2").pack(anchor="w", padx=12, pady=(2, 4))
+        self._lab(parent, "执行记录", "h2").pack(anchor="w", padx=13, pady=(4, 4))
         lrow = tk.Frame(parent, bg=t["surface"])
-        lrow.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        lrow.pack(fill="both", expand=True, padx=13, pady=(0, 12))
         self._frames.append((lrow, "surface", "bg"))
-        self.log = tk.Text(lrow, height=6, font=F("small"), bd=0, relief="flat",
+        self.log = tk.Text(lrow, height=4, font=F("small"), bd=0, relief="flat",
                            highlightthickness=1, wrap="word")
         self.log.pack(side="left", fill="both", expand=True)
         lsb = tk.Scrollbar(lrow, orient="vertical", command=self.log.yview, width=9,
@@ -1622,6 +2140,14 @@ class App:
         self.log.config(yscrollcommand=lsb.set)
         self._lsb = lsb
         self.log.configure(state="disabled")
+
+    def toast(self, text, kind="ok"):
+        """右下角自动消失的提示条 + 同时写进执行记录。"""
+        try:
+            Toast(self.root, text, self.theme, kind=kind)
+        except tk.TclError:
+            pass
+        self._log(text)
 
     # ---- ② 素材栏 / ③ 提示词栏 的动作 --------------------------------------
     def _log(self, msg):
@@ -1660,13 +2186,14 @@ class App:
             except Exception:                                 # noqa: BLE001
                 root = ""
         try:
-            self.intake_root_lab.config(text="样本库：%s" % (root or "（未配置，会在建骨架时问你）"))
+            self.intake_root_lab.config(
+                text="样本库：%s" % (root or "（未配置，建框架时会问你）"))
         except tk.TclError:
             pass
         if not (pcore and self._pending):
             self._plan = None
             try:
-                self.intake_hint.config(text="选定素材后点上面这颗按钮")
+                self.intake_hint.config(text="选定素材后点右上角 ＋")
             except tk.TclError:
                 pass
             return
@@ -1676,19 +2203,27 @@ class App:
             self._log("!! 规划失败：%s" % e)
             return
         self._plan = plan
-        for it in plan["items"]:
+        t = self.theme
+        role_color = {"形象参考": t["accent"], "产品图": t["warn"],
+                      "参考视频": t["ok"], "台词配音": t["ok"],
+                      "音色参考": t["muted"], "文案": t["text"],
+                      "其它": t["muted"]}
+        for i, it in enumerate(plan["items"]):
             try:
                 self.intake_lb.insert("end", "%-5s %s" % (it["role"], it["name"]))
+                self.intake_lb.itemconfig(
+                    "end", fg=role_color.get(it["role"], t["text"]))
             except tk.TclError:
                 pass
         try:
-            self.intake_hint.config(text="将建成：%s  （素材 %d 个，角色已判好）"
-                                         % (plan["final_name"] or "（推不出名）", plan["count"]))
+            self.intake_hint.config(
+                text="将建成：%s  （素材 %d 个，角色已判好）"
+                     % (plan["final_name"] or "（推不出名）", plan["count"]))
         except tk.TclError:
             pass
 
     def intake_go(self):
-        """一键：软件自动定根 / 定名 → 建骨架 → 按角色归类 → 切到该项目。"""
+        """一键：软件自动定根 / 定名 → 建框架 → 按角色归类 → 切到该项目。"""
         if not pcore:
             self._log("!! 找不到 project_core.py")
             return
@@ -1698,39 +2233,60 @@ class App:
         try:
             pdir, _plan, _log = pcore.auto_build(self._pending, on_log=self._log)
         except Exception as e:                                # noqa: BLE001
-            self._log("!! 建骨架失败：%s" % e)
+            self._log("!! 建框架失败：%s" % e)
             return
         if not pdir:
-            self._log("建骨架失败（可能还没配置样本库根目录）")
+            self._log("建框架失败（可能还没配置样本库根目录）")
             return
         self._pending = []
         self.intake_refresh()
         self.set_project(pdir)
         self.reload()
-        self._log("✅ 骨架就绪：%s" % pdir)
+        self._log("✅ 框架就绪：%s" % pdir)
 
     def set_project(self, pdir):
         """切换当前项目：刷新项目卡 + 提示词区 + 状态栏。"""
         self.proj_dir = pdir or ""
-        name = os.path.basename(os.path.normpath(pdir)) if pdir else "未选项目 · 骨架未建"
+        name = os.path.basename(os.path.normpath(pdir)) if pdir else "未选项目 · 框架未建"
         try:
             self.proj_lab.config(text=name)
         except tk.TclError:
             pass
+        vals = {"mat": "—", "gen": "—", "round": "—"}
+        if pcore and os.path.isdir(pdir or ""):
+            try:
+                sk = pcore.load_skeleton(pdir)
+                if sk:
+                    c = sk.get("counts") or {}
+                    vals["mat"] = str(sum(c.values())) if c else "0"
+                    vals["gen"] = str(len(sk["project"].get("generated", [])))
+                st = pcore.read_state(pdir)
+                vals["round"] = str(st.get("round", 0))
+            except Exception:                                 # noqa: BLE001
+                pass
+        for k, v in vals.items():
+            lab = getattr(self, "_stat", {}).get(k)
+            if lab is not None:
+                try:
+                    lab.config(text=v)
+                except tk.TclError:
+                    pass
         self.wb_load_prompts(quiet=True)
+        self._refresh_actions()
 
     def wb_load_prompts(self, quiet=False):
         proj = getattr(self, "proj_dir", "")
         if not (pcore and proj) or not os.path.isdir(proj):
             if not quiet:
-                self._log("先建骨架（②栏）或在①栏选中一个项目")
+                self._log("先建框架（②栏）或在①栏选中一个项目")
             return
         parts = []
         try:
             sk = pcore.load_skeleton(proj)
             if sk:
                 for pr in sk["project"].get("prompts", []):
-                    parts.append("【%s】\n%s" % (pr.get("name", "提示词"), pr.get("text", "")))
+                    parts.append("【%s】\n%s" % (pr.get("name", "提示词"),
+                                                 pr.get("text", "")))
             wenan = os.path.join(proj, "文案")
             if os.path.isdir(wenan):
                 for fn in sorted(os.listdir(wenan)):
@@ -1744,8 +2300,8 @@ class App:
         except Exception as e:                                # noqa: BLE001
             self._log("!! 读提示词失败：%s" % e)
             return
-        txt = "\n\n".join(parts) if parts else \
-            "（还没有提示词。agent 写回 骨架.json 的 prompts、或放进 文案/ 后，点「读取提示词」）"
+        txt = ("\n\n".join(parts) if parts else
+               "（还没有提示词。agent 写回 框架.json 的 prompts、或放进 文案/ 后，点「读取提示词」）")
         try:
             self.prompt.configure(state="normal")
             self.prompt.delete("1.0", "end")
@@ -1775,7 +2331,7 @@ class App:
     def wb_receive(self, good):
         proj = getattr(self, "proj_dir", "")
         if not (pcore and proj):
-            self._log("先建骨架（②栏）")
+            self._log("先建框架（②栏）")
             return
         ps = filedialog.askopenfilenames(
             title="选要接收的%s（可多选）" % ("成片" if good else "废片"))
@@ -1797,21 +2353,20 @@ class App:
     def wb_submit(self, call_agent):
         proj = getattr(self, "proj_dir", "")
         if not (pcore and proj):
-            self._log("先建骨架（②栏）")
-            return ""
+            self._log("先建框架（②栏）")
+            return
         try:
             text = self.fb.get("1.0", "end").strip()
         except tk.TclError:
-            return ""
+            return
         if not text:
             self._log("反馈还是空的，先写两句")
-            return ""
+            return
         try:
-            n = pcore.new_round(proj, text)
-            pcore.push_todo(proj, "反馈", text)
+            n = pcore.new_round(proj, text)     # 留档 + 推待办是一件事，别在这里再 push_todo
         except Exception as e:                                # noqa: BLE001
             self._log("!! 写待办失败：%s" % e)
-            return ""
+            return
         self._log("已记入第 %d 轮反馈（_会话/轮次/%03d-反馈.txt）" % (n, n))
         try:
             self.fb.delete("1.0", "end")
@@ -1820,7 +2375,6 @@ class App:
         self.wb_state()
         if call_agent:
             self.wb_ask("feedback", text)
-        return text
 
     def wb_state(self):
         proj = getattr(self, "proj_dir", "")
@@ -1833,8 +2387,9 @@ class App:
         try:
             st = pcore.read_state(proj)
             pend = len(pcore.read_todos(proj))
-            self.wb_state_lab.config(text="阶段 %s · 第 %s 轮 · 待办 %d"
-                                          % (st.get("stage", "新建"), st.get("round", 0), pend))
+            self.wb_state_lab.config(
+                text="阶段 %s · 第 %s 轮 · 待办 %d"
+                     % (st.get("stage", "新建"), st.get("round", 0), pend))
         except Exception:                                     # noqa: BLE001
             pass
 
@@ -1849,19 +2404,22 @@ class App:
             self._log("叫不动 agent：%s" % why)
             return
         st = pcore.read_state(proj)
+        skill_md = os.path.join(skill_root(), "SKILL.md")
         sid = st.get("agentSession") or None
         if what == "feedback":
-            todo = ("用户在界面上给了第 %s 轮反馈：\n%s\n\n"
-                    "请按反馈重出一版提示词：更新 %s\\文案\\ 下的稿子与 骨架.json 的 prompts，"
+            todo = ("先读技能说明 %s 再动手（本机已装，直接读文件即可）。\n\n"
+                    "用户在界面上给了第 %s 轮反馈：\n%s\n\n"
+                    "请按反馈重出一版提示词：更新 %s\\文案\\ 下的稿子与 框架.json 的 prompts，"
                     "并把要上传的文件副本放进 即梦上传\\（含上传说明.txt）。"
                     "完成后跑 tools\\project_core.py --project \"%s\" --receipt \"改了什么\" "
-                    "--todo-done 写回执。" % (st.get("round", 1), feedback, proj, proj))
+                    "--todo-done 写回执。" % (skill_md, st.get("round", 1), feedback, proj, proj))
         else:
-            todo = ("用户点了「叫 agent 出提示词」。请扫描 %s\\ 下的 骨架.json 与 素材/、文案/，"
-                    "按 skill 规则出一版提示词，写回 骨架.json 的 prompts 与 文案/，"
+            todo = ("先读技能说明 %s 再动手（本机已装，直接读文件即可）。\n\n"
+                    "用户点了「叫 agent 出提示词」。请扫描 %s\\ 下的 框架.json 与 素材/、文案/，"
+                    "按 skill 规则出一版提示词，写回 框架.json 的 prompts 与 文案/，"
                     "并把要上传的文件副本按引用编号放进 即梦上传\\；"
                     "完成后跑 tools\\project_core.py --project \"%s\" --receipt \"改了什么\" "
-                    "--todo-done 写回执。" % (proj, proj))
+                    "--todo-done 写回执。" % (skill_md, proj, proj))
         self._log("→ 正在叫 agent …（可以继续用界面，跑完自动写回执）")
         self.wb_state()
 
@@ -1944,7 +2502,7 @@ class App:
         except tk.TclError:
             pass
 
-    # ---- 素材投放 / 建骨架 ------------------------------------------------
+    # ---- 素材投放 / 建框架 ------------------------------------------------
     def open_material(self, project=None):
         """切到某个项目（四栏内联后不再弹窗；保留此名以兼容命令行 --material）。"""
         if project:
@@ -1969,6 +2527,7 @@ class App:
 
     # ---- 数据 -------------------------------------------------------------
     def reload(self):
+        self._refresh_actions()
         if not self.samples_root:
             self.status.config(text="没有样本库根目录——点「刷新样本」可重新选择")
             return
@@ -2029,6 +2588,7 @@ class App:
         return s["videos"] or ["（无成片）"]
 
     def on_sample(self):
+        self._refresh_actions()
         s = self.cur()
         if not s:
             return
@@ -2079,7 +2639,116 @@ class App:
         }
 
     # ---- 保存 / 关闭 ------------------------------------------------------
-    def save(self):
+    # ---- ① 项目栏的图标动作 ------------------------------------------------
+    def change_root(self):
+        d = filedialog.askdirectory(title="选样本库根目录")
+        if not d:
+            return
+        d = os.path.normpath(d)
+        if pcore:
+            try:
+                pcore.write_local(SAMPLES_ROOT=d)
+            except Exception as e:                            # noqa: BLE001
+                self._log("!! 写 paths.local.md 失败：%s" % e)
+        self.samples_root = d
+        self.reload()
+        self.intake_refresh()
+        self._log("样本库根已切到：%s" % d)
+
+    def reset_widths(self):
+        for i, w in enumerate(COL_DEFAULTS):
+            if i < len(self._cols):
+                self._cols[i][1] = w
+                try:
+                    self._cols[i][0].configure(width=w)
+                except tk.TclError:
+                    pass
+        save_col_widths(COL_DEFAULTS)
+        self.status.config(text="栏宽已恢复默认")
+
+    # ---- ④ 评分栏的图标动作 ------------------------------------------------
+    def copy_review_json(self):
+        """把当前表单内容拼成一份评分 json 复制到剪贴板（贴给别人/留档用）。"""
+        s = self.cur()
+        if not s:
+            self._log("还没选样本，没东西可复制")
+            return
+        data = {
+            "sample": s["name"],
+            "video": self.video_var.get() if s["videos"] else "",
+            "dims": {k: self.vars[k].get() for k, _o in DIMS},
+            "forbid": {k: self.vars[k].get() for k in FORBID},
+            "star": self.stars.get(),
+            "concl": self.concl.get(),
+            "note": self.note.get(),
+            "copiedAt": datetime.datetime.now().isoformat(timespec="seconds"),
+        }
+        txt = json.dumps(data, ensure_ascii=False, indent=2)
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(txt)
+            self.status.config(text="本次评分 JSON 已复制（%d 字）" % len(txt))
+            self._log("已复制评分 JSON：%s" % s["name"])
+        except tk.TclError as e:
+            self._log("复制失败：%s" % e)
+
+    def _refresh_actions(self):
+        """按上下文启用/禁用按钮。
+
+        视频口径：条件不满足就**直接禁用**（置灰、不响应），不要等用户点了再弹窗。
+        """
+        try:
+            has_sample = self.cur() is not None
+        except Exception:                                     # noqa: BLE001
+            has_sample = False
+        has_proj = bool(getattr(self, "proj_dir", "")) and os.path.isdir(self.proj_dir)
+        has_pending = bool(getattr(self, "_pending", []))
+        plans = (("保存评分", has_sample), ("重载", has_sample), ("复制JSON", has_sample),
+                 ("建框架归类", has_pending),
+                 ("收成片", has_proj), ("收废片", has_proj),
+                 ("出提示词", has_proj), ("复制", has_proj))
+        pills = getattr(self, "_head_pills", {})
+        for lbl, on in plans:
+            btn = pills.get(lbl)
+            if btn is not None:
+                try:
+                    btn.set_enabled(on)
+                except Exception:                             # noqa: BLE001
+                    pass
+        for pill, on in ((getattr(self, "send_pill", None), has_proj),
+                         (getattr(self, "rx_ok", None), has_proj),
+                         (getattr(self, "rx_bad", None), has_proj)):
+            if pill is not None:
+                try:
+                    pill.set_enabled(on)
+                except Exception:                             # noqa: BLE001
+                    pass
+
+    def save(self, *a, **k):
+        """保存（带加载态防连点：点一下进「保存中…」，完成即恢复）。"""
+        if getattr(self, "_saving", False):
+            return False
+        self._saving = True
+        pill = getattr(self, "save_pill", None)
+        try:
+            if pill is not None:
+                pill.set_enabled(False)
+                pill.set_text("保存中…")
+                try:
+                    self.root.update_idletasks()
+                except tk.TclError:
+                    pass
+            return self._save_impl()
+        finally:
+            self._saving = False
+            if pill is not None:
+                pill.set_text("保存评分")
+            try:
+                self._refresh_actions()
+            except Exception:                                 # noqa: BLE001
+                pass
+
+    def _save_impl(self):
         s = self.cur()
         if not s:
             Modal.ask(self.root, self.theme, "还没选样本", "先在左边点一个样本，再保存。",
@@ -2127,16 +2796,17 @@ def _parse_args():
 
     评分用途：
         --sample <关键词> / -s <关键词>        打开就定位到名字含该关键词的样本
-    素材与骨架用途（rules.md 第 264-272 条）：
-        --material                            直接打开「素材投放 · 建骨架」窗口
-        --root <目录> --name <实验名>          建骨架（自动避让重名，加序号）
+    素材与框架用途（rules.md 第 264-272 条）：
+        --material                            直接打开「素材投放 · 建框架」窗口
+        --root <目录> --name <实验名>          建框架（自动避让重名，加序号）
         --project <目录>                      指定项目目录
         --add <路径> [<路径> ...]             投放素材（文件或文件夹，可跟多个）
         --note <文字>                         给这批素材记一句备注
         --platform <名>                       平台（即梦 / 小云雀 / updream）
     """
     a, o = sys.argv[1:], {"sample": None, "material": False, "root": None, "name": None,
-                          "project": None, "add": [], "note": "", "platform": ""}
+                          "project": None, "add": [], "note": "", "platform": "",
+                          "dnd_selftest": False}
     i = 0
     while i < len(a):
         x = a[i]
@@ -2148,6 +2818,9 @@ def _parse_args():
             i += 1
         elif x == "--material":
             o["material"] = True
+            i += 1
+        elif x == "--dnd-selftest":
+            o["dnd_selftest"] = True
             i += 1
         elif x in ("--root", "--name", "--project", "--note", "--platform") and i + 1 < len(a):
             o[x[2:]] = a[i + 1]
@@ -2164,7 +2837,7 @@ def _parse_args():
 
 
 def _run_material_actions(app, opt):
-    """按命令行把「建骨架 / 投素材」跑掉（结果写进 ③栏 执行记录）。"""
+    """按命令行把「建框架 / 投素材」跑掉（结果写进 ③栏 执行记录）。"""
     if not pcore:
         return
     if opt.get("project"):
@@ -2179,14 +2852,55 @@ def _run_material_actions(app, opt):
                                                  name=opt.get("name"),
                                                  on_log=app._log)
         except Exception as e:                                # noqa: BLE001
-            app._log("!! 自动建骨架失败：%s" % e)
+            app._log("!! 自动建框架失败：%s" % e)
             return
         if pdir:
             app._pending = []
             app.intake_refresh()
             app.set_project(pdir)
             app.reload()
-            app._log("✅ 骨架就绪：%s" % pdir)
+            app._log("✅ 框架就绪：%s" % pdir)
+
+
+def _dnd_selftest(app, root):
+    """`--dnd-selftest`：不靠人手拖，验证「注册 → 回调 → 分流」整条链，打印 JSON。
+
+    验三件事：① tkdnd 是否加载；② 整棵控件树登记成投放目标的数量；
+    ③ 投递回调真被调用、文件进了投放台（用与 tkinterdnd2.DnDEvent 同形状的事件对象模拟）。
+    返回码 0=通过。给 agent / CI 用，省得"拖不进去"只能靠人试。
+    """
+    import tempfile
+    out = {"tcl": root.tk.call("info", "tclversion"),
+           "tkdnd": getattr(root, "TkdndVersion", None),
+           "dropTargets": app._enable_drop_all()}
+    d = tempfile.mkdtemp(prefix="dnd_selftest_")
+    p = os.path.join(d, "被拖进来的素材.txt")
+    try:
+        open(p, "w", encoding="utf-8").write("dnd selftest")
+    except OSError as e:
+        out["error"] = "写测试文件失败：%s" % e
+
+    class _Ev:                       # 与 tkinterdnd2.DnDEvent 同形状（回调只用到 .data）
+        data = "{%s}" % p
+
+    ret = None
+    try:
+        ret = app._on_files_dropped(_Ev())
+        out["handlerReturn"] = ret
+        out["intoIntake"] = os.path.normpath(p) in [os.path.normpath(x)
+                                                    for x in getattr(app, "_pending", [])]
+    except Exception as e:                                       # noqa: BLE001
+        out["intoIntake"] = "error: %s" % e
+    ok = bool(out.get("dropTargets")) and out.get("intoIntake") is True and bool(ret)
+    out["ok"] = ok
+    text = json.dumps(out, ensure_ascii=False, indent=2)
+    print(text)
+    try:                     # 打包成窗口程序后 stdout 读不到，落一份盘给 agent 看
+        open(os.path.join(os.environ.get("TEMP", "."), "score_tool_dnd_selftest.json"),
+             "w", encoding="utf-8").write(text)
+    except OSError:
+        pass
+    return 0 if ok else 1
 
 
 def main():
@@ -2196,12 +2910,22 @@ def main():
     except Exception:                                            # noqa: BLE001
         pass
     opt = _parse_args()
-    root = tk.Tk()
+    root = _TkDnD.Tk() if _TkDnD is not None else tk.Tk()
+    try:      # 拖拽诊断：冻结后 tkdnd 有没有真的加载，写文件给 agent 看
+        _diag = {"tkinterdnd2": _TkDnD is not None,
+                 "TkdndVersion": getattr(root, "TkdndVersion", None),
+                 "has_drop_register": hasattr(root, "drop_target_register"),
+                 "DND_FILES": DND_FILES is not None}
+        open(os.path.join(os.environ.get("TEMP", "."), "score_tool_drag_diag.txt"),
+             "w", encoding="utf-8").write(json.dumps(_diag, ensure_ascii=False, indent=2))
+    except Exception:                                         # noqa: BLE001
+        pass
     try:
         dpi = root.winfo_fpixels("1i")
         root.tk.call("tk", "scaling", dpi / 72.0)
     except tk.TclError:
         pass
+    selftest_res = {"code": None}
     try:
         app = App(root, opt.get("sample"))
         if opt.get("material") or opt.get("add") or opt.get("name"):
@@ -2221,7 +2945,14 @@ def main():
         except Exception:                                        # noqa: BLE001
             pass
         return
+    if opt.get("dnd_selftest"):
+        def _selfcheck():
+            selftest_res["code"] = _dnd_selftest(app, root)
+            root.destroy()
+        root.after(500, _selfcheck)
     root.mainloop()
+    if selftest_res["code"] is not None:
+        sys.exit(selftest_res["code"])
 
 
 if __name__ == "__main__":

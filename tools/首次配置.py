@@ -8,7 +8,7 @@
 
 用法：
     python 首次配置.py                                   # 校验：已配置 exit 0；未配置 exit 1 并打印问句
-    python 首次配置.py --project "<项目目录>"             # 建项目骨架，其上一级登记为 SAMPLES_ROOT
+    python 首次配置.py --project "<项目目录>"             # 建项目框架，其上一级登记为 SAMPLES_ROOT
     python 首次配置.py --set "<样本库根>"                 # 只登记样本库根
     python 首次配置.py --platform 即梦 --cli dreamina     # 登记平台与 CLI 命令
 
@@ -137,7 +137,7 @@ def main(argv):
         root = os.path.dirname(proj)
         ensure_root(root)
         write_local(SAMPLES_ROOT=root)
-        print("[首次配置] 项目骨架已建：%s" % proj)
+        print("[首次配置] 项目框架已建：%s" % proj)
         print("[首次配置] 已写入 paths.local.md：SAMPLES_ROOT=%s" % root)
         return 0
 

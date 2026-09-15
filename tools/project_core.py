@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
-"""项目骨架 / 素材投放核心（评分窗口版与命令行版共用，也被 agent 直接调用）。
+"""项目框架 / 素材投放核心（评分窗口版与命令行版共用，也被 agent 直接调用）。
 
 约定来源：`references/rules.md` 第 264-272 条
-    骨架：<SAMPLES_ROOT>/<实验名>/{文案,素材,成片,废片,评价,备注}/
+    框架：<SAMPLES_ROOT>/<实验名>/{文案,素材,成片,废片,评价,备注}/
     实验名一律不带日期戳；同一主题重开依次加序号 1、2、3（「0」就是第一个，不写 0）。
     根目录由用户指定，登记进 `references/paths.local.md`（已 gitignore）。
 
 设计取舍（对照 `_StoryVia拆解/02_素材管理与落盘.md`）：
-- 骨架文件跟素材同目录、只写**相对项目根的 POSIX 路径** → 整包拷给别人/换盘符都不炸。
+- 框架文件跟素材同目录、只写**相对项目根的 POSIX 路径** → 整包拷给别人/换盘符都不炸。
 - 清单是缓存、磁盘是真相：提供 `rescan()` 全量重扫 + 按相对路径合并 + 保留原 id 的自愈逻辑。
 - 素材字段比 StoryVia 厚：除 path/fileName/type/addedAt 外，补 size / hash / width / height /
   duration / category / tags / note（它只有 5 个字段，agent 拿不到这些）。
@@ -30,8 +30,8 @@ PATHS_MD = os.path.join(SKILL_ROOT, "references", "paths.md")
 
 PROJECT_DIRS = ["文案", "素材", "成片", "废片", "评价", "备注"]
 MATERIAL_DIR = "素材"
-SKELETON_JSON = "骨架.json"
-SKELETON_MD = "骨架.md"
+SKELETON_JSON = "框架.json"
+SKELETON_MD = "框架.md"
 SCHEMA = "heronbo.project/1"
 
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".heic"}
@@ -296,7 +296,7 @@ def meta_of(path):
     return m
 
 
-# ── 骨架 ───────────────────────────────────────────────────────────────────
+# ── 框架 ───────────────────────────────────────────────────────────────────
 def ensure_root(root):
     root = os.path.normpath(root)
     os.makedirs(root, exist_ok=True)
@@ -307,8 +307,8 @@ def ensure_root(root):
                 f.write("这是本 skill 的样本库根目录（评分工具与素材投放都连本目录）。\n")
                 f.write("每个项目/实验一个子文件夹，统一结构：\n")
                 f.write("  <实验名>/\n")
-                f.write("    ├── 骨架.json            # 机器读（agent 优先读这份）\n")
-                f.write("    ├── 骨架.md              # 人读摘要\n")
+                f.write("    ├── 框架.json            # 机器读（agent 优先读这份）\n")
+                f.write("    ├── 框架.md              # 人读摘要\n")
                 f.write("    ├── 文案/                # 口播稿 / 提示词\n")
                 f.write("    ├── 素材/                # 用户提供的参考图 / 音视频（本工具自动归类）\n")
                 f.write("    ├── 成片/                # 验收成片\n")
@@ -454,8 +454,13 @@ def read_receipts(project_dir, since=0):
             if r.get("i", 0) > since]
 
 
-def new_round(project_dir, feedback_text):
-    """把用户这轮反馈留档，返回轮次号（001 起）。"""
+def new_round(project_dir, feedback_text, push=True, kind="反馈"):
+    """把用户这轮反馈**留档并推给 agent**，返回轮次号（001 起）。
+
+    留档与待办必须成对：只留档不推待办时，agent 读 `待办.jsonl` 拿不到这轮反馈
+    （2026-09-15 联调自检跑出来的断点，原实现要调用方另外再调一次 `push_todo`）。
+    `push=False` 只用于"仅留档、不派活"的场合（如纯备忘）。
+    """
     d = os.path.join(session_dir(project_dir), ROUND_DIR)
     os.makedirs(d, exist_ok=True)
     n = 1
@@ -472,6 +477,8 @@ def new_round(project_dir, feedback_text):
     except OSError:
         pass
     write_state(project_dir, round=n, stage="等提示词")
+    if push and (feedback_text or "").strip():
+        push_todo(project_dir, kind, feedback_text, by="user")
     return n
 
 
@@ -537,6 +544,10 @@ def skeleton_path(project_dir):
 
 def load_skeleton(project_dir):
     p = skeleton_path(project_dir)
+    if not os.path.isfile(p):                      # 旧项目还在用 框架.json
+        legacy = os.path.join(os.path.normpath(project_dir), "框架.json")
+        if os.path.isfile(legacy):
+            p = legacy
     try:
         with open(p, encoding="utf-8-sig") as f:
             return json.load(f)
@@ -549,7 +560,7 @@ def new_id(seq):
 
 
 def build_skeleton(root, name, platform="", project_dir=None, register=True):
-    """建骨架目录 + 写骨架.json/骨架.md；返回 (project_dir, skeleton dict, log list)。
+    """建框架目录 + 写框架.json/框架.md；返回 (project_dir, skeleton dict, log list)。
 
     register=False 时不动 `references/paths.local.md`（自检/测试用）。
     """
@@ -574,9 +585,9 @@ def build_skeleton(root, name, platform="", project_dir=None, register=True):
                 "review": None,
             },
         }
-        log.append("新建骨架文件 %s" % SKELETON_JSON)
+        log.append("新建框架文件 %s" % SKELETON_JSON)
     else:
-        log.append("已有骨架文件，补全目录并保留原清单")
+        log.append("已有框架文件，补全目录并保留原清单")
     if platform:
         sk["project"]["platform"] = platform
     sk["project"]["name"] = os.path.basename(project_dir)
@@ -586,6 +597,9 @@ def build_skeleton(root, name, platform="", project_dir=None, register=True):
         log.append("（项目目录原本已存在，未覆盖任何已有文件）")
 
     save_skeleton(project_dir, sk)
+    if not read_state(project_dir):          # 新框架补一份初始状态：agent 一读就有阶段可看
+        write_state(project_dir, stage="新建", round=0, pending=0, exeAlive=False)
+        log.append("写入初始 %s（阶段=新建）" % STATE_JSON)
     if register:
         write_local(SAMPLES_ROOT=root)
         log.append("已登记 SAMPLES_ROOT=%s" % root)
@@ -602,6 +616,12 @@ def save_skeleton(project_dir, sk):
             f.write("\n")
     except OSError:
         return None
+    legacy = os.path.join(project_dir, "骨架.json")   # 旧命名的残留，写成功后清掉
+    if os.path.isfile(legacy):
+        try:
+            os.remove(legacy)
+        except OSError:
+            pass
     try:                                                     # 同目录再落一份人读摘要
         with open(os.path.join(project_dir, SKELETON_MD), "w",
                   encoding="utf-8", newline="\n") as f:
@@ -628,7 +648,7 @@ def _human(n):
 def render_md(sk):
     p = sk.get("project", {})
     mats = p.get("materials", [])
-    lines = ["# 骨架 · %s" % p.get("name", ""), "",
+    lines = ["# 框架 · %s" % p.get("name", ""), "",
              "- 建立时间：%s" % p.get("createdAt", ""),
              "- 最近更新：%s" % p.get("updatedAt", ""),
              "- 平台：%s" % (p.get("platform") or "（未登记）"),
@@ -648,7 +668,7 @@ def render_md(sk):
         for pr in p["prompts"]:
             lines += ["### %s" % pr.get("name", ""), "", pr.get("text", ""), ""]
     lines += ["", "---", "",
-              "> 本文件由素材工具自动生成；`骨架.json` 是机器读的版本，字段更全。"]
+              "> 本文件由素材工具自动生成；`框架.json` 是机器读的版本，字段更全。"]
     return "\n".join(lines) + "\n"
 
 
@@ -781,10 +801,10 @@ def auto_plan(paths, root=None, name=None):
 
 
 def auto_build(paths, root=None, name=None, platform="", register=True, on_log=None):
-    """一键：自动定根/定名 → 建骨架（含 即梦上传/）→ 按角色归类 → 写清单。
+    """一键：自动定根/定名 → 建框架（含 即梦上传/）→ 按角色归类 → 写清单。
 
-    这就是"软件自行生成骨架"：用户只管把素材丢进来，其余全自动；
-    任何一步的判断结果都落在日志与骨架里，可回溯、可手改。
+    这就是"软件自行生成框架"：用户只管把素材丢进来，其余全自动；
+    任何一步的判断结果都落在日志与框架里，可回溯、可手改。
     """
     log = []
 
@@ -795,7 +815,7 @@ def auto_build(paths, root=None, name=None, platform="", register=True, on_log=N
 
     plan = auto_plan(paths, root=root, name=name)
     if not plan["root"]:
-        return None, plan, log + ["还没有样本库根目录，无法自动建骨架"]
+        return None, plan, log + ["还没有样本库根目录，无法自动建框架"]
     if not plan["final_name"]:
         plan["final_name"] = "新项目"
         emit("推不出项目名 → 先用「新项目」，建好后随手改名即可")
@@ -817,7 +837,7 @@ def auto_build(paths, root=None, name=None, platform="", register=True, on_log=N
         added, skipped, _ = add_materials(pdir, srcs, copy=True,
                                           note="", on_log=emit, into=sub)
         total_added += len(added)
-    # 把角色回填到骨架里
+    # 把角色回填到框架里
     sk = load_skeleton(pdir) or sk
     roles = {os.path.basename(it["src"]): it["role"] for it in plan["items"]}
     for m in sk["project"].get("materials", []):
@@ -825,7 +845,7 @@ def auto_build(paths, root=None, name=None, platform="", register=True, on_log=N
         if r:
             m["role"] = r
     save_skeleton(pdir, sk)
-    emit("共归类 %d 个素材，按角色写入骨架" % total_added)
+    emit("共归类 %d 个素材，按角色写入框架" % total_added)
     return pdir, plan, log
 
 
@@ -863,7 +883,7 @@ def collect_files(paths):
 
 
 def add_materials(project_dir, paths, copy=True, note="", on_log=None, into=None):
-    """把素材投放到 <项目>/<into>/（默认 素材/）并登记进骨架。
+    """把素材投放到 <项目>/<into>/（默认 素材/）并登记进框架。
 
     返回 (added list, skipped list, log list)。幂等：同一文件（按 hash）已在清单里就不再登记。
     """
@@ -1002,10 +1022,10 @@ def _cli(argv):
     import argparse
     ap = argparse.ArgumentParser(
         prog="project_core",
-        description="项目骨架 / 素材投放（agent 与工具共用同一套实现）")
+        description="项目框架 / 素材投放（agent 与工具共用同一套实现）")
     ap.add_argument("--root", help="样本库根目录（登记为 SAMPLES_ROOT）")
     ap.add_argument("--name", help="实验名；不带日期戳，重开自动加序号")
-    ap.add_argument("--project", help="直接指定项目目录（建骨架或投素材都可用）")
+    ap.add_argument("--project", help="直接指定项目目录（建框架或投素材都可用）")
     ap.add_argument("--platform", default="", help="平台名（即梦 / 小云雀 / updream）")
     ap.add_argument("--add", nargs="+", metavar="PATH",
                     help="投放素材（文件或文件夹，可多个）")
@@ -1028,15 +1048,15 @@ def _cli(argv):
     ap.add_argument("--why", default="", help="废因（作废文件名 = 日期-废因）")
     ap.add_argument("--no-register", action="store_true",
                     help="不把 --root 写进 references/paths.local.md（自检用）")
-    ap.add_argument("--show", action="store_true", help="打印当前骨架摘要")
+    ap.add_argument("--show", action="store_true", help="打印当前框架摘要")
     ap.add_argument("--auto", action="store_true",
-                    help="全自动：自动定根目录与项目名、自动判素材角色、自动建骨架并归类")
+                    help="全自动：自动定根目录与项目名、自动判素材角色、自动建框架并归类")
     ap.add_argument("--plan", action="store_true",
                     help="只做规划不落地：打印推出来的根目录/项目名/每个素材的角色")
     ap.add_argument("--json", action="store_true", help="以 JSON 输出结果")
     a = ap.parse_args(argv)
 
-    # 0) 全自动模式：软件自己定根/定名/判角色/建骨架/归类
+    # 0) 全自动模式：软件自己定根/定名/判角色/建框架/归类
     if a.auto or a.plan:
         if not a.add:
             out = {"ok": False, "error": "--auto / --plan 需要配合 --add <素材路径>"}
@@ -1075,18 +1095,18 @@ def _cli(argv):
 
     out = {"ok": True, "actions": []}
     root = detect_root(a.root)
-    # 纯会话操作（读待办/写回执/看状态…）不要顺手重建骨架，免得刷一堆噪声日志
+    # 纯会话操作（读待办/写回执/看状态…）不要顺手重建框架，免得刷一堆噪声日志
     session_only = bool(a.todos or a.todo_done or a.receipt or a.state
                         or a.new_round or a.deliver)
 
-    # 1) 建骨架
+    # 1) 建框架
     if (a.project or a.name) and not session_only:
         if not root and not a.project:
             out.update(ok=False, error="还没指定样本库根目录",
                        ask=ASK_PLACE,
                        hint='先问用户，再跑：--root "<样本库根>" --name "<实验名>"')
             print(json.dumps(out, ensure_ascii=False, indent=2) if a.json
-                  else "[骨架] 还没指定根目录。先问用户：%s" % ASK_PLACE)
+                  else "[框架] 还没指定根目录。先问用户：%s" % ASK_PLACE)
             return 1
         name = a.name or os.path.basename(os.path.normpath(a.project))
         if root and not a.project and name_conflict(root, name):   # 同主题重开 → 加序号
@@ -1094,7 +1114,7 @@ def _cli(argv):
             out["renamed_from"] = name
             name = new
         pdir = os.path.normpath(a.project) if a.project else os.path.join(root, name)
-        # 只有显式给了 --root 才改写 references/paths.local.md；单给 --project 时只建骨架，
+        # 只有显式给了 --root 才改写 references/paths.local.md；单给 --project 时只建框架，
         # 不动用户已配置好的本机取值。
         pdir, sk, log = build_skeleton(root or os.path.dirname(pdir), name,
                                        platform=a.platform, project_dir=pdir,
@@ -1102,7 +1122,7 @@ def _cli(argv):
         out["actions"].append({"build_skeleton": pdir, "log": log})
         if not a.json:
             for l in log:
-                print("[骨架]", l)
+                print("[框架]", l)
 
     # 2) 投素材
     if a.add:
@@ -1199,7 +1219,7 @@ def _cli(argv):
                                "counts": count_kinds(mats), "total": len(mats)}
             if not a.json:
                 c = count_kinds(mats)
-                print("[骨架] %s：素材 %d（图 %d / 视频 %d / 音频 %d / 文本 %d / 其它 %d）"
+                print("[框架] %s：素材 %d（图 %d / 视频 %d / 音频 %d / 文本 %d / 其它 %d）"
                       % (target, len(mats), c["image"], c["video"], c["audio"],
                          c["text"], c["other"]))
     if a.json:

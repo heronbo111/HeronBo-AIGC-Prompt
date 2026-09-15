@@ -51,7 +51,7 @@ AI 视频提示词生成 + 成片六维评价工具。把「文案/台词 + 素�
 
 0. **环境检查（第一件事）**：`python tools\环境检查.py` —— 逐项自检 python≥3.9 / ffmpeg / ffprobe / numpy / opencv / faster-whisper（拆解转写）/ onnxruntime（深度视频）/ Yunet 人脸模型 / 系统 OCR / Depth 模型，缺什么就打印该装什么。
    装缺项：**先问用户**，同意后 `python tools\环境检查.py --install --yes`（pip 包直装；ffmpeg 走 `winget install Gyan.FFmpeg`）；模型另跑 `--models`（Depth，约 99MB，HF 需代理）与 `--warm-asr`（预下转写模型）。**装软件必须用户同意，不许静默安装。**
-1. **问项目位置**：agent 问「请问您要把项目建在哪里？您提供好素材后，我会自动将其进行归类」→ `python tools\首次配置.py --project "<项目目录>"` 建骨架（`文案/素材/成片/废片/评价/备注`）+ 自动归类素材 + 写入 `references/paths.local.md`（已 gitignore，不进仓库）。
+1. **问项目位置**：agent 问「请问您要把项目建在哪里？您提供好素材后，我会自动将其进行归类」→ `python tools\首次配置.py --project "<项目目录>"` 建框架（`文案/素材/成片/废片/评价/备注`）+ 自动归类素材 + 写入 `references/paths.local.md`（已 gitignore，不进仓库）。
 2. **问平台（可选装 CLI）**：agent 问「你主要用哪个平台做 AI 视频？即梦 / 小云雀 / updream」→ 按 `references/platforms.md` 检测：
    - 即梦 = `dreamina`（官方脚本 `curl -fsSL https://jimeng.jianying.com/cli | bash`；Windows 用 Git Bash 或按官方指引）；
    - 小云雀 = `pippit-tool-cli`（`npm i -g @pippit-dev/cli`，使用时需 `XYQ_ACCESS_KEY`，用户自行申请、不要写进仓库）；
