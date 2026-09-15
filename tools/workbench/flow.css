@@ -1,0 +1,84 @@
+/* 流程指挥台：整条流程一张板子，每步都能当场点。
+   令牌与主题全部复用 app.css（--accent / --ok / --track…），这里只写板上布局。 */
+
+.board{overflow:hidden}
+.bhead{display:flex;align-items:center;gap:10px;padding:11px 18px;background:var(--surface);
+  border-bottom:1px solid var(--border);flex:0 0 auto}
+.btitle{font-weight:700;letter-spacing:.2px;display:flex;align-items:baseline;gap:9px}
+.btitle small{color:var(--muted);font-weight:400;font-size:12px}
+
+.bcmd{display:flex;align-items:center;gap:10px;margin:12px 18px 0;padding:10px 14px;
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--r);
+  box-shadow:var(--sh);flex:0 0 auto}
+.bcmd .k{font-size:11px;color:var(--muted);border:1px solid var(--border);border-radius:6px;
+  padding:0 6px;background:var(--surface2)}
+.bcmd .t{flex:1}
+.bcmd .t b{color:var(--accent)}
+
+.bbody{flex:1 1 auto;min-height:0;overflow:auto;padding:12px 18px 18px;
+  display:flex;flex-direction:column;gap:10px;max-width:1120px;width:100%;margin:0 auto}
+
+/* ── 每一步一张卡：左边"是谁的第几步"，右边"干什么 + 按钮" ───────────── */
+.scard{display:grid;grid-template-columns:210px minmax(0,1fr);gap:16px;padding:13px 16px;
+  background:var(--surface);border:1px solid var(--border);border-left:4px solid var(--border);
+  border-radius:var(--r);box-shadow:var(--sh)}
+.scard.now{border-left-color:var(--accent);background:linear-gradient(90deg,var(--accent-soft),var(--surface) 210px)}
+.scard.done{border-left-color:var(--ok)}
+.scard.done .sname{color:var(--muted)}
+.scard.todo{opacity:.82}
+.scard.lock{opacity:.55}
+
+.sident{display:flex;flex-direction:column;gap:7px;min-width:0}
+.sline{display:flex;align-items:center;gap:8px}
+.sno{display:inline-flex;width:22px;height:22px;border-radius:7px;background:var(--track);
+  color:var(--muted);align-items:center;justify-content:center;font-size:12px;font-weight:700;
+  flex:0 0 auto}
+.scard.now .sno{background:var(--accent);color:#fff}
+.scard.done .sno{background:var(--ok-soft);color:var(--ok)}
+.sname{font-size:14px;font-weight:700}
+.who{font-size:11px;border-radius:999px;padding:0 8px;border:1px solid var(--border);
+  background:var(--surface2);color:var(--muted);white-space:nowrap}
+.who.me{border-color:var(--accent-border);background:var(--accent-soft);color:var(--accent)}
+.who.agent{border-color:#bfe6d2;background:var(--ok-soft);color:var(--ok)}
+.who.soft{background:var(--track);color:var(--muted)}
+.sstatus{font-size:11px;color:var(--muted)}
+.scard.now .sstatus{color:var(--accent);font-weight:600}
+.scard.done .sstatus{color:var(--ok)}
+.sfacts{font-size:12px;color:var(--muted);line-height:1.65;word-break:break-all}
+.sfacts code{font-size:11.5px}
+
+.sbody{min-width:0;display:flex;flex-direction:column;gap:9px}
+.stask{font-size:13.5px;font-weight:600}
+.slist{margin:0;padding-left:19px;font-size:12.5px;color:var(--text);line-height:1.75}
+.slist li{color:var(--muted)}
+.slist li b{color:var(--text);font-weight:600}
+.sacts{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:1px}
+.sacts input{flex:1 1 220px;min-width:150px}
+.sacts textarea{flex:1 1 100%;min-height:56px}
+.sacts .hint{font-size:11.5px;color:var(--muted)}
+
+/* agent 进度（第 2 步那张卡里就地显示，不用回头看③栏） */
+.sprog{border:1px solid var(--border);border-radius:10px;padding:9px 11px;background:var(--surface2)}
+.sprog .top{display:flex;align-items:center;gap:8px;font-size:12px}
+.sprog .top .s{font-weight:600}
+.sprog .top .tm{margin-left:auto;color:var(--muted);font-variant-numeric:tabular-nums}
+.sprog .bar{height:7px;background:#e9edf4;border-radius:4px;overflow:hidden;margin-top:7px}
+.sprog .bar > i{display:block;height:100%;width:0;border-radius:4px;
+  background:linear-gradient(90deg,var(--accent),#5b8def);transition:width .35s ease}
+.sprog .stages{display:flex;gap:10px;margin-top:6px;font-size:11px;color:var(--muted);flex-wrap:wrap}
+.sprog .stages span.on{color:var(--accent);font-weight:600}
+.sprog .stages span.done{color:var(--ok)}
+.sprog .lines{margin-top:7px;max-height:112px;overflow:auto;font:12px/1.7 Consolas,monospace;
+  color:var(--muted);white-space:pre-wrap}
+.sprog .lines .bad{color:var(--bad)} .sprog .lines .ok{color:var(--ok)}
+
+.bfoot{flex:0 0 auto;padding:11px 18px;border-top:1px solid var(--border);background:var(--surface);
+  display:flex;align-items:center;gap:14px}
+.bfoot .ftxt{flex:1;font-size:12px;color:var(--muted);border-left:3px solid var(--warn);
+  background:var(--warn-soft);border-radius:8px;padding:7px 11px}
+.bfoot .ftxt b{color:var(--text)}
+.bfoot .fmeta{font-size:11px;color:var(--muted);text-align:right;line-height:1.6}
+
+@media (max-width:900px){
+  .scard{grid-template-columns:1fr}
+}

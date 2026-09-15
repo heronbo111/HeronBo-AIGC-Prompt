@@ -27,15 +27,68 @@ import threading
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # 本机路径一律**按环境变量推导 + 常见位置探测**，不写死用户名（否则会被发布防护钩子拦下）。
-# 需要覆盖时写同目录的 agent_bridge.local.json（已 gitignore）：{"node": "...", "cli_js": "..."}
-LOCAL_CFG = os.path.join(HERE, "agent_bridge.local.json")
+# 需要覆盖时写 agent_bridge.local.json（已 gitignore）：{"node": "...", "cli_js": "...", "agent": "..."}
 
 DEFAULT_TIMEOUT = 600
+
+_CFG_DIR = None
+
+
+def _can_write(d):
+    """目录能不能写（真写一个探针文件，比 os.access 在 Windows 上靠谱）。"""
+    p = os.path.join(d, ".heronbo_probe")
+    try:
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("")
+        os.remove(p)
+        return True
+    except OSError:
+        return False
+
+
+def _pick_cfg_dir():
+    """配置文件放哪：源码运行＝tools/；打包后＝**exe 旁边**。
+
+    ⚠️ 为什么不能直接用 HERE（2026-09-15 实测踩到）：onefile 打包后 `__file__` 落在
+    PyInstaller 的临时解包目录 `%TEMP%\\_MEIxxxx`，程序一关整个目录连文件一起删 →
+    用户选的 agent 每次都丢、重开退回自动挑选（＝workbuddy，它在候选里排第一）。
+    证据：两个临时目录里分别躺着 `{"agent":"zcode"}`、`{"agent":"workbuddy"}`，
+    而 exe 旁边一份都没有。
+    """
+    cands = []
+    if getattr(sys, "frozen", False):
+        try:
+            cands.append(os.path.dirname(os.path.abspath(sys.executable)))
+        except (OSError, ValueError):
+            pass
+    cands.append(HERE)
+    for d in cands:
+        if d and os.path.isdir(d) and _can_write(d):
+            return d
+    d = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
+                     "HeronBoScoreTool")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except OSError:
+        return HERE
+    return d
+
+
+def cfg_dir():
+    global _CFG_DIR
+    if _CFG_DIR is None:
+        _CFG_DIR = _pick_cfg_dir()
+    return _CFG_DIR
+
+
+def cfg_path():
+    """配置文件的真实路径（界面会显示它，免得再"改了不生效/存哪了"扯不清）。"""
+    return os.path.join(cfg_dir(), "agent_bridge.local.json")
 
 
 def _local_cfg():
     try:
-        with open(LOCAL_CFG, encoding="utf-8-sig") as f:
+        with open(cfg_path(), encoding="utf-8-sig") as f:
             return json.load(f) or {}
     except (FileNotFoundError, ValueError, OSError):
         return {}
@@ -117,6 +170,7 @@ def agent_info():
             "label": (ADAPTERS.get(key) or {}).get("label", ""),
             "why": why,
             "chosen": chosen,          # 空 = 还没让用户选过（界面据此决定要不要先问）
+            "cfg": cfg_path(),         # 选择记在哪（界面显示出来，方便核对"存住没有"）
             "list": list_agents()}
 
 
@@ -137,10 +191,10 @@ def set_agent(key):
     else:
         cfg.pop("agent", None)
     try:
-        with open(LOCAL_CFG, "w", encoding="utf-8") as f:
+        with open(cfg_path(), "w", encoding="utf-8") as f:
             json.dump(cfg, f, ensure_ascii=False, indent=2)
     except OSError as e:
-        return False, "写不进 %s：%s" % (LOCAL_CFG, e)
+        return False, "写不进 %s：%s" % (cfg_path(), e)
     return True, (ADAPTERS[key]["label"] if key else "自动挑选")
 
 
@@ -284,11 +338,10 @@ def dsh_pkg():
 
 
 def zcode_cli():
-    """找 ZCode 自带的 CLI。
+    r"""找 ZCode 自带的 CLI。
 
     ZCode 桌面端里**真的带了一个命令行**（我原先只查了桌面端主进程的参数白名单，漏了这个）：
-        <ZCode安装目录>
-esources\glm\zcode.cjs   （12.6MB Node 单文件，zcode 0.16.5）
+        <ZCode安装目录>\resources\glm\zcode.cjs   （12.6MB Node 单文件，zcode 0.16.5）
     它的无头用法（`zcode --help` 实证）：
         zcode --prompt "<任务>" --cwd <目录> --mode yolo [--resume <sess_...>] [--json]
     注意：`--settings` / `--config` 虽然写在帮助里，但实际报 Unknown option（文档与实现不一致），

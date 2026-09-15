@@ -156,7 +156,7 @@ textarea{width:100%;resize:vertical}
   transition:opacity .25s;z-index:50}
 .toast.on{opacity:1}
 .modal{position:fixed;inset:0;background:rgba(20,26,38,.35);display:flex;align-items:center;
-  justify-content:center;z-index:60}
+  justify-content:center;z-index:80}     /* 要高过 .boardwrap（指挥台），否则弹窗被它盖住 */
 .modal .box{background:var(--surface);border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,.25);
   max-width:720px;max-height:80vh;overflow:auto;padding:20px 22px}
 .modal h3{margin:0 0 8px;font-size:16px}
@@ -179,6 +179,11 @@ textarea{width:100%;resize:vertical}
   max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .agentchip:hover{border-color:var(--accent);color:var(--accent)}
 .agentchip.bad{border-color:#f2c6c8;background:var(--bad-soft);color:var(--bad)}
+
+/* ── 流程指挥台：不是弹窗，是一整页嵌进来的独立 HTML（flow.html）──────────
+   盖满窗口；里面的页自己带样式与主题（主题名由本页喂过去）。 */
+.boardwrap{position:fixed;inset:0;z-index:70;background:var(--bg)}
+.boardwrap iframe{display:block;width:100%;height:100%;border:0}
 
 /* 样本库路径：整行截断，别去挤栏标题的按钮（原来把「刷新」挤成两行）*/
 .pathtext{font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;

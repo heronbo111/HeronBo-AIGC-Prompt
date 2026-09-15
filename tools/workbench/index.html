@@ -12,7 +12,7 @@
   <div class="spacer"></div>
   <span class="build" id="buildStamp">—</span>
   <button class="iconbtn" id="btnTheme">主题 · 原版</button>
-  <button class="iconbtn" id="btnHelp">？怎么用</button>
+  <button class="iconbtn" id="btnHelp" title="整条流程一张板子：现在该谁动手、点一下就执行">？流程指挥台</button>
 </header>
 
 <!-- 流程条：一眼知道走到哪、下一步谁动手 -->
@@ -111,6 +111,11 @@
     </div>
   </section>
 
+</div>
+
+<!-- 流程指挥台：独立 HTML 页（flow.html）嵌进来，整条流程一张板子 —— 不是弹窗 -->
+<div class="boardwrap" id="boardWrap" hidden>
+  <iframe id="boardFrame" title="流程指挥台"></iframe>
 </div>
 
 <div class="toast" id="toast"></div>

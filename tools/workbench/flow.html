@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>流程指挥台</title>
+<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="flow.css">
+</head>
+<body class="board">
+
+<div class="bhead">
+  <div class="btitle">流程指挥台<small id="bProj">未选项目</small></div>
+  <div class="spacer"></div>
+  <span class="build" id="bMeta">—</span>
+  <button class="iconbtn" id="bAgent" title="本机有哪些 agent、用哪个、配置记在哪">agent —</button>
+  <button class="iconbtn" id="bClose" title="回到四栏工作台（Esc）">回到工作台</button>
+</div>
+
+<div class="bcmd">
+  <span class="k">当前</span>
+  <div class="t" id="bCmdText">正在读项目…</div>
+  <button class="btn ghost" id="bPrev" title="上一步">← 上一步</button>
+  <button class="btn ghost" id="bNext" title="下一步">下一步 →</button>
+  <button class="btn ghost" id="bAuto" hidden>回到自动</button>
+</div>
+
+<div class="bbody" id="bBoard"></div>
+
+<div class="bfoot">
+  <div class="ftxt"><b>最常翻车的两件事</b>：① 画幅没在平台上手选（默认竖版 9:16，按需横版/方屏——提示词里的画幅句不决定成片比例）；② 素材没传全（生成前对着「上传清单」逐个数一遍）。</div>
+  <div class="fmeta" id="bFoot">—</div>
+</div>
+
+<div class="toast" id="bToast"></div>
+
+<script src="flow.js"></script>
+</body>
+</html>

@@ -15,7 +15,14 @@ let toastTimer = null;
 function toast(msg) {
   const el = $("toast"); el.textContent = msg; el.classList.add("on");
   clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove("on"), 2600);
+  // 指挥台盖在上面时让它也显示一份，否则用户看不到任何反馈
+  if (BOARD.open && BOARD.ready) BOARD.frame.contentWindow.postMessage({t: "toast", msg}, "*");
 }
+
+/* 流程指挥台：**不是弹窗**，是一整页 iframe（tools/workbench/flow.html）。
+   这里只做三件事 —— 喂状态、执行它发来的命令、把进度与提示转过去；
+   页面本体独立成 HTML，好改好换皮。声明放前面：toast 里要用到它。 */
+const BOARD = {wrap: null, frame: null, open: false, ready: false};
 
 /* 图标按钮：栏标题那排"小动作"用图标（主按钮仍带文字——一个按钮区最多一个主按钮） */
 const ICON = {
@@ -86,7 +93,7 @@ function logLine(text, cls) {
 
 /* ── 状态 ─────────────────────────────────────────────────────────── */
 const S = {state: null, pending: [], review: {}, dims: [], video: "", agentTimer: null,
-           rh: {}, agent: null, manualStep: null};
+           rh: {}, agent: null, manualStep: null, prompts: [], uploads: [], prog: null};
 
 const STEPS = [
   {n: "丢素材", who: "你", man: "把素材（文案/形象图/音频/原片）拖进②栏，然后点「建框架归类」"},
@@ -150,6 +157,7 @@ function renderFlow() {
     $("scoreCol").scrollIntoView({behavior: "smooth", block: "start"});
   };
   hintColumns();
+  syncBoard();
 }
 
 /* 当前阶段对应哪一栏 → 那一栏高亮（用户不用猜"现在该看哪儿"） */
@@ -173,6 +181,7 @@ function applyTheme(name) {
   try { localStorage.setItem("heronbo.theme", name); } catch (e) {}
   const b = $("btnTheme");
   if (b) { b.textContent = "主题 · " + name; b.title = "换主题（默认原版）"; }
+  syncBoard();               // 板子是独立文档，主题得喂给它（不然它自成一套配色）
 }
 function themeModal() {
   const cur = (document.body.dataset.theme || "原版");
@@ -201,6 +210,101 @@ function hintColumns() {
     el.classList.toggle("hl", i === STEP_COL[cur]);
   });
 }
+
+/* ── 流程指挥台：喂状态 + 执行命令 ─────────────────────────────────────
+   板上"怎么做"的文案与布局在 flow.html/flow.js 里；动作仍只有这一套实现（命令发回来执行），
+   所以以后改动作只改这里，不会出现"板上一套、四栏里一套"两个版本。 */
+function boardFacts() {
+  const st = S.state || {};
+  const f = (st.project && st.project.folders) || {};
+  const pr = (st.project && st.project.state) || {};
+  const cnt = (k) => (f[k] || []).length;
+  const ps = S.prompts || [], ups = S.uploads || [];
+  const names = ups.slice(0, 2).map((u) => u.name).join("、");
+  return [
+    `待归类 ${S.pending.length} 项 · 已归类：素材 ${cnt("素材")} · 文案 ${cnt("文案")}`,
+    ps.length ? `提示词 ${ps.length} 条（最新 ${esc(ps[ps.length - 1].ver || "v")}） · 即梦上传 ${ups.length} 件`
+              : "还没有提示词",
+    ups.length ? `上传清单 ${ups.length} 件：${esc(names)}${ups.length > 2 ? " 等" : ""}`
+               : "上传清单还是空的（agent 出提示词时会按引用编号放进来）",
+    `成片 ${cnt("成片")} · 废片 ${cnt("废片")}`,
+    `评分 ${cnt("评价")} 份 · 阶段 ${esc(pr.stage || "—")} · 第 ${pr.round || 0} 轮`,
+  ];
+}
+
+function boardState() {
+  const c = currentStep();
+  const st = S.state || {};
+  return {
+    t: "init",
+    theme: document.body.dataset.theme || "原版",
+    build: (st.build && st.build.stamp) || "",
+    root: st.root || st.rootConfigured || "",
+    project: st.project ? {name: st.project.name, dir: st.project.dir,
+                           createdAt: st.project.createdAt} : null,
+    steps: STEPS, cur: activeStep(), auto: c.i, why: c.why,
+    manual: S.manualStep != null,
+    prompts: {n: (S.prompts || []).length},
+    uploads: (S.uploads || []).map((u) => u.name),
+    pending: S.pending || [], facts: boardFacts(),
+    agent: S.agent || {}, prog: S.prog || null,
+  };
+}
+
+function syncBoard() {                 // 状态一变就喂一遍；板没开就什么都不做
+  if (!BOARD.open || !BOARD.ready) return;
+  const w = BOARD.frame.contentWindow;
+  if (w) w.postMessage(boardState(), "*");
+}
+
+function boardProg() {
+  if (!BOARD.open || !BOARD.ready) return;
+  const w = BOARD.frame.contentWindow;
+  if (w) w.postMessage({t: "prog", prog: S.prog}, "*");
+}
+
+function openBoard() {
+  BOARD.wrap.hidden = false;
+  BOARD.open = true;
+  if (!BOARD.frame.getAttribute("src")) BOARD.frame.setAttribute("src", "flow.html");
+  syncBoard();
+}
+
+function closeBoard() {
+  BOARD.wrap.hidden = true;
+  BOARD.open = false;
+  loadState();                         // 板上做过的事可能改了项目状态，回来刷一遍
+}
+
+function boardAct(d) {
+  const k = d.k;
+  if (k === "pick") return pickFiles("files");
+  if (k === "pickdir") return pickFiles("dir");
+  if (k === "intake") return intakeGo();
+  if (k === "ask") return askAgent("prompt");
+  if (k === "copy") return copyPrompt();
+  if (k === "reload") return reloadPrompts();
+  if (k === "good") return receive(true);
+  if (k === "bad") { $("why").value = d.why || ""; return receive(false); }
+  if (k === "score") {                 // "去④栏打分"就回四栏去（板上打分太挤）
+    S.manualStep = 4; renderFlow(); closeBoard();
+    setTimeout(() => $("scoreCol").scrollIntoView({behavior: "smooth", block: "start"}), 60);
+    return;
+  }
+  if (k === "feedback") return submitFeedback(d.fb);
+}
+
+window.addEventListener("message", (ev) => {
+  const d = ev.data || {};
+  if (d.t === "hello") { BOARD.ready = true; syncBoard(); return; }
+  if (d.t !== "cmd") return;
+  if (d.cmd === "close") return closeBoard();
+  if (d.cmd === "goto") { S.manualStep = (+d.i === currentStep().i) ? null : +d.i; return renderFlow(); }
+  if (d.cmd === "step") return stepBy(d.d);
+  if (d.cmd === "auto") { S.manualStep = null; return renderFlow(); }
+  if (d.cmd === "agent") return agentModal();
+  if (d.cmd === "act") return boardAct(d);
+});
 
 /* ── 渲染 ─────────────────────────────────────────────────────────── */
 function renderSamples() {
@@ -271,8 +375,8 @@ function agentModal() {
     <p class="meta">工作台跟着 skill 走：谁把本技能装在自己名下、且命令行可用，就用谁。
       <span style="color:var(--ok)">● 可用</span>　<span style="color:var(--bad)">● 不可用</span>　点一行即可切换。</p>
     <div class="amod">${rows}</div>
-    <p class="note" style="margin-top:4px">想用别的：在 <code>tools/agent_bridge.local.json</code> 写
-      <code>{"agent": "codex"}</code> 指定；要接没适配的命令行，写
+    <p class="note" style="margin-top:4px">选择记在 <code>${esc(a.cfg || "—")}</code>（关掉工作台也在）。
+      想直接写文件：<code>{"agent": "codex"}</code>；要接没适配的命令行：
       <code>{"cmd": ["命令", "{prompt}"], "cmd_mode": "text"}</code>。</p>
     <div style="text-align:right;margin-top:12px">
       ${a.chosen ? '<button class="btn ghost" id="mauto">恢复自动挑选</button>' : ""}
@@ -342,6 +446,7 @@ function renderPending() {
   $("pendList").querySelectorAll("button").forEach((b) => {
     b.onclick = () => { S.pending.splice(+b.dataset.i, 1); renderPending(); renderFlow(); };
   });
+  syncBoard();
 }
 
 function renderPrompts() {
@@ -440,6 +545,7 @@ async function loadState(scrollTop) {
   bs.textContent = p ? `项目创建 ${p.createdAt || "（未知）"}` : `构建 ${st.build.stamp}`;
   bs.title = `exe 构建 ${st.build.stamp}` + (p ? ` · 项目 ${p.name}` : "");
   if (!st.agent.ok) logLine("agent 通道不可用：" + st.agent.why, "bad");
+  syncBoard();
 }
 
 async function selectProject(dir) {
@@ -557,6 +663,9 @@ function askAgent(what, feedback) {
     toast(`已叫 ${S.agent && S.agent.label || "agent"} 出提示词，预计 `
           + Math.round((r.eta || 180) / 60) + " 分钟"
           + (r.eta_n ? `（按本项目 ${r.eta_n} 次历史）` : ""));
+    S.prog = {on: true, job: r.job, stage: 0, stageName: "正在叫 agent…", pct: 0,
+              elapsed: 0, eta: r.eta || 180, done: false, lines: []};
+    boardProg();
     watchAgent();
   });
 }
@@ -581,6 +690,12 @@ function watchAgent() {
     });
     (d.lines || []).forEach((ln) => logLine(ln,
       /✅/.test(ln) ? "ok" : (/^!!/.test(ln) ? "bad" : "")));
+    /* 指挥台那张卡里也显示进度：服务端每次只发新增的行，所以按 job 号累计（换任务就清空）。 */
+    const prevLines = (S.prog && S.prog.job === d.job) ? (S.prog.lines || []) : [];
+    S.prog = {on: true, job: d.job, stageName: d.stageName, stage: d.stage, pct: d.pct,
+              elapsed: d.elapsed, eta: d.eta, done: d.done, ok: d.ok,
+              lines: prevLines.concat(d.lines || []).slice(-100)};
+    boardProg();
     if (d.done) {
       es.close(); S.agentTimer = null;
       $("pstage").innerHTML = d.ok ? "完成 · 提示词已写回" : "agent 没跑成";
@@ -609,8 +724,8 @@ async function receive(good) {
   await loadState();
 }
 
-async function submitFeedback() {
-  const text = $("fb").value.trim();
+async function submitFeedback(given) {
+  const text = String(given == null ? $("fb").value : given).trim();
   if (!text) return toast("先写两句反馈");
   const r = await api("/api/feedback", {text, callAgent: false});
   if (!r.ok) return toast(r.error || "提交失败");
@@ -638,30 +753,11 @@ function copyPrompt() {
     () => toast("复制失败，手动选中①栏文本"));
 }
 
-function helpModal() {
-  const rows = [
-    ["① 丢素材", "把文案/形象图/音频/原片拖进②栏 → 「建框架归类」；软件会判角色并回报去向。"],
-    ["② 出提示词", "点③栏右上「出提示词」，agent 读技能与框架 → 写提示词与即梦上传副本 → 写回执。"],
-    ["③ 去平台生成", "复制提示词 → 上传清单里列的素材（没写进提示词的别传）→ 按需求选画幅（默认竖版 9:16，横版/方屏也行；提示词里的画幅句不决定成片比例）→ 生成。"],
-    ["④ 收成片", "成片拖回②栏或点「收成片」；废片点「收废片」并写废因。"],
-    ["⑤ 打分反馈", "④栏逐项打分 → 保存。想改就写「本轮反馈」→ 提交，agent 按它再出一版。"],
-    ["流程条", "顶部五个点就是这五步：绿点＝已完成，蓝点＝当前，灰点＝还没到。每一步都能点（也能用右侧「← 上一步 / 下一步 →」），点了以后出现「回到自动」，点它恢复按项目状态判断。"],
-    ["agent 通道", "③栏那颗「agent xxx」徽章：点开能看到本机哪些 agent 能用（绿点可用 / 红点不可用），点一行即切换。多个可用时，第一次点「出提示词」会先问你用哪个，选完记住。"],
-    ["换主题", "右上角「主题 · 原版」：原版/拾光/深色/莫兰迪/护眼绿/暗夜/暖夜，只换配色不动布局；默认原版。"],
-    ["经典界面", "右上角「经典界面」会另开一个旧的 Tk 窗口（标题带「（经典界面）」），切换后本窗口可以关掉。"],
-  ];
-  const m = document.createElement("div");
-  m.className = "modal";
-  m.innerHTML = `<div class="box"><h3>这个工作台怎么用</h3>
-    <p class="meta">绿色=agent 干，蓝色=你干，灰色=软件干。四栏从左到右就是流程顺序。</p>
-    ${rows.map(([a, b]) => `<div class="step"><b style="flex:0 0 96px">${a}</b>
-      <span>${b}</span></div>`).join("")}
-    <p class="note" style="margin-top:12px">最常翻车的两件事：画幅没在平台手选（默认竖版 9:16，按需选横屏/方屏）、素材没传全。</p>
-    <div style="text-align:right;margin-top:12px"><button class="btn" id="mclose">知道了</button></div>
-    </div>`;
-  document.body.appendChild(m);
-  m.querySelector("#mclose").onclick = () => m.remove();
-  m.onclick = (e) => { if (e.target === m) m.remove(); };
+/* 「怎么用」不再是弹窗念一遍流程 —— 换成整页的流程指挥台（flow.html，见上面的 BOARD 段）。 */
+async function reloadPrompts() {
+  const pr = await api("/api/prompts");
+  S.prompts = pr.prompts || []; S.uploads = pr.uploads || [];
+  renderPrompts(); renderFlow(); toast("已重新读取提示词");
 }
 
 /* ── 拖拽：整栏虚线 + 投放区强化 + 落点文案（StoryVia 四态）──────────── */
@@ -699,11 +795,7 @@ setInterval(() => { fetch("/api/ping", {method: "POST"}).catch(() => {}); }, 300
 
 /* ── 绑定 ─────────────────────────────────────────────────────────── */
 $("btnRefresh").onclick = () => loadState();
-$("btnLoadPrompts").onclick = async () => {
-  const pr = await api("/api/prompts");
-  S.prompts = pr.prompts || []; S.uploads = pr.uploads || [];
-  renderPrompts(); renderFlow(); toast("已重新读取提示词");
-};
+$("btnLoadPrompts").onclick = () => reloadPrompts();
 $("btnAgent").onclick = () => agentModal();
 $("btnAsk").onclick = () => askAgent("prompt");
 $("btnIntakeGo").onclick = () => intakeGo();
@@ -718,7 +810,7 @@ $("btnReload").onclick = async () => {
   fillReview(rv.review);
   toast("已重新载入上次评分");
 };
-$("btnHelp").onclick = () => helpModal();
+$("btnHelp").onclick = () => openBoard();
 $("btnTheme").onclick = () => themeModal();
 $("btnClassic").onclick = async () => {
   const r = await api("/api/classic", {});
@@ -730,6 +822,8 @@ $("btnClassic").onclick = async () => {
 $("note").oninput = () => { S.review.备注 = $("note").value; };
 
 bindDrop();
+BOARD.wrap = $("boardWrap");
+BOARD.frame = $("boardFrame");
 paintIcons();
 try { applyTheme(localStorage.getItem("heronbo.theme") || "原版"); } catch (e) { applyTheme("原版"); }
 loadState();
