@@ -179,3 +179,16 @@ WorkBuddy 的 headless CLI（`tools\agent_bridge.py` 封装，已自动避开端
 - 上游 `version` 变大：更新后自检 `python tools\首次配置.py`（无参）、`python tools\评价回收.py`、评分工具能弹出（`tools\score_gui.cmd`）；`rules.local.md` 与上游新规则冲突时**以本机实测为准**并提示用户。
 - 文件写作规范：只写「规则 + 依据（日期/来源）」，不写推理过程、情绪化措辞或口语复盘。
 - 仓库协作与发布约定见仓库根 `AGENTS.md`；安装/换机见 `README.md`。
+
+
+## 工作台（HTML 界面）与部署
+
+- **界面**：主界面是 HTML 工作台（`tools/workbench/`＋`tools/workbench_server.py`，pywebview 独立窗口，
+  内嵌 WebView2；不依赖用户的浏览器）。四栏＝①项目 ②素材 ③分镜/提示词 ④评分；顶部流程条五步可点、
+  可上/下步、当前阶段那一栏会高亮；③栏 agent 徽章可看/切 agent（红绿点）；右上角 7 套主题（默认「原版」）、
+  「经典界面」可切回旧 Tk 界面（`--classic`）。**关窗口＝退出**。
+- **谁干活**：`agent_bridge.py` 自动探测本机 agent（WorkBuddy / Codex / ZCode / DSH）——优先"把本技能装在
+  自己名下且命令行可用"的那个；多个可用时首次会问用户一次并记住（`tools/agent_bridge.local.json`）。
+- **部署**：`python tools\部署.py check|agents|install|shortcut|all`（体检 → 接 agent 通道 → 装依赖 →
+  建桌面快捷方式）。**装任何东西前不加 `--yes` 只打印命令**。图标：`python tools\图标.py`。
+- **图文教程**：`docs/工作台与新手教程.html`（内容与本节同步；改规则请改仓库文件，不要只改那份 html）。

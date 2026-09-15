@@ -185,7 +185,6 @@ function themeModal() {
   const m = document.createElement("div");
   m.className = "modal";
   m.innerHTML = `<div class="box"><h3>主题</h3>
-    <p class="meta">只换配色，不动布局。默认是「原版」（你给的那份基准页配色）。</p>
     <div class="amod">${rows}</div>
     <div style="text-align:right;margin-top:12px"><button class="btn" id="mclose">知道了</button></div></div>`;
   document.body.appendChild(m);
@@ -646,6 +645,10 @@ function helpModal() {
     ["③ 去平台生成", "复制提示词 → 上传清单里列的素材（没写进提示词的别传）→ 按需求选画幅（默认竖版 9:16，横版/方屏也行；提示词里的画幅句不决定成片比例）→ 生成。"],
     ["④ 收成片", "成片拖回②栏或点「收成片」；废片点「收废片」并写废因。"],
     ["⑤ 打分反馈", "④栏逐项打分 → 保存。想改就写「本轮反馈」→ 提交，agent 按它再出一版。"],
+    ["流程条", "顶部五个点就是这五步：绿点＝已完成，蓝点＝当前，灰点＝还没到。每一步都能点（也能用右侧「← 上一步 / 下一步 →」），点了以后出现「回到自动」，点它恢复按项目状态判断。"],
+    ["agent 通道", "③栏那颗「agent xxx」徽章：点开能看到本机哪些 agent 能用（绿点可用 / 红点不可用），点一行即切换。多个可用时，第一次点「出提示词」会先问你用哪个，选完记住。"],
+    ["换主题", "右上角「主题 · 原版」：原版/拾光/深色/莫兰迪/护眼绿/暗夜/暖夜，只换配色不动布局；默认原版。"],
+    ["经典界面", "右上角「经典界面」会另开一个旧的 Tk 窗口（标题带「（经典界面）」），切换后本窗口可以关掉。"],
   ];
   const m = document.createElement("div");
   m.className = "modal";

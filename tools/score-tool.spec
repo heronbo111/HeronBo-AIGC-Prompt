@@ -53,6 +53,7 @@ exe = EXE(
     a.datas,
     [],
     name='score-tool',
+    icon='工作台.ico',          # 工作台图标（tools/图标.py 生成）
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
