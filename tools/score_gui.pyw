@@ -1771,16 +1771,19 @@ class App:
         footer = tk.Frame(self.root, bg=t["bg"])
         footer.pack(fill="x", padx=20, pady=(0, 16))
         self._frames.append((footer, "bg", "bg"))
-        self.status = self._lab(footer, "选一个样本 → 逐项点分 → 保存", "small", "muted")
-        try:      # 构建戳：一眼看出 exe 新旧（用户曾被两份 exe 的旧版坑过）
+        # 构建戳**常驻**在最左边：状态行会被"已载入上次评价…"这类提示覆盖，
+        # 而"我现在看的是不是新版"得一直看得见（用户曾被两份 exe 的旧版坑过）。
+        try:
             _srcf = sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__)
             _stamp = datetime.datetime.fromtimestamp(os.path.getmtime(_srcf)).strftime("%m-%d %H:%M")
             _dragok = "拖拽✓" if _TkDnD is not None else "拖拽✗"
-            self.status.config(text="构建 %s · %s · 选一个样本 → 逐项点分 → 保存"
-                                     % (_stamp, _dragok))
+            self.build_lab = self._lab(footer, "构建 %s · %s" % (_stamp, _dragok),
+                                       "small", "weak")
+            self.build_lab.pack(side="left")
         except Exception:                                         # noqa: BLE001
             pass
-        self.status.pack(side="left")
+        self.status = self._lab(footer, "选一个样本 → 逐项点分 → 保存", "small", "muted")
+        self.status.pack(side="left", padx=(10, 0))
         self.save_pill = Pill(footer, "保存评分", self.save, theme=t, font=F("h2"),
                               kind="primary", padx=26, pady=10, radius=6,
                               bg_key="bg", depth=4)
