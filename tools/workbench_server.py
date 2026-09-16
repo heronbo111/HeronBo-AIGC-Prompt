@@ -28,6 +28,7 @@
 """
 import datetime
 import datetime
+import glob
 import importlib.util
 import json
 import os
@@ -474,6 +475,43 @@ def read_record(pdir, name, limit=4000):
     return {"ok": True, "name": name, "path": p, "meta": meta, "lines": rows}
 
 
+def _watch_project_files(pdir, rec, stop_evt):
+    """盯项目里的文件动静当进度：**跟 agent 通道无关**。
+
+    2026-09-16 用户实测：ZCode 那条通道 8 分钟零输出（它把过程都写进自己的会话文件，不进 stdout），
+    界面上条不动、也不知道有没有在干活。可"它写了什么文件"是最诚实的进度信号：
+    文案/ → 框架.json → 即梦上传/ → _会话/回执.jsonl 就是出提示词的四步。
+    变了就报一行（顺带让阶段前进），没变就每 45 秒报一句"还在跑"（**进程真活着才报**）。
+    """
+    def snap():
+        out = {}
+        for pat in ("文案/*", "素材/*", "框架.json", "框架.md", "即梦上传/*",
+                    "_会话/回执.jsonl", "备注/*"):
+            for f in glob.glob(os.path.join(pdir, pat)):
+                try:
+                    out[f] = (os.path.getmtime(f), os.path.getsize(f))
+                except OSError:
+                    pass
+        return out
+
+    prev = snap()
+    beat = time.time()
+    while not stop_evt.is_set():
+        time.sleep(2)
+        cur = snap()
+        for f, v in sorted(cur.items()):
+            if prev.get(f) != v:
+                rel = os.path.relpath(f, pdir).replace("\\", "/")
+                _push_line("· 写了 %s（%.1f KB）" % (rel, v[1] / 1024.0), rec)
+        if cur != prev:
+            prev, beat = cur, time.time()
+        elif time.time() - beat > 45 and abridge and abridge.current_alive():
+            el = round(time.time() - _PROG["t0"]) if _PROG["t0"] else 0
+            _push_line("…（还在跑，已用 %d:%02d，暂时没有新动静——这条通道不吐过程输出）"
+                       % (el // 60, el % 60), rec)
+            beat = time.time()
+
+
 def _append_record(path, obj):
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -488,6 +526,7 @@ STAGES = [("读技能 / 框架", 15), ("写提示词", 65), ("落即梦上传", 
 _PROG = {"job": 0, "stage": 0, "pct": 0, "lines": [], "done": False, "ok": None,
          "text": "", "t0": 0, "eta": 180, "running": False}
 _PROG_LOCK = threading.Lock()
+_STOPPED = {"flag": False}
 
 
 def _hist_eta(pdir):
@@ -554,12 +593,20 @@ def start_agent(pdir, what, feedback=""):
         _PROG.update({"job": _PROG["job"] + 1, "stage": 0, "pct": 0, "lines": [],
                       "done": False, "ok": None, "text": "", "t0": time.time(),
                       "running": True})
+        _STOPPED["flag"] = False          # 每轮开始先清掉"手动停止"标记，别串到下一轮
         eta, n = _hist_eta(pdir)
         _PROG["eta"] = eta
         _PROG["eta_n"] = n
         job = _PROG["job"]
     st = _proj_state(pdir)
-    skill_md = os.path.join(os.path.dirname(HERE), "SKILL.md")
+    # 技能根：**打包后 HERE 在 _MEIxxxx 临时目录**，dirname(HERE) 会给出一个不存在的路径
+    # （2026-09-16 实测：ZCode 收到 "本机临时路径的 SKILL.md 不存在"，自己绕路去已装技能包里找——
+    #  白花时间还有读错版本的风险）。统一走 pcore.find_skill_root()。
+    try:
+        _root = pcore.find_skill_root() if pcore else os.path.dirname(HERE)
+    except Exception:                                            # noqa: BLE001
+        _root = os.path.dirname(HERE)
+    skill_md = os.path.join(_root, "SKILL.md")
     sid = st.get("agentSession") or None
     need = proj_need(pdir)
     # 这一轮的记录文件：**工作台自己落一份**（跟哪个 agent 无关，用户想了解软件在干什么时翻它）
@@ -618,6 +665,10 @@ def start_agent(pdir, what, feedback=""):
                 "完成后跑 tools\\project_core.py --project \"%s\" --receipt \"改了什么\" "
                 "--todo-done 写回执。" % (pdir, pdir))
 
+    stop_evt = threading.Event()
+    threading.Thread(target=_watch_project_files, args=(pdir, rec, stop_evt),
+                     daemon=True).start()
+
     def run():
         t0 = time.time()
         try:
@@ -626,6 +677,7 @@ def start_agent(pdir, what, feedback=""):
                               on_line=lambda ln: _push_line(ln, rec))
         except Exception as e:                                   # noqa: BLE001
             res = {"ok": False, "error": "起不来：%s" % e}
+        stop_evt.set()                     # 文件守护线程收工
         usec = time.time() - t0
         _record_eta(pdir, usec, res.get("ok"))
         try:
@@ -636,7 +688,11 @@ def start_agent(pdir, what, feedback=""):
                 pcore.mark_todos_done(pdir)
                 _push_line("✅ agent 回来了：" + (res.get("text") or "")[:400], rec)
             else:
-                _push_line("!! agent 没跑成：" + (res.get("error") or "")[:400], rec)
+                err = (res.get("error") or "")[:400]
+                if "返回码" in err and _STOPPED["flag"]:
+                    err = "已手动停止（这一轮的结果不算数，可重跑）"
+                    _STOPPED["flag"] = False
+                _push_line("!! agent 没跑成：" + err, rec)
         except Exception as e:                                   # noqa: BLE001
             _push_line("!! 回写失败：%s" % e, rec)
         # 收尾：把结果、耗时、以及 agent 自己那份会话正文的路径写进记录
@@ -840,6 +896,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": False, "error": "缺 agent_bridge.py"})
             ok, why = abridge.set_agent((b.get("key") or "").strip())
             return self._json({"ok": ok, "why": why, "agent": self.agent_ok()})
+        if path == "/api/agent/stop":
+            _STOPPED["flag"] = True
+            ok = bool(abridge and abridge.stop_current())
+            if ok:
+                _push_line("!! 用户手动停止了这一轮")
+            return self._json({"ok": ok, "error": "" if ok else "现在没有在跑的任务"})
         if path == "/api/agent":
             b = self._body()
             pdir = b.get("project") or self._proj()

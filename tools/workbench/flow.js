@@ -63,12 +63,18 @@ function renderProgress() {
   box.querySelector(".s").innerHTML = (p.done ? "" : '<span class="spin"></span>') + esc(p.stageName || "")
     + (p.quiet ? '<span class="quiet">· 这条通道不吐过程输出，按时间估</span>' : "");
   box.querySelector(".bar > i").style.width = (p.pct || 0) + "%";
+  const left = (p.eta || 0) - (p.elapsed || 0);
   box.querySelector(".tm").textContent = p.done
-    ? ("用时 " + fmt(p.elapsed)) : ("已用 " + fmt(p.elapsed) + " · 预计还要 " + fmt(Math.max(0, (p.eta || 0) - p.elapsed)));
+    ? ("用时 " + fmt(p.elapsed))
+    : ("已用 " + fmt(p.elapsed) + (left > 0 ? " · 预计还要 " + fmt(left) : " · 已超出预计（还在跑）"));
+  const bar = box.querySelector(".bar > i");
+  bar.classList.toggle("alive", !p.done && (left <= 0 || p.quiet));
   box.querySelectorAll(".stages span").forEach((sp) => {
     const i = +sp.dataset.i;
     sp.className = i < p.stage ? "done" : (i === p.stage ? "on" : "");
   });
+  const sb = box.querySelector("[data-stop]");
+  if (sb) { sb.hidden = !!p.done; sb.onclick = stopAgent; }
   const ln = box.querySelector(".lines");
   ln.innerHTML = (p.lines || []).map((t) =>
     `<div class="${/^!!/.test(t) ? "bad" : (/✅/.test(t) ? "ok" : "")}">${esc(t)}</div>`).join("");
@@ -113,7 +119,8 @@ function stepCard(i) {
     return "";
   }).join("");
   const prog = i === 1
-    ? `<div class="sprog" hidden><div class="top"><span class="s"></span><span class="tm"></span></div>
+    ? `<div class="sprog" hidden><div class="top"><span class="s"></span><span class="tm"></span>
+         <button class="btn ghost sm danger" data-stop="1" title="卡住/跑飞了就停掉（结果不算数，可重跑）">停止</button></div>
          <div class="bar"><i></i></div>
          <div class="stages">${["读技能 / 框架", "写提示词", "落即梦上传", "写回执"]
            .map((t, k) => `<span data-i="${k}">${t}</span>`).join("")}</div>
@@ -177,6 +184,11 @@ function render() {
     "样本库根 " + esc(S.root || "—"),
     "agent 记在 <code>" + esc(a.cfg || "—") + "</code>",
   ].join("<br>");
+}
+
+function stopAgent() {
+  fetch("/api/agent/stop", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"})
+    .then((r) => r.json()).then((r) => toast(r.ok ? "已停止（可重跑）" : (r.error || "没有在跑的任务")));
 }
 
 function bindBoard() {

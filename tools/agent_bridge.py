@@ -32,6 +32,35 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 DEFAULT_TIMEOUT = 600
 
+_CURRENT = {"proc": None}          # 正在跑的子进程（给"停止"用）
+
+
+def stop_current():
+    """把正在跑的 agent 任务杀掉（界面上的「停止」按钮）。
+
+    为什么需要：agent 一跑就是几分钟，ZCode 这条通道还不吐过程输出；万一它卡住/跑飞了，
+    用户只能等超时（30 分钟）——这不合理。
+    """
+    p = _CURRENT.get("proc")
+    if not p:
+        return False
+    try:
+        p.kill()
+        return True
+    except OSError:
+        return False
+
+
+def current_alive():
+    """当前子进程还活着吗（用于"还在跑"的心跳：进程死了就别报"还在跑"）。"""
+    p = _CURRENT.get("proc")
+    if not p:
+        return False
+    try:
+        return p.poll() is None
+    except OSError:
+        return False
+
 _CFG_DIR = None
 
 
@@ -814,6 +843,7 @@ def ask(prompt, session_id=None, cwd=None, timeout=DEFAULT_TIMEOUT,
     except OSError as e:
         return {"ok": False, "error": "起不来：%s" % e, "session_id": session_id,
                 "text": "", "cmd": cmd, "agent": key}
+    _CURRENT["proc"] = p
     killed = {"timeout": False}
 
     def _kill():
@@ -873,6 +903,7 @@ def ask(prompt, session_id=None, cwd=None, timeout=DEFAULT_TIMEOUT,
         pass
     finally:
         timer.cancel()
+        _CURRENT["proc"] = None
         err = chr(10).join(err_lines)
     rc = p.returncode
     raw = chr(10).join(tail)

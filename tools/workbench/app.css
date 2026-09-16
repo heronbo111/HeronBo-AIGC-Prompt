@@ -435,3 +435,9 @@ body[data-theme="暖夜"]{
 .row .ibtn.sm[data-delproj]:hover{color:var(--bad);background:var(--bad-soft)}
 /* 进度条旁边那句"这条通道不吐过程输出" */
 .prog .top .quiet{color:var(--muted);font-weight:400;font-size:11px;margin-left:6px}
+
+/* 进度条"还在跑"的流动条纹：超出预计或这条通道不吐输出时，让条看得出是活的 */
+.bar > i.alive{background-image:repeating-linear-gradient(115deg,rgba(255,255,255,.35) 0 8px,
+  rgba(255,255,255,0) 8px 16px);animation:stripe 1.1s linear infinite}
+@keyframes stripe{to{background-position:32px 0}}
+.prog .top #btnStop{margin-left:8px}

@@ -1262,8 +1262,14 @@ function watchAgent() {
     $("pstage").innerHTML = (d.running ? '<span class="spin"></span>' : "") + esc(d.stageName)
       + (d.quiet ? '<span class="quiet">· 这条 agent 通道不吐过程输出，进度按时间估</span>' : "");
     $("pfill").style.width = (d.pct || 0) + "%";
-    $("ptime").textContent = `已用 ${fmt(d.elapsed)} · ` +
-      (d.done ? `用时 ${fmt(d.elapsed)}` : `预计还要 ${fmt(Math.max(0, d.eta - d.elapsed))}`);
+    // 时间行："到点了"也不能显示"预计还要 0:00"（看着像卡死）——如实说超出预计、还在跑
+    const left = (d.eta || 0) - (d.elapsed || 0);
+    $("ptime").textContent = d.done
+      ? `用时 ${fmt(d.elapsed)}`
+      : `已用 ${fmt(d.elapsed)} · ` + (left > 0 ? `预计还要 ${fmt(left)}` : `已超出预计（还在跑）`);
+    const over = !d.done && left <= 0;
+    $("pfill").classList.toggle("alive", !d.done && (over || d.quiet));
+    $("btnStop").hidden = !!d.done;
     pst.querySelectorAll("span").forEach((sp) => {
       const i = +sp.dataset.i;
       sp.className = i < d.stage ? "done" : (i === d.stage ? "on" : "");
@@ -1410,6 +1416,12 @@ $("need").addEventListener("blur", () => {           // 失焦自动存（改了
   const cur = (S.state && S.state.need) || "";
   if ($("need").value.trim() !== cur.trim()) saveNeed();
 });
+$("btnStop").onclick = async () => {
+  const r = await api("/api/agent/stop", {});
+  if (!r.ok) return toast(r.error || "现在没有在跑的任务");
+  logLine("已请求停止这一轮 agent", "warn");
+  toast("已停止（这一轮的结果不算数，可以重跑）");
+};
 $("btnCheckRole").onclick = () => askAgent("intake");
 $("btnLearn").onclick = () => askAgent("learn");
 $("btnTheme").onclick = () => themeModal();

@@ -93,3 +93,6 @@
 }
 
 .sprog .top .s .quiet{color:var(--muted);font-weight:400;font-size:11px;margin-left:6px}
+.sprog .bar > i.alive{background-image:repeating-linear-gradient(115deg,rgba(255,255,255,.35) 0 8px,
+  rgba(255,255,255,0) 8px 16px);animation:stripe 1.1s linear infinite}
+@keyframes stripe{to{background-position:32px 0}}
