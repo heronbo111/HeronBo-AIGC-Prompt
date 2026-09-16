@@ -873,6 +873,7 @@ def progress_snapshot(since=0):
 class Handler(BaseHTTPRequestHandler):
     server_version = "HeronBoWorkbench/1.0"
     last_ping = time.time()
+    loaded_at = 0.0          # 页面（index.html/app.js）被拉取的时刻 → 判断"不是白窗"
     root = ""
 
     def log_message(self, *a):                                   # 静默：别刷控制台
@@ -945,6 +946,8 @@ class Handler(BaseHTTPRequestHandler):
                  ".svg": "image/svg+xml", ".png": "image/png",
                  ".woff2": "font/woff2"}.get(os.path.splitext(fp)[1], "application/octet-stream")
         data = open(fp, "rb").read()
+        if rel in ("index.html", "app.js"):          # 页面真被拉取了 → 看门狗据此判"不是白窗"
+            Handler.loaded_at = time.time()
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
@@ -1719,13 +1722,18 @@ def existing_instance():
 
 
 def native_window(title, url, width=1520, height=940):
-    """用 pywebview 开一个**独立窗口**（内嵌 WebView2），返回 True 表示成功接管。
+    """用 pywebview 开一个**独立窗口**（内嵌 WebView2），返回 True 表示"界面真的出来了"。
 
     这是首选路径：窗口属于本程序自己——自己的标题、图标、任务栏条目，没有地址栏；
     也不用借用户正在用的 Edge 浏览器（2026-09-15 用户明确要求"变成独立程序而不是
     依赖 Edge"）。WebView2 **运行时**是系统组件（Win10/11 自带，Teams/微信都在用），
     不是用户的浏览器进程，关掉浏览器不影响它。
-    跑不通就返回 False，让调用方退回 Edge app 窗口 / 默认浏览器。
+
+    **白窗看门狗（2026-09-16 加）**：窗口开出来 ≠ 界面出来了。WebView2 坏掉时是
+    "标题有、里面一片空白"，而 pywebview 的报错发生在 GUI 线程里、程序自己吞掉，
+    调用方完全看不出来（别的机器就这么白屏了）。所以这里盯**页面有没有真连上来**
+    （静态页被拉取 / 心跳到达都算）：25 秒还没有 → 认定白窗，关掉它并返回 False，
+    让调用方退到 Edge 窗口 / 默认浏览器，并留下体检结论与修复步骤。
     """
     try:
         import webview
@@ -1737,6 +1745,9 @@ def native_window(title, url, width=1520, height=940):
         os.makedirs(store, exist_ok=True)
     except OSError:
         store = None
+    Handler.loaded_at = 0.0            # 页面真被拉取的时刻（看门狗与调用方都看它）
+    t0 = time.time()
+    state = {"ok": False, "blank": False}
     try:
         win = webview.create_window(title, url, width=width, height=height,
                                     min_size=(1180, 700), text_select=True)
@@ -1752,14 +1763,52 @@ def native_window(title, url, width=1520, height=940):
                     getattr(win, fn)()
                 except Exception:                                # noqa: BLE001
                     pass
-        threading.Thread(target=_show, daemon=True).start()
+
+        def _watch():
+            """等页面连上来；等不到就是白窗——关掉它，让调用方走退路。"""
+            # 默认 25 秒；验证/排查时可以调小（HERONBO_WV2_TIMEOUT 秒）
+            try:
+                budget = float(os.environ.get("HERONBO_WV2_TIMEOUT") or 25)
+            except ValueError:
+                budget = 25.0
+            for _ in range(max(2, int(budget * 2))):
+                time.sleep(0.5)
+                if Handler.loaded_at > t0 or Handler.last_ping > t0:
+                    state["ok"] = True
+                    return
+                if not _win_alive():
+                    return                                       # 窗口已被用户关掉
+            state["blank"] = True
+            try:
+                with open(os.path.join(os.environ.get("TEMP", "."),
+                                       "heronbo_webview2.txt"), "w", encoding="utf-8") as f:
+                    f.write("独立窗口开出来了，但 25 秒内界面一直是白的（页面没连上来）。\n"
+                            "多半是 WebView2 运行库坏了/缺文件。已改用 Edge 窗口打开。\n\n"
+                            + WEBVIEW2_HELP + "\n")
+            except OSError:
+                pass
+            print("[工作台] 独立窗口是白窗（WebView2 没跑起来）→ 改用 Edge 窗口。\n"
+                  + WEBVIEW2_HELP, flush=True)
+            for fn in ("destroy", "hide"):
+                try:
+                    getattr(win, fn)()
+                    break
+                except Exception:                                # noqa: BLE001
+                    pass
+
+        def _boot():
+            threading.Thread(target=_show, daemon=True).start()
+            threading.Thread(target=_watch, daemon=True).start()
+
         kw = {}
         if store:
             kw["storage_path"] = store
         try:
-            webview.start(**kw)       # 阻塞到窗口关闭
+            webview.start(_boot, **kw)       # _boot 在 GUI 起来后（另起线程）被调用
         except TypeError:             # 老版本没有 storage_path
-            webview.start()
+            webview.start(_boot)
+        if state["blank"]:
+            return False                 # 白窗 → 让调用方退 Edge / 浏览器
         return True
     except Exception as e:                                       # noqa: BLE001
         try:
@@ -1768,6 +1817,13 @@ def native_window(title, url, width=1520, height=940):
         except OSError:
             pass
         return False
+
+
+def _win_alive():
+    try:
+        return bool(_WIN) and not _WIN.events.closed.is_set()
+    except Exception:                                            # noqa: BLE001
+        return True
 
 
 def find_edge():
@@ -1781,6 +1837,112 @@ def find_edge():
     hits = _glob.glob(os.path.join(os.environ.get("LOCALAPPDATA", ""),
                                    "Microsoft", "Edge", "Application", "msedge.exe"))
     return hits[0] if hits else None
+
+
+# ── WebView2 运行库体检（2026-09-16 新机踩坑后加的）────────────────────────────
+# 别的机器上遇到的现象：双击工作台，**窗口开出来一片空白**（标题有、里面什么都没有），
+# 因为 WebView2 运行库"注册表说有、实际上缺文件"：
+# 注册表指向 ...\EdgeWebView\Application\134.0.3124.93\，而该目录里 msedgewebview2.exe
+# 不见了（284MB 的 msedge.dll 还在）→ pywebview 报
+# "Couldn't find a compatible Webview2 Runtime installation to host WebViews"（0x80070002）。
+# **只查注册表会误判成"装了"**，所以这里既看注册表、也看那个版本目录里宿主 exe 在不在；
+# 注册表指的那个坏了、但别的版本是完整的，就报"可疑"（让它试，白窗兜底在后面）。
+WEBVIEW2_GUID = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+WEBVIEW2_HELP = ("修法：装微软官方运行库（一次就好，之后所有用 WebView2 的程序都不再白屏）\n"
+                 "       下载 https://go.microsoft.com/fwlink/p/?LinkId=2124703 （Evergreen "
+                 "Bootstrapper，MicrosoftEdgeWebview2Setup.exe）\n"
+                 "       或跑：python tools\\部署.py fix-webview2 --yes")
+
+
+def _wv2_dirs(version):
+    out = []
+    for base in (r"C:\Program Files (x86)\Microsoft\EdgeWebView\Application",
+                 r"C:\Program Files\Microsoft\EdgeWebView\Application",
+                 os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                              "Microsoft", "EdgeWebView", "Application")):
+        if version:
+            out.append(os.path.join(base, version, "msedgewebview2.exe"))
+        out.append(base)
+    return out
+
+
+def webview2_versions():
+    """磁盘上装了哪些 WebView2 版本（目录名），以及哪个是完整的（宿主 exe 在）。"""
+    import glob as _glob
+    good, allv = [], []
+    base = r"C:\Program Files (x86)\Microsoft\EdgeWebView\Application"
+    bases = [base, r"C:\Program Files\Microsoft\EdgeWebView\Application",
+             os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                          "Microsoft", "EdgeWebView", "Application")]
+    for b in bases:
+        for d in _glob.glob(os.path.join(b, "*")):
+            if not os.path.isdir(d):
+                continue
+            v = os.path.basename(d)
+            if not re.match(r"^\d+\.", v):
+                continue
+            allv.append(v)
+            if os.path.isfile(os.path.join(d, "msedgewebview2.exe")):
+                good.append(v)
+    return sorted(set(allv)), sorted(set(good))
+
+
+def webview2_registered():
+    """注册表里"当前生效"的 WebView2 版本（per-user 优先，再 per-machine）。"""
+    try:
+        import winreg
+    except ImportError:
+        return ""
+    for hive, key in ((winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\EdgeUpdate\Clients"),
+                      (winreg.HKEY_LOCAL_MACHINE,
+                       r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients"),
+                      (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\EdgeUpdate\Clients")):
+        try:
+            with winreg.OpenKey(hive, key + "\\" + WEBVIEW2_GUID) as k:
+                v = winreg.QueryValueEx(k, "pv")[0]
+                if v and v != "0.0.0.0":
+                    return str(v)
+        except OSError:
+            continue
+    return ""
+
+
+def webview2_state():
+    """WebView2 到底能不能用 → `(ok, 版本, 说明)`。
+
+    - `ok=True`：注册表版本目录里有宿主 exe（pywebview 有戏）
+    - `ok=False`：一个完整版本都没有 / 注册表指的那个缺文件且没有别的可用版本
+      （此时**不要**开 pywebview 窗口，直接退 Edge，免得用户对着白窗发呆）
+    """
+    if os.name != "nt":
+        return True, "", "非 Windows，交给 pywebview 自己判断"
+    reg = webview2_registered()
+    allv, good = webview2_versions()
+    if reg:
+        ok_reg = os.path.isfile(_wv2_dirs(reg)[0])
+        if ok_reg:
+            return True, reg, "注册表版本 %s 完整" % reg
+        if good:
+            return True, good[-1], ("注册表指的 %s 缺 msedgewebview2.exe，但磁盘上还有完整的 %s"
+                                    "（可能仍会白屏）" % (reg, good[-1]))
+        return False, reg, ("注册表写着装了 %s，但那个目录里**没有 msedgewebview2.exe**"
+                            "（运行库坏了）" % reg)
+    if good:
+        return True, good[-1], "磁盘上有 %s（注册表没记）" % good[-1]
+    return False, "", "本机没装 WebView2 运行库（Win10/11 一般自带；缺了就装一下）"
+
+
+def _wv2_report(ok, ver, why):
+    log_p = os.path.join(os.environ.get("TEMP", "."), "heronbo_webview2.txt")
+    try:
+        with open(log_p, "w", encoding="utf-8") as f:
+            f.write("WebView2 体检：%s\n版本：%s\n说明：%s\n\n%s\n"
+                    % ("可用" if ok else "不可用", ver or "（未检出）", why, WEBVIEW2_HELP))
+    except OSError:
+        pass
+    print("[工作台] WebView2 体检：%s（%s）" % ("可用" if ok else "**不可用**", why), flush=True)
+    if not ok:
+        print("[工作台] 独立窗口用不了，改用 Edge 窗口打开。\n" + WEBVIEW2_HELP, flush=True)
 
 
 def serve(root="", port=0, host="127.0.0.1"):
@@ -1876,13 +2038,23 @@ def launch_web(root="", project="", hint="", port=0, wait=True, backend=None):
             if hint in s_["name"]:
                 write_proj(s_["dir"])
                 break
-    srv = serve(root=root or "")
+    srv = serve(root=root or "", port=port or 0)   # port 传下去：--port 固定端口给自动化用
     url = "http://127.0.0.1:%d/" % srv.server_address[1]
     write_proj(read_proj(), port=srv.server_address[1])
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     Handler.last_ping = time.time()
     print("[工作台] %s" % url, flush=True)
-    if backend != "edge" and native_window(WIN_TITLE, url):
+    # 只要服务、不要窗口（给"别的程序用 API 驱动工作台"与自动化验证用）
+    if os.environ.get("HERONBO_NO_WINDOW"):
+        print("[工作台] HERONBO_NO_WINDOW=1：只起服务、不开窗口", flush=True)
+        if wait:
+            wait_and_exit(srv, idle=24 * 3600)      # 没人点页面也不退，等调用方喊停
+        return srv, url, "headless"
+    ok_wv2, wv2ver, wv2why = webview2_state() if backend != "edge" else (True, "", "指定走 Edge")
+    if backend != "edge":
+        _wv2_report(ok_wv2, wv2ver, wv2why)
+    # 预检不过就**根本不试**独立窗口：坏的运行库只会给你一个白窗，不如直接退 Edge（2026-09-16）
+    if backend != "edge" and ok_wv2 and native_window(WIN_TITLE, url):
         srv.shutdown()                 # 窗口关了 → 收摊（不用再靠心跳判断）
         return srv, url, "native"
     # 窗口起不来、而起之前就已经有一个在跑 → 就是它占着 WebView2 的数据目录：别再开 Edge 窗口

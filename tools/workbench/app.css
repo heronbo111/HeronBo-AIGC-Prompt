@@ -461,16 +461,16 @@ body[data-theme="暖夜"]{
 .vbox{position:relative;display:flex;flex-direction:column;min-height:0}
 .vbox.sized > .prompt,.vbox.sized > .log{flex:1 1 auto;height:100%;max-height:none}
 
-/* 项目行上的删除按钮：**常显**（2026-09-16 用户说"删除按钮明显一点"，
-   原来悬停才显形，等于藏起来了）；平时带虚线框低调、悬停变实、红底白图标 */
-.row .ibtn.sm[data-delproj]{width:24px;height:24px;flex:0 0 auto;opacity:.62;
-  color:var(--muted);border-style:dashed;
-  transition:opacity .12s,color .12s,background .12s,border-color .12s}
-.row .ibtn.sm[data-delproj] svg{width:13px;height:13px}
-.row:hover .ibtn.sm[data-delproj]{opacity:1}
-.row .ibtn.sm[data-delproj]:hover{opacity:1;color:#fff;background:var(--bad);
-  border-color:var(--bad);border-style:solid}
+/* 项目行上的删除按钮：**一直显眼**（2026-09-16 用户两次说"不明显"，第一版做成淡虚框还是太弱）
+   → 常态就是「浅红底 + 红图标 + 实线红边」，一眼能看出是删除；悬停变实心红 */
+.row .ibtn.sm[data-delproj]{width:26px;height:26px;flex:0 0 auto;opacity:1;
+  color:var(--bad);background:var(--bad-soft);border:1px solid var(--bad);
+  transition:background .12s,color .12s,box-shadow .12s,transform .08s}
+.row .ibtn.sm[data-delproj] svg{width:14px;height:14px}
+.row:hover .ibtn.sm[data-delproj]{box-shadow:0 1px 3px rgba(229,72,77,.28)}
+.row .ibtn.sm[data-delproj]:hover{color:#fff;background:var(--bad);border-color:var(--bad)}
 .row .ibtn.sm[data-delproj]:hover svg{transform:none}
+.row .ibtn.sm[data-delproj]:active{transform:translateY(1px)}
 /* 进度条旁边那句"这条通道不吐过程输出" */
 .prog .top .quiet{color:var(--muted);font-weight:400;font-size:11px;margin-left:6px}
 
