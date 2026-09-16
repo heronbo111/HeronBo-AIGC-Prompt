@@ -351,6 +351,9 @@ body[data-theme="暖夜"]{
 .row.drag{opacity:.45}
 .row.over{outline:2px dashed var(--accent);outline-offset:-2px}
 .row.over-after{border-bottom:2px solid var(--accent)}
+/* 别的项目上的 agent 刚跑完/跑挂：那一行闪一下，方便找回去（3 秒后自动消） */
+.row.proj.justdone{outline:2px solid var(--ok);outline-offset:-2px}
+.row.proj.justbad{outline:2px solid var(--bad);outline-offset:-2px}
 /* 项目行的删除按钮：常显（原来只在悬停时隐约出现，用户说"看不出来能删"），
    平时低调、悬停变红；图标是垃圾桶，不是那个容易被当成"关闭"的 × */
 .row .delbtn{flex:0 0 auto;opacity:.45;color:var(--muted)}

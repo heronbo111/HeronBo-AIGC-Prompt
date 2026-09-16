@@ -166,6 +166,34 @@ def check(path, text, pdir=""):
         else:
             say("PASS", "末拍对齐总时长", ("%.1fs" % want) if want else "（元信息没写时长，跳过）")
 
+    # ④.5 「提示词正文.txt」＝**只放能复制的那段正文**（2026-09-16 用户要求：
+    # ③栏只显示最核心要复制的东西）。它必须与 提示词.txt 里的主版正文逐字一致，否则会两处打架。
+    body_name = "提示词正文.txt"
+    tdir = os.path.dirname(path) if os.path.basename(path) != body_name else os.path.dirname(
+        os.path.dirname(path))
+    cands = [os.path.join(tdir, body_name), os.path.join(os.path.dirname(tdir), body_name)]
+    body_path = next((x for x in cands if os.path.isfile(x)), "")
+    if os.path.basename(path) == body_name:
+        say("PASS", "提示词正文.txt", "（本次体检的就是它）")
+    elif not body_path:
+        say("WARN", "有 提示词正文.txt", "③栏与「复制提示词」默认显示它——建议把主版正文（【总纲】到【负面】）"
+            "单独存一份到项目根 %s" % body_name)
+    else:
+        try:
+            bt = io.open(body_path, encoding="utf-8-sig").read().strip()
+        except OSError:
+            bt = ""
+        if not bt:
+            say("FAIL", "提示词正文.txt 非空", body_path)
+        elif re.search(r"^\s*(提示词\s*[·:：]|形态[:：]|台词[:：]|上传[:：])", bt, re.M):
+            say("FAIL", "提示词正文.txt 里只有正文",
+                "它不该带元信息行（提示词 ·/形态：/台词：/上传：）——那是 提示词.txt 的活")
+        elif bt not in text:
+            say("FAIL", "提示词正文.txt 与 提示词.txt 一致",
+                "正文.txt 的内容在 提示词.txt 里找不到（两份打架了）——改完提示词记得同步它")
+        else:
+            say("PASS", "提示词正文.txt 与 提示词.txt 一致", "逐字对上")
+
     # ⑤ 引用一致：正文出现的 @ 编号必须在「上传：」行里点名
     uploads = "\n".join(ln for ln in lines if ln.strip().startswith("上传"))
     refs = sorted(set(REF_RE.findall(text)))

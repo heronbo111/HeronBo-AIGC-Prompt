@@ -338,9 +338,11 @@ def prompts_payload(pdir):
             sk = None
     proj = ((sk or {}).get("project") or {}) if isinstance(sk, dict) else {}
     out["need"] = proj.get("need") or ""
-    # **单独那份"可直接复制的提示词"**（用户 2026-09-16 要求）：项目根的 提示词.txt；
-    # 有它就以它为准（③栏只显示它、复制也复制它），框架.json 里的历史版本仍留着。
-    for cand in ("提示词.txt", os.path.join("文案", "提示词.txt")):
+    # **③栏只显示"能直接复制的那段正文"**（用户 2026-09-16 第二次收窄口径："只出现最核心需要复制的东西，
+    # 像 DSH 那样只放正文"）。优先级：项目根 `提示词正文.txt` → `文案\提示词正文.txt`（**纯正文**）
+    # → 退回 `提示词.txt`（那份带元信息 3 行与版本说明，是完整交付、用于存档与体检）。
+    for cand in ("提示词正文.txt", os.path.join("文案", "提示词正文.txt"),
+                 "提示词.txt", os.path.join("文案", "提示词.txt")):
         fp = os.path.join(pdir, cand) if pdir else ""
         if fp and os.path.isfile(fp):
             try:
@@ -348,8 +350,9 @@ def prompts_payload(pdir):
             except OSError:
                 continue
             if body:
-                out["current"] = {"name": cand, "text": body,
-                                  "size": os.path.getsize(fp)}
+                out["current"] = {"name": (cand if "正文" in cand else cand),
+                                  "text": body, "size": os.path.getsize(fp),
+                                  "pure": "正文" in cand}
                 break
     for pr in (proj.get("prompts") or []):
         if isinstance(pr, dict):
@@ -618,10 +621,51 @@ def _append_record(path, obj):
 
 # ── agent 进度：把 stdout 实时转成阶段事件 ─────────────────────────────────
 STAGES = [("读技能 / 框架", 15), ("写提示词", 65), ("落即梦上传", 15), ("写回执", 5)]
+# `pdir`＝这一轮是**在哪个项目上**跑的（2026-09-16 用户反馈：跑着的时候切项目，
+# 提示词框里会显示成原项目的、还会卡住）——界面靠它判断"这一轮跟我现在看的项目是不是同一个"。
 _PROG = {"job": 0, "stage": 0, "pct": 0, "lines": [], "done": False, "ok": None,
-         "text": "", "t0": 0, "eta": 180, "running": False}
+         "text": "", "t0": 0, "eta": 180, "running": False, "pdir": ""}
 _PROG_LOCK = threading.Lock()
 _STOPPED = {"flag": False}
+
+
+# ── 执行记录：**每个项目自己一份**（2026-09-16 用户要求"每个项目单独做记录并留存"）──────
+# 从前执行记录只活在页面内存里：切项目就串台、关掉就没了。现在落
+# `<项目>/_会话/工作台日志.jsonl`，切项目时界面换成那个项目的尾段。
+def log_file(pdir):
+    return os.path.join(pdir, "_会话", "工作台日志.jsonl") if pdir else ""
+
+
+def log_append(pdir, text, kind=""):
+    text = (text or "").rstrip()
+    if not (pdir and text):
+        return
+    try:
+        os.makedirs(os.path.join(pdir, "_会话"), exist_ok=True)
+        with open(log_file(pdir), "a", encoding="utf-8", newline="\n") as f:
+            f.write(json.dumps({"t": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                "kind": kind, "text": text}, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def log_tail(pdir, n=300):
+    """读这个项目最近 n 条执行记录（界面切项目时直接换成它）。"""
+    p = log_file(pdir)
+    if not (p and os.path.isfile(p)):
+        return []
+    try:
+        lines = open(p, encoding="utf-8", errors="replace").read().splitlines()[-n:]
+    except OSError:
+        return []
+    out = []
+    for ln in lines:
+        try:
+            d = json.loads(ln)
+            out.append({"t": d.get("t", ""), "kind": d.get("kind", ""), "text": d.get("text", "")})
+        except ValueError:
+            continue
+    return out
 
 
 def _hist_eta(pdir):
@@ -687,7 +731,7 @@ def start_agent(pdir, what, feedback=""):
             return {"error": "已经有一个任务在跑"}
         _PROG.update({"job": _PROG["job"] + 1, "stage": 0, "pct": 0, "lines": [],
                       "done": False, "ok": None, "text": "", "t0": time.time(),
-                      "running": True})
+                      "running": True, "pdir": pdir})     # 记下这一轮是给哪个项目跑的
         _STOPPED["flag"] = False          # 每轮开始先清掉"手动停止"标记，别串到下一轮
         eta, n = _hist_eta(pdir)
         _PROG["eta"] = eta
@@ -767,12 +811,22 @@ def start_agent(pdir, what, feedback=""):
                 % (pdir, pdir, pdir, pdir))
     else:
         todo = (head +
-                "用户点了「叫 agent 出提示词」。请扫描 %s\\ 下的 框架.json 与 素材/、文案/，"
+                "用户点了「叫 agent 出提示词」。**按 skill 的默认轻流程做（rules 第49条）**："
+                "①先抽 4–8 帧看图/读文件，给每件素材定 role，**并给上传的视频定类别**"
+                "（口播展示 / 剧情演绎 / 动作影视素材 / 纯空镜 / 多主体同框），**把类别写进该件的 role**"
+                "（例：`参考视频·剧情演绎`），②栏的素材清单就会显示出来；"
+                "②读 框架.json 的 need 与 文案/ 弄懂要什么、说什么；③按统一骨架直接出提示词，别绕路。"
+                "**静音、裁时长、转画幅裁比例、转深度片、转写、OCR、全片运动量、抽帧拼图——"
+                "都不是默认步骤**，命中触发条件才做，做了就在回执里写明为什么做、花了多久；"
+                "默认预算：看图+需求 1–3 分钟、出提示词 1–5 分钟。"
+                "请扫描 %s\\ 下的 框架.json 与 素材/、文案/，"
                 "按 skill 规则出一版提示词，写回 框架.json 的 prompts 与 文案/，"
                 "并把要上传的文件副本按引用编号放进 即梦上传\\（**一版文件多就按版本分子目录**："
                 "即梦上传\\v1 主推\\、即梦上传\\v2 换服装\\…，每版带自己的 上传说明.txt，旧版保留）；"
-                "**项目根再写一份 提示词.txt**＝当前版本、可直接复制的正文（只放提示词本身，"
-                "不要塞版本说明/素材对照；历史版本留在 框架.json 的 prompts）。"
+                "**项目根再写两份**：`提示词.txt`＝当前版本、可直接复制的正文（元信息 3 行 + 版本 + 正文，"
+                "体检认这份）；`提示词正文.txt`＝**只有主版正文**（从【总纲】到【负面】，"
+                "不带元信息/上传行/版本说明）——工作台③栏与「复制提示词」显示的就是它；"
+                "历史版本留在 框架.json 的 prompts）。"
                 "**两条硬要求（2026-09-16 用户裁定，别省）**："
                 "①**逐字用统一骨架**——references\\prompt-templates.md 第 0 节那 11 个小节与顺序"
                 "（总纲 → 素材分工 → 主体 → 场景 → 道具 → 动作与时间轴 → 口播·音色·口型 → 镜头与景别 → "
@@ -858,6 +912,7 @@ def _push_line(line, rec=None):
         return
     if rec:
         _append_record(rec, {"kind": "line", "at": time.strftime("%H:%M:%S"), "text": line})
+    log_append(_PROG.get("pdir") or "", line, "agent")     # 落进本项目自己的执行记录
     with _PROG_LOCK:
         _PROG["lines"].append(line)
         if len(_PROG["lines"]) > 400:
@@ -878,7 +933,9 @@ def progress_snapshot(since=0):
              "lines": _PROG["lines"][since:], "n": len(_PROG["lines"]),
              # 这条通道不给过程输出时如实说明（否则用户看着不动的条只能瞎猜）
              "quiet": bool(_PROG["running"] and not _PROG["lines"] and el > 25),
-             "text": _PROG["text"]}
+             "text": _PROG["text"],
+             "pdir": _PROG.get("pdir") or "",     # 这一轮在哪个项目上跑（切项目时界面靠它分辨）
+             "pname": os.path.basename((_PROG.get("pdir") or "").rstrip("\\/"))}
         return d
 
 
@@ -992,6 +1049,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(self.save_need(self._body()))
         if path == "/api/ui":
             return self._json(write_ui(self._body()))
+        if path == "/api/log":
+            # 界面上发生的动作（收片、保存评分、切 agent…）也落进**本项目**的执行记录，
+            # 这样"每个项目单独做记录并留存"才成立（2026-09-16 用户要求）。
+            b = self._body()
+            pdir = self._proj(b)
+            txt = (b.get("text") or "").strip()
+            if pdir and txt:
+                log_append(pdir, txt, b.get("kind") or "ui")
+            return self._json({"ok": bool(pdir and txt)})
         if path == "/api/open":
             return self._json(self.open_path(self._body()))
         if path == "/api/records/open":
@@ -1067,6 +1133,12 @@ class Handler(BaseHTTPRequestHandler):
                   "pending": list(self.server.pending or []),
                   "ui": read_ui(),
                   "uiCfg": ui_cfg_path(),       # 显示给用户看："排序/主题存在这儿"
+                  # 本项目的执行记录（切项目时界面直接换成它，别看别的项目的）
+                  "logTail": log_tail(pdir) if (pdir and os.path.isdir(pdir)) else [],
+                  # 正在跑的 agent 是在哪个项目上跑（不一样就说明"这轮不属于你现在看的项目"）
+                  "jobPdir": (_PROG.get("pdir") or "") if _PROG.get("running") else "",
+                  "jobPname": (os.path.basename((_PROG.get("pdir") or "").rstrip("\\/"))
+                               if _PROG.get("running") else ""),
                   "need": proj_need(pdir) if (pdir and os.path.isdir(pdir))
                           else (self.server.need or "")})
         d.update(self.root_issue(root))
@@ -1312,13 +1384,24 @@ class Handler(BaseHTTPRequestHandler):
                 "records": list_records(pdir)}
 
     def open_record(self, b):
-        """在资源管理器里打开这条记录（或它所在的文件夹）——看"agent 到底干了什么"最直接。"""
+        """在资源管理器里打开这条记录（或它所在的文件夹）——看"agent 到底干了什么"最直接。
+
+        2026-09-16 用户反馈"点文件夹点不开"：项目还没跑过 agent 时，`_会话/agent记录/` 这个目录
+        还不存在，原样直接报"没有这个"→ 用户看到的就是"点不开"。现在改成**不存在就建出来再打开**
+        （空目录也能打开，用户就知道以后记录会落这儿）。
+        """
         pdir = self._proj()
+        if not (pdir and os.path.isdir(pdir)):
+            return {"ok": False, "error": "还没有项目"}
+        d = agent_records_dir(pdir)
         name = (b.get("name") or "").strip()
-        target = os.path.join(agent_records_dir(pdir), os.path.basename(name)) if name \
-            else agent_records_dir(pdir)
+        target = os.path.join(d, os.path.basename(name)) if name else d
         if not os.path.exists(target):
-            return {"ok": False, "error": "没有这个：%s" % target}
+            try:
+                os.makedirs(d, exist_ok=True)
+            except OSError as e:
+                return {"ok": False, "error": "建不了记录目录：%s" % e}
+            target = d
         if os.name == "nt":
             try:
                 os.startfile(target)                             # noqa: S606（本机动作，用户点的）

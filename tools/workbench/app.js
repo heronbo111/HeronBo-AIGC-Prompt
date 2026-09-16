@@ -88,17 +88,32 @@ function mkRheostat(box, options, colors, value, onChange) {
   return {set: (v) => setIdx(options.indexOf(v), false), paint};
 }
 
-function logLine(text, cls) {
+/* 执行记录：**每个项目自己一份**（2026-09-16 用户要求）。
+   - 界面上发生的动作：本地画一行 + 回传服务端落进本项目的 `_会话/工作台日志.jsonl`；
+   - agent 的输出行：服务端已经落了盘，界面只画、不再回传（否则会重复记）；
+   - 切项目时整块**换成那个项目的尾段**，不显示别的项目的（用户："切换项目时没必要显示"）。 */
+function logLine(text, cls, save = true) {
   const el = $("log");
   el.insertAdjacentHTML("beforeend",
     `<div class="${cls || ""}">${esc(text)}</div>`);
+  el.scrollTop = el.scrollHeight;
+  if (save) api("/api/log", {text, kind: cls || "ui"}).catch(() => {});
+}
+
+/* 用某个项目的尾段替换整个执行记录框（切项目时用） */
+function renderLogTail(tail) {
+  const el = $("log");
+  el.innerHTML = (tail || []).map((x) =>
+    `<div class="${esc(x.kind || "")}" title="${esc(x.t || "")}">${esc(x.text || "")}</div>`).join("");
   el.scrollTop = el.scrollHeight;
 }
 
 /* ── 状态 ─────────────────────────────────────────────────────────── */
 const S = {state: null, pending: [], review: {}, dims: [], video: "", agentTimer: null,
            rh: {}, agent: null, manualStep: null, prompts: [], uploads: [], prog: null,
-           theme: "原版", ui: {}, uiCfg: ""};
+           theme: "原版", ui: {}, uiCfg: "",
+           projGen: 0,        // 项目代际：切项目 +1，用来丢弃"过期响应"（防串台）
+           jobElse: null};    // 正在跑的 agent 若属于别的项目，记在这儿
 
 const STEPS = [
   {n: "丢素材", who: "你", man: "把素材（文案/形象图/音频/原片）拖进②栏，然后点「建框架归类」"},
@@ -612,8 +627,11 @@ function renderPrompts() {
        ? ps.map((p) => `【${p.ver || "v"}${p.ratio ? " · " + p.ratio : ""}】\n${p.text || ""}`).join("\n\n")
        : "（还没有提示词正文——素材归类后点右上「出提示词」）");
   const lab = $("curLab");
+  // 只显示"能直接复制的那段"：优先 提示词正文.txt（纯正文）；退回 提示词.txt 时说明它还带元信息
   if (lab) lab.innerHTML = cur
-    ? `· 当前：<code>${esc(cur.name)}</code>（${size(cur.size)}，复制就是它）` : "";
+    ? `· 当前：<code>${esc(cur.name)}</code>（${size(cur.size)}`
+      + (cur.pure ? "，纯正文，复制就是它）" : "，含元信息与版本说明；纯正文版见 提示词正文.txt）")
+    : "";
   $("promptBox").scrollTop = 0;                 // 重新读取后回到开头，别停在半截
   const ups = S.uploads || [], groups = S.uploadGroups || [];
   const loose = ups.length ? ups.map((u) =>
@@ -707,7 +725,12 @@ function fillReview(rev) {
 /* ── 动作 ─────────────────────────────────────────────────────────── */
 async function loadState(scrollTop) {
   spinRefresh(600);                  // 点一次刷新，两个箭头转起来（至少 600ms 才看得见）
+  /* 代际校验（2026-09-16 修"跑着切项目，提示词框里变成原项目的、还卡住"）：
+     这个函数有好几个 await，中途用户可能已经切到别的项目了——那时这批响应就是**过期的**，
+     直接丢掉，否则会把旧项目的数据画到新项目上。 */
+  const gen = S.projGen || 0;
   const st = await api("/api/state");
+  if (gen !== (S.projGen || 0)) return;
   S.state = st;
   S.dims = st.dims || [];
   S.mats = st.materials || [];
@@ -718,9 +741,13 @@ async function loadState(scrollTop) {
   if (th && th !== (S.theme || document.body.dataset.theme || "原版")) applyTheme(th, false);
   S.pending = st.pending || [];        // 待投放以服务端为准（刷新页面后不会"丢"）
   const pr = await api("/api/prompts");
+  if (gen !== (S.projGen || 0)) return;
   S.prompts = pr.prompts || []; S.uploads = pr.uploads || []; S.wenan = pr.wenan || [];
   S.current = pr.current || null; S.uploadGroups = pr.uploadGroups || [];
   const rv = await api("/api/review");
+  if (gen !== (S.projGen || 0)) return;
+  // 执行记录：换成**这个项目自己的**尾段（切项目时不留上一个项目的行）
+  if (scrollTop !== "keepLog") renderLogTail(st.logTail || []);
   renderSamples(); renderProject(); renderPrompts();
   const nd = $("need");                 // 需求：别在用户正打字时覆盖他的输入
   if (nd && document.activeElement !== nd) nd.value = st.need || "";
@@ -731,16 +758,31 @@ async function loadState(scrollTop) {
   const p = st.project;
   bs.textContent = p ? `项目创建 ${p.createdAt || "（未知）"}` : `构建 ${st.build.stamp}`;
   bs.title = `exe 构建 ${st.build.stamp}` + (p ? ` · 项目 ${p.name}` : "");
-  if (!st.agent.ok) logLine("agent 通道不可用：" + st.agent.why, "bad");
+  // agent 在别的项目上跑着 → ③栏进度条上如实标出来（别让人以为卡住/以为是自己这个项目）
+  syncRunningJob(st);
   syncBoard();
 }
 
+/* 正在跑的 agent 属于哪个项目：属于本项目→照常；
+   属于别的项目→记在 S.jobElse 上，进度照显但**结果不会画到当前项目的提示词框**。 */
+function syncRunningJob(st) {
+  const cur = (st.project && st.project.dir) || "";
+  const jd = st.jobPdir || "";
+  S.jobElse = (jd && cur && jd !== cur) ? {dir: jd, name: st.jobPname || ""} : null;
+  if (S.jobElse && !S.prog) {           // 页面刚打开/刚切过来时，如果别处有任务在跑，把进度条挂上
+    S.prog = {on: true, job: 0, stage: 0, stageName: "在别的项目上跑", pct: 0,
+              elapsed: 0, eta: 0, done: false, lines: [], elsewhere: S.jobElse};
+    syncAgentJobNote();
+  }
+}
+
 async function selectProject(dir) {
+  S.projGen = (S.projGen || 0) + 1;      // 代际 +1：正在飞的旧请求回来后会被丢掉
   const r = await api("/api/project", {dir});
   if (!r.ok) return toast(r.error || "切项目失败");
   S.pending = [];
-  logLine("已切到项目 " + dir.split(/[\\/]/).pop());
-  if (r.healed) logLine("这个项目缺 框架.json（大概是建到一半被打断），已自动补齐骨架", "ok");
+  if (r.healed) { /* 骨架是补出来的，提示一下就行，不写进日志（日志按项目留存） */
+    toast("这个项目缺 框架.json，已自动补齐骨架"); }
   await loadState();
 }
 
@@ -1160,6 +1202,7 @@ function deleteProjectModal(dir) {
   const {close} = openModal(m, "删除项目");
   let armed = false;
   async function run(mode) {
+    S.projGen = (S.projGen || 0) + 1;      // 删掉的可能是当前项目 → 代际 +1
     const r = await api("/api/project/delete", {dir, mode});
     if (!r.ok) return toast(r.error || "删除失败");
     if (r.recycled) {
@@ -1212,6 +1255,7 @@ function newProjectModal() {
   m.querySelector("#npCancel").onclick = close;
   m.querySelector("#npName").focus();
   m.querySelector("#npOk").onclick = async () => {
+    S.projGen = (S.projGen || 0) + 1;      // 新建会切过去 → 代际 +1
     const r = await api("/api/project/new", {name: m.querySelector("#npName").value.trim()});
     if (!r.ok) return toast(r.error || "建项目失败");
     close();
@@ -1388,23 +1432,67 @@ function watchAgent() {
       const i = +sp.dataset.i;
       sp.className = i < d.stage ? "done" : (i === d.stage ? "on" : "");
     });
-    (d.lines || []).forEach((ln) => logLine(ln,
-      /✅/.test(ln) ? "ok" : (/^!!/.test(ln) ? "bad" : "")));
+    /* 这一轮是不是"在别的项目上跑"（用户切了项目）：是就**不往当前这条日志里塞行**，
+       行已经落进那个项目自己的执行记录里了，切过去就能看到。 */
+    const curDir = ((S.state || {}).project || {}).dir || "";
+    const elsewhere = !!(d.pdir && curDir && d.pdir !== curDir);
+    S.jobElse = elsewhere ? {dir: d.pdir, name: d.pname || ""} : null;
+    syncAgentJobNote();
+    if (!elsewhere) {
+      (d.lines || []).forEach((ln) => logLine(ln,
+        /✅/.test(ln) ? "ok" : (/^!!/.test(ln) ? "bad" : ""), false));   // false＝不重复回传
+    }
     /* 指挥台那张卡里也显示进度：服务端每次只发新增的行，所以按 job 号累计（换任务就清空）。 */
     const prevLines = (S.prog && S.prog.job === d.job) ? (S.prog.lines || []) : [];
     S.prog = {on: true, job: d.job, stageName: d.stageName, stage: d.stage, pct: d.pct,
               elapsed: d.elapsed, eta: d.eta, done: d.done, ok: d.ok,
-              lines: prevLines.concat(d.lines || []).slice(-100)};
+              elsewhere: S.jobElse,
+              lines: prevLines.concat(elsewhere ? [] : (d.lines || [])).slice(-100)};
     boardProg();
     if (d.done) {
       es.close(); S.agentTimer = null;
+      const elsewhere = !!(d.pdir && ((S.state || {}).project || {}).dir
+                           && d.pdir !== S.state.project.dir);
       $("pstage").innerHTML = d.ok ? "完成 · 提示词已写回" : "agent 没跑成";
       $("pfill").style.width = (d.ok ? 100 : d.pct) + "%";
-      toast(d.ok ? "agent 回来了，提示词已刷新" : "agent 报错，看执行记录");
-      loadState();
+      if (elsewhere) {
+        // 跑完的是**别的项目**：不要动当前项目的提示词框，只提示一句、并把那个项目标一下
+        toast((d.ok ? "「" + (d.pname || "另一个项目") + "」的提示词出好了，切过去看"
+                    : "「" + (d.pname || "另一个项目") + "」上那一轮没跑成") + "");
+        markProjectBusy(d.pdir, d.ok ? "done" : "bad");
+        S.jobElse = null;
+      } else {
+        toast(d.ok ? "agent 回来了，提示词已刷新" : "agent 报错，看执行记录");
+        loadState("keepLog");          // 日志保留（这一轮的行已经落在本项目日志里）
+      }
+      syncAgentJobNote();
     }
   };
   es.onerror = () => { es.close(); S.agentTimer = null; };
+}
+
+/* ③栏进度条上标明"这一轮在哪个项目上跑"（用户切了项目时非常必要，否则看着像卡住） */
+function syncAgentJobNote() {
+  const top = document.querySelector("#prog .top");
+  if (!top) return;
+  let chip = top.querySelector("#pElse");
+  if (!S.jobElse) { if (chip) chip.remove(); return; }
+  if (!chip) {
+    chip = document.createElement("span");
+    chip.id = "pElse";
+    chip.className = "quiet";
+    top.insertBefore(chip, top.querySelector("#btmStop") || null);
+    top.appendChild(chip);
+  }
+  chip.textContent = "· 这一轮在「" + (S.jobElse.name || "另一个项目") + "」上跑（结果会写进那个项目）";
+}
+
+/* ①栏里把"刚跑完/跑失败"的项目标一下，方便找回去（3 秒后自动消） */
+function markProjectBusy(dir, cls) {
+  const row = document.querySelector(`#sampleList .row.proj[data-dir="${CSS.escape(dir)}"]`);
+  if (!row) return;
+  row.classList.add(cls === "done" ? "justdone" : "justbad");
+  setTimeout(() => row.classList.remove("justdone", "justbad"), 3000);
 }
 
 const fmt = (s) => { s = Math.max(0, Math.round(s || 0));
@@ -1581,4 +1669,4 @@ paintIcons();
 /* 首屏先按 localStorage 上色（不等接口）；save=false —— 别把"还没读到的偏好"当成用户的选择写回去 */
 try { applyTheme(localStorage.getItem("heronbo.theme") || "原版", false); } catch (e) { applyTheme("原版", false); }
 loadState();
-logLine("工作台已就绪");
+logLine("工作台已就绪", "", false);   // 启动行不进项目日志（那是噪声）
