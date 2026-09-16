@@ -23,6 +23,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -171,6 +172,7 @@ def agent_info():
             "why": why,
             "chosen": chosen,          # 空 = 还没让用户选过（界面据此决定要不要先问）
             "cfg": cfg_path(),         # 选择记在哪（界面显示出来，方便核对"存住没有"）
+            "running": running_desktop(),   # 哪些客户端正开着（自动跟随的依据）
             "list": list_agents()}
 
 
@@ -420,16 +422,100 @@ def _probe_workbuddy():
 
 
 ADAPTERS = {
-    "workbuddy": {"label": "WorkBuddy", "probe": _probe_workbuddy},
-    "codex": {"label": "Codex CLI", "probe": _probe_codex},
+    "workbuddy": {"label": "WorkBuddy", "probe": _probe_workbuddy,
+                  "proc": ["WorkBuddy.exe"],
+                  "transcripts": [(".workbuddy", "projects", "*", "{sid}.jsonl")]},
+    "codex": {"label": "Codex CLI", "probe": _probe_codex, "proc": [],
+              "transcripts": [(".codex", "sessions", "*", "*", "rollout-*{sid}*.jsonl")]},
     # 这两个先留探测位：ZCode / DSH 目前没在安装目录暴露无头 CLI。
     # 找得到就把命令写进 agent_bridge.local.json 的 cmd 字段（见 pick_agent 的说明）。
     # ZCode：桌面端主进程参数里没有无头入口，但**安装目录里自带 CLI**（resources/glm/zcode.cjs），
     # 支持 `--prompt` 无头跑一条任务 —— 2026-09-15 实证找到（先前只查了桌面端参数白名单）。
     # 唯一前置：`~/.zcode/cli/config.json` 里要有显式 provider，否则报 "Model config is missing"。
-    "zcode": {"label": "ZCode CLI", "probe": _probe_zcode},
-    "dsh": {"label": "DSH（DeepSeek Harness）", "probe": _probe_dsh},
+    "zcode": {"label": "ZCode CLI", "probe": _probe_zcode, "proc": ["ZCode.exe"],
+              # 2026-09-16 查实：ZCode 的 CLI 会话正文在 ~/.zcode/cli/rollout/model-io-<sess_xxx>.jsonl
+              "transcripts": [(".zcode", "cli", "rollout", "model-io-{sid}.jsonl")]},
+    "dsh": {"label": "DSH（DeepSeek Harness）", "probe": _probe_dsh, "proc": [],
+            "transcripts": []},
 }
+
+
+_RUN_CACHE = {"t": 0.0, "keys": []}
+
+
+def _foreground_exe():
+    """当前前台窗口属于哪个程序（用来判断"你正在用哪个客户端"）。拿不到就返回空串。"""
+    if os.name != "nt":
+        return ""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        u = ctypes.windll.user32
+        hwnd = u.GetForegroundWindow()
+        if not hwnd:
+            return ""
+        pid = wintypes.DWORD()
+        u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if not pid.value:
+            return ""
+        out = subprocess.run(["tasklist", "/FI", "PID eq %d" % pid.value, "/FO", "CSV", "/NH"],
+                             capture_output=True, timeout=8, **no_window_kwargs())
+        txt = (out.stdout or b"").decode("utf-8", "replace").strip()
+        return txt.split(",")[0].strip('"') if txt else ""
+    except (OSError, subprocess.SubprocessError, ImportError):
+        return ""
+
+
+def running_desktop(refresh=6):
+    """哪些 agent 的**桌面客户端正开着**（用于"自动跟随你正在用的软件"）。
+
+    判据是进程名（各适配器的 `proc`，2026-09-16 实测本机是 `WorkBuddy.exe` / `ZCode.exe`）。
+    结果缓存几秒：state 每次刷新都会问，别每次都去 tasklist 拉一遍。
+    `_active` 记的是**前台窗口那个**（更贴近"我此刻在用它"）——多个都开着时优先它。
+    """
+    now = time.time()
+    if _RUN_CACHE["keys"] and now - _RUN_CACHE["t"] < refresh:
+        return list(_RUN_CACHE["keys"])
+    keys, active = [], ""
+    if os.name == "nt":
+        try:
+            out = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True,
+                                 timeout=8, **no_window_kwargs())
+            names = (out.stdout or b"").decode("utf-8", "replace").lower()
+            fg = _foreground_exe().lower()
+            for key, ad in ADAPTERS.items():
+                for p in (ad.get("proc") or []):
+                    if p.lower() in names:
+                        keys.append(key)
+                        if fg and fg == p.lower():
+                            active = key
+                        break
+        except (OSError, subprocess.SubprocessError):
+            keys, active = [], ""
+    if active:                     # 前台那个排最前：你正在 ZCode 里，就先用 ZCode
+        keys = [active] + [k for k in keys if k != active]
+    _RUN_CACHE.update({"t": now, "keys": keys, "active": active})
+    return list(keys)
+
+
+def transcript_path(key, cwd, session_id):
+    """这个 agent 把**它自己的会话正文**写在哪（能找到就给路径，找不到给空）。
+
+    先按 `key` 找；找不到就**在所有适配器里找一遍**——会话 id 是唯一的，别因为"现在选的 agent
+    跟当时跑的不是同一个"就找不到（2026-09-16 踩到：项目里的会话是 WorkBuddy 跑的，
+    而当前选的是 ZCode，按 key 找就空）。
+    """
+    if not session_id:
+        return ""
+    home = os.path.expanduser("~")
+    order = ([key] if key in ADAPTERS else []) + [k for k in ADAPTERS if k != key]
+    for k in order:
+        for pat in ((ADAPTERS.get(k) or {}).get("transcripts") or []):
+            p = os.path.join(home, *[x.replace("{sid}", session_id) for x in pat])
+            hit = _glob_first([p])
+            if hit:
+                return hit
+    return ""
 
 
 def list_agents():
@@ -444,7 +530,15 @@ def list_agents():
 
 
 def pick_agent(prefer=None):
-    """选一个 agent 干活，返回 (key, why)。理由写清楚，界面直接显示给用户看。"""
+    """选一个 agent 干活，返回 (key, why)。理由写清楚，界面直接显示给用户看。
+
+    顺序（2026-09-16 起加"自动跟随"，用户要求"能不能根据我在用哪个软件自动切"）：
+      1. 用户明确指过（界面选过 / 配置里写了 agent）→ 就用它，不猜（选了就尊重）；
+      2. **谁的桌面客户端正开着** → 用它（"你在用哪个软件，我就用哪个"）；
+      3. 把本 skill 装在自己名下且可用 → 用它；
+      4. 本机任意一个可用的。
+      2 是新的默认行为；想固定用某个，在界面③栏 agent 徽章里点一行选定即可（1 会盖过 2）。
+    """
     cfg = _local_cfg()
     want = prefer or cfg.get("agent")
     rows = {r["key"]: r for r in list_agents()}
@@ -453,6 +547,10 @@ def pick_agent(prefer=None):
         if r["ok"]:
             return want, ("按配置用 %s" % r["label"]) if prefer or cfg.get("agent")                 else r["label"]
         return None, "配置指定的 %s 不可用：%s" % (r["label"], r["why"])
+    for key in running_desktop():                # ① 跟随你正开着的软件
+        r = rows.get(key)
+        if r and r["ok"]:
+            return key, "%s（你正开着它，自动跟随）" % r["label"]
     for key in ("workbuddy", "codex", "zcode", "dsh"):
         r = rows.get(key)
         if r and r["ok"] and r["host"]:
