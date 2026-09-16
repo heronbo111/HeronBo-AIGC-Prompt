@@ -104,6 +104,7 @@ def _load_core(fname, modname):
 pcore = _load_core("project_core.py", "project_core")
 score = _load_core("score_core.py", "score_core")
 abridge = _load_core("agent_bridge.py", "agent_bridge")
+pcheck = _load_core("提示词体检.py", "prompt_check")     # ③栏「体检」按钮用（统一骨架的自检）
 
 
 # ── 系统文件选择框（Tk 只能在同一个线程里用，所以单开一个线程常驻）──────────
@@ -733,8 +734,11 @@ def start_agent(pdir, what, feedback=""):
                 "请按反馈重出一版提示词：更新 %s\\文案\\ 下的稿子与 框架.json 的 prompts，"
                 "并把要上传的文件副本放进 即梦上传\\（含上传说明.txt；一版文件多就按 即梦上传\\<版本名>\\ 分子目录）；"
                 "同时把当前版本的正文覆盖写到项目根 提示词.txt（只放能直接复制的提示词，历史版本留在 框架.json 的 prompts）。"
-                "完成后跑 tools\\project_core.py --project \"%s\" --receipt \"改了什么\" "
-                "--todo-done 写回执。" % (st.get("round", 1), feedback, pdir, pdir))
+                "**改动仍要守住统一骨架**（references\\prompt-templates.md 第 0 节的 11 个小节与顺序，"
+                "正文里不带 markdown 壳；表格与变更记录进 备注\\备注.txt），"
+                "并在收工前跑 `python tools\\提示词体检.py --project \"%s\"` 把 FAIL 改掉；"
+                "回执用 tools\\project_core.py --project \"%s\" --receipt \"改了什么\" --todo-done 写。"
+                % (st.get("round", 1), feedback, pdir, pdir, pdir))
     elif what == "intake":
         # 归类复核（2026-09-16 用户指出：光靠文件名/扩展名猜角色不够准，这一步要 agent 来）
         todo = (head +
@@ -768,9 +772,18 @@ def start_agent(pdir, what, feedback=""):
                 "并把要上传的文件副本按引用编号放进 即梦上传\\（**一版文件多就按版本分子目录**："
                 "即梦上传\\v1 主推\\、即梦上传\\v2 换服装\\…，每版带自己的 上传说明.txt，旧版保留）；"
                 "**项目根再写一份 提示词.txt**＝当前版本、可直接复制的正文（只放提示词本身，"
-                "不要塞版本说明/素材对照；历史版本留在 框架.json 的 prompts）；"
-                "完成后跑 tools\\project_core.py --project \"%s\" --receipt \"改了什么\" "
-                "--todo-done 写回执。" % (pdir, pdir))
+                "不要塞版本说明/素材对照；历史版本留在 框架.json 的 prompts）。"
+                "**两条硬要求（2026-09-16 用户裁定，别省）**："
+                "①**逐字用统一骨架**——references\\prompt-templates.md 第 0 节那 11 个小节与顺序"
+                "（总纲 → 素材分工 → 主体 → 场景 → 道具 → 动作与时间轴 → 口播·音色·口型 → 镜头与景别 → "
+                "画面纪律 → 负面）＋元信息 3 行，不许改名换序，正文里不带 markdown 标题/表格/引用块"
+                "（表格与变更记录进 备注\\备注.txt）；"
+                "②**替换类先看素材再选题材**（rules 第47条）：小动作素材（口播/拎盒展示，峰值运动量长期 "
+                "低于约 5%% 画面）走原片直投、**不要转深度片**；只有大动作/影视素材或原片直投同因失败才上深度。"
+                "出完**必须跑** `python tools\\提示词体检.py --project \"%s\"`，有 FAIL 就改到没有，"
+                "并把通过/注意/不合格的数目写进回执；"
+                "回执用 tools\\project_core.py --project \"%s\" --receipt \"改了什么\" "
+                "--todo-done 写。" % (pdir, pdir, pdir))
 
     stop_evt = threading.Event()
     threading.Thread(target=_watch_project_files, args=(pdir, rec, stop_evt),
@@ -918,6 +931,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(self.state())
         if path == "/api/prompts":
             return self._json(prompts_payload(self._proj()))
+        if path == "/api/promptcheck":
+            return self._json(self.prompt_check())
         if path == "/api/review":
             return self._json(self.read_review())
         if path == "/api/progress":
@@ -1246,6 +1261,32 @@ class Handler(BaseHTTPRequestHandler):
             except OSError as e:
                 return {"ok": False, "error": "打不开：%s" % e}
         return {"ok": True, "opened": target}
+
+    def prompt_check(self):
+        """③栏「提示词体检」：按《统一骨架》检查当前项目的提示词（references/prompt-templates.md 第 0 节）。
+
+        为什么要摆到界面上（2026-09-16）：用户发现同一天两个项目的提示词**风格各写各的**——
+        光靠 agent 自觉记不住骨架，所以给一个当场能跑的检查，不合格就把行号与改法摆出来。
+        """
+        if not pcheck:
+            return {"ok": False, "error": "找不到 tools\\提示词体检.py"}
+        pdir = self._proj()
+        if not (pdir and os.path.isdir(pdir)):
+            return {"ok": False, "error": "还没选项目"}
+        # 优先体检"正在交付的那一份"：项目根 提示词.txt → 文案/提示词.txt → 文案/*提示词*.txt
+        cand = [os.path.join(pdir, "提示词.txt"), os.path.join(pdir, "文案", "提示词.txt")]
+        d = os.path.join(pdir, "文案")
+        if os.path.isdir(d):
+            cand += [os.path.join(d, fn) for fn in sorted(os.listdir(d))
+                     if "提示词" in fn and fn.lower().endswith(".txt")]
+        p = next((x for x in cand if os.path.isfile(x)), "")
+        if not p:
+            return {"ok": False, "error": "这个项目还没有提示词文件"}
+        ok, ps, ws, fs = pcheck.check_path(p)
+        return {"ok": True, "pass": ok, "file": p,
+                "passed": [{"name": n, "detail": d} for n, d in ps],
+                "warn": [{"name": n, "detail": d} for n, d in ws],
+                "fail": [{"name": n, "detail": d} for n, d in fs]}
 
     def records(self):
         """本项目跑过的 agent 轮次 + agent 自己那份会话正文的路径。

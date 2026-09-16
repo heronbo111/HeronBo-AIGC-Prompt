@@ -1455,6 +1455,21 @@ function copyPrompt() {
     () => toast("复制失败，手动选中①栏文本"));
 }
 
+/* 提示词体检：按《统一骨架》检查③栏这份提示词（骨架真相源＝references/prompt-templates.md 第 0 节）。
+   2026-09-16 用户提出"风格不一致"，所以把检查摆到界面上——不合格当场看见，不用等用户挑出来。 */
+async function checkPrompt() {
+  const r = await api("/api/promptcheck");
+  if (!r.ok) return toast(r.error || "体检没跑起来");
+  const head = r.pass ? "✅ 提示词体检：合格（通过 " + r.passed.length + " 项）"
+                      : "⚠ 提示词体检：不合格";
+  logLine(head + " · " + (r.file || "").split(/[\\/]/).pop(), r.pass ? "ok" : "bad");
+  (r.fail || []).forEach((x) => logLine("  ✗ " + x.name + (x.detail ? "：" + x.detail : ""), "bad"));
+  (r.warn || []).forEach((x) => logLine("  ! " + x.name + (x.detail ? "：" + x.detail : ""), "warn"));
+  (r.passed || []).slice(0, 3).forEach((x) => logLine("  ✓ " + x.name + (x.detail ? "：" + x.detail : "")));
+  toast(r.pass ? ("提示词合格（通过 " + r.passed.length + " 项）")
+               : ("体检不合格 " + (r.fail || []).length + " 项，看执行记录"));
+}
+
 /* 「怎么用」不再是弹窗念一遍流程 —— 换成整页的流程指挥台（flow.html，见上面的 BOARD 段）。 */
 async function reloadPrompts() {
   const pr = await api("/api/prompts");
@@ -1510,6 +1525,7 @@ $("btnRefresh").onclick = () => loadState();
 $("btnSort").onclick = () => sortMenu();
 $("btnRecords").onclick = () => recordsModal();
 $("btnLoadPrompts").onclick = () => reloadPrompts();
+$("btnCheckPrompt").onclick = () => checkPrompt();
 $("btnAgent").onclick = () => agentModal();
 $("btnAsk").onclick = () => askAgent("prompt");
 $("btnIntakeGo").onclick = () => intakeGo();
