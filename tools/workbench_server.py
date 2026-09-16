@@ -999,6 +999,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/records":
             return self._json(self.records())
         if path == "/api/records/read":
+            # GET 与 POST 都认（2026-09-16 修的 bug：前端统一走 POST，而这条原先只注册在 do_GET →
+            # 点「点开看」直接 404、界面上什么都不发生；这条 API 只读，两边都接最省事）
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             return self._json(read_record(self._proj(), (q.get("name") or [""])[0]))
         if path.startswith("/api/upload/") and path.endswith("/open"):
@@ -1062,6 +1064,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(self.open_path(self._body()))
         if path == "/api/records/open":
             return self._json(self.open_record(self._body()))
+        if path == "/api/records/read":
+            # 只读接口，GET/POST 都接（见 do_GET 里的同一路由）
+            b = self._body()
+            name = (b.get("name") or "").strip()
+            if not name:
+                q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                name = (q.get("name") or [""])[0]
+            return self._json(read_record(self._proj(), name))
         if path == "/api/material/remove":
             return self._json(self.remove_material(self._body()))
         if path == "/api/material/order":

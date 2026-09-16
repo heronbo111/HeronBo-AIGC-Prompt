@@ -1159,7 +1159,7 @@ async function recordsModal() {
       <button class="btn" id="mclose">知道了</button></div></div>`;
   const {close: closeRec} = openModal(m, "agent 对话记录");
   const cpx = m.querySelector("#rcCopy");
-  if (cp) cp.onclick = () => navigator.clipboard.writeText(r.transcript).then(
+  if (cpx) cpx.onclick = () => navigator.clipboard.writeText(r.transcript).then(
     () => toast("路径已复制"), () => toast("复制失败"));
   const ot = m.querySelector("#rcOpenT");
   if (ot) ot.onclick = () => api("/api/records/open", {path: r.transcript})
@@ -1170,6 +1170,7 @@ async function recordsModal() {
   };
   m.querySelectorAll(".arow").forEach((row) => {
     row.onclick = async () => {
+      m.querySelectorAll(".arow").forEach((x) => x.classList.toggle("on", x === row));
       const d = await api("/api/records/read?name=" + encodeURIComponent(row.dataset.n));
       const box = m.querySelector("#recBox");
       box.hidden = false;
@@ -1678,4 +1679,20 @@ paintIcons();
 /* 首屏先按 localStorage 上色（不等接口）；save=false —— 别把"还没读到的偏好"当成用户的选择写回去 */
 try { applyTheme(localStorage.getItem("heronbo.theme") || "原版", false); } catch (e) { applyTheme("原版", false); }
 loadState();
-logLine("工作台已就绪", "", false);   // 启动行不进项目日志（那是噪声）
+logLine("工作台已就绪", "", false);
+
+/* ── 兜底：界面脚本出错必须能看见 ─────────────────────────────────────
+   2026-09-16 教训：记录弹窗里一个变量名写错（cp/cpx）→ ReferenceError 把后面所有按钮绑定
+   全吃掉了，用户看到的是"点了没反应"，而控制台才有报错。现在任何未捕获异常都会：
+   ①记进本项目的执行记录（`_会话/工作台日志.jsonl`）；②弹一句短提示——不静默。 */
+window.addEventListener("error", (e) => {
+  const msg = (e && e.message) ? e.message : "未知脚本错误";
+  try { logLine("界面脚本出错：" + msg + "（" + (e.filename || "").split("/").pop()
+                + ":" + (e.lineno || 0) + "）", "bad"); } catch (x) {}
+  try { toast("界面脚本出错，已记进执行记录"); } catch (x) {}
+});
+window.addEventListener("unhandledrejection", (e) => {
+  const r = e && e.reason;
+  const msg = (r && (r.message || r)) ? String(r.message || r) : "未知 Promise 错误";
+  try { logLine("界面脚本出错（异步）：" + msg, "bad"); } catch (x) {}
+});   // 启动行不进项目日志（那是噪声）
