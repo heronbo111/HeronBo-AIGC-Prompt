@@ -23,6 +23,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -318,16 +319,19 @@ def check_agents(yes=False, ping=None):
         log("  [跳过] 连通测试（--no-ping）")
         return
     log("== 连通测试（真跑一句「回一个字」，会消耗一点点额度）==")
+    t0 = time.time()
     try:
         r = ab.ask("只回一个字：好。不要读任何文件、不要用任何工具。", timeout=180)
     except Exception as e:                                       # noqa: BLE001
         bad("连通测试", "跑不起来：%s" % e)
         return
+    used = time.time() - t0
     if r.get("ok"):
         ok("连通测试", "%s 用时 %.1fs，回了：%s"
-           % (r.get("agent"), r.get("seconds") or 0, (r.get("text") or "").strip()[:40]))
+           % (r.get("agent_label") or r.get("agent"), used,
+              (r.get("text") or "").strip()[:40]))
     else:
-        bad("连通测试", "没通过：%s" % (r.get("error") or "")[:160],
+        bad("连通测试", "没通过（用时 %.1fs）：%s" % (used, (r.get("error") or "")[:160]),
             "看上面各通道的状态行；通了之后工作台里点「出提示词」就能用")
 
 
