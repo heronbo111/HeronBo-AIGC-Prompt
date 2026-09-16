@@ -190,7 +190,7 @@ def check(path, text, pdir=""):
     # ⑦ 台词一致：元信息台词 → 正文必须原样出现（按分句比，容忍时间轴把台词拆到各拍里）
     m = re.search(r"台词[:：]\s*(.+)$", head, re.M)
     if m and "无台词" not in m.group(1):
-        want = re.sub(r"（[^）]*）|\([^)]*\)", "", m.group(1)).strip().strip("\"'“”")
+        want = re.sub(r"（[^）]*）|\([^)]*\)", "", m.group(1)).strip().strip("\"'“”「」『』")
         body = text[text.find(m.group(0)) + len(m.group(0)):]
         clauses = [c.strip() for c in re.split(r"[，,。！!？?；;、\s]+", want) if len(c.strip()) >= 3]
         missc = [c for c in clauses if c not in body]
@@ -250,7 +250,7 @@ def check(path, text, pdir=""):
     if len(vers) >= 2:
         say("PASS", "多版本分段", "版本：" + "、".join(vers))
     elif len(vers) == 1:
-        say("WARN", "多版本分段", "只写了一段「版本1」；单版本时可不写版本行，多版本必须每段带「上传：」")
+        say("PASS", "多版本分段", "（单版本；多版本时每段要自带「上传：」行）")
     else:
         say("PASS", "多版本分段", "（单版本）")
     return OK, WARN, FAIL
