@@ -60,7 +60,8 @@ function renderProgress() {
   const p = S.prog;
   box.hidden = !p || !p.on;
   if (!p || !p.on) return;
-  box.querySelector(".s").innerHTML = (p.done ? "" : '<span class="spin"></span>') + esc(p.stageName || "");
+  box.querySelector(".s").innerHTML = (p.done ? "" : '<span class="spin"></span>') + esc(p.stageName || "")
+    + (p.quiet ? '<span class="quiet">· 这条通道不吐过程输出，按时间估</span>' : "");
   box.querySelector(".bar > i").style.width = (p.pct || 0) + "%";
   box.querySelector(".tm").textContent = p.done
     ? ("用时 " + fmt(p.elapsed)) : ("已用 " + fmt(p.elapsed) + " · 预计还要 " + fmt(Math.max(0, (p.eta || 0) - p.elapsed)));

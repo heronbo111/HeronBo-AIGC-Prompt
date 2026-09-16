@@ -428,3 +428,10 @@ body[data-theme="暖夜"]{
    否则内层原来的 max-height（提示词 340px）会被干掉 → 长提示词把整栏撑到几千像素。 */
 .vbox{position:relative;display:flex;flex-direction:column;min-height:0}
 .vbox.sized > .prompt,.vbox.sized > .log{flex:1 1 auto;height:100%;max-height:none}
+
+/* 项目行上的删除按钮：悬停才显形，红色提示 */
+.row .ibtn.sm[data-delproj]{width:22px;height:22px;flex:0 0 auto;opacity:0;transition:opacity .12s}
+.row:hover .ibtn.sm[data-delproj]{opacity:1}
+.row .ibtn.sm[data-delproj]:hover{color:var(--bad);background:var(--bad-soft)}
+/* 进度条旁边那句"这条通道不吐过程输出" */
+.prog .top .quiet{color:var(--muted);font-weight:400;font-size:11px;margin-left:6px}

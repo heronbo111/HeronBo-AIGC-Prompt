@@ -661,6 +661,21 @@ def start_agent(pdir, what, feedback=""):
     return {"job": job, "eta": _PROG["eta"], "eta_n": _PROG.get("eta_n", 0), "record": rec}
 
 
+def _recompute_pct_locked():
+    """算进度百分比：max(已完成阶段的权重和, 按历史耗时推算的时间进度)，封顶 96%。
+
+    ⚠️ **必须在"每次轮询"里也算一遍**（2026-09-16 用户指出"进度条仍然没有做"）：
+    原先只在收到 agent 日志行时更新，而 ZCode 这条通道（text 模式）几乎不吐过程输出
+    → 条一直 0%，只有阶段名在动。现在 SSE 每次拉快照都会重算，条会随时间平滑前进。
+    """
+    acc = sum(w for i, (_n, w) in enumerate(STAGES) if i < _PROG["stage"])
+    by_time = 0
+    if _PROG["t0"]:
+        el = time.time() - _PROG["t0"]
+        by_time = int(el / max(1.0, _PROG["eta"]) * 100)
+    _PROG["pct"] = min(96, max(acc, by_time))
+
+
 def _push_line(line, rec=None):
     line = (line or "").rstrip()
     if not line:
@@ -672,24 +687,21 @@ def _push_line(line, rec=None):
         if len(_PROG["lines"]) > 400:
             del _PROG["lines"][:-400]
         _PROG["stage"] = _stage_from_line(line, _PROG["stage"])
-        # 百分比 = max(已完成阶段的权重和, 按历史耗时推算的时间进度)，封顶 96%
-        # （不封 100：真正到 100 只发生在任务结束时，进度条才不会"卡在 100 还在等"）
-        acc = sum(w for i, (_n, w) in enumerate(STAGES) if i < _PROG["stage"])
-        by_time = 0
-        if _PROG["t0"]:
-            el = time.time() - _PROG["t0"]
-            by_time = int(el / max(1.0, _PROG["eta"]) * 100)
-        _PROG["pct"] = min(96, max(acc, by_time))
+        _recompute_pct_locked()
 
 
 def progress_snapshot(since=0):
     with _PROG_LOCK:
         el = time.time() - _PROG["t0"] if _PROG["t0"] else 0
+        if _PROG["running"]:
+            _recompute_pct_locked()          # 没日志行也要让条动（按时间估）
         d = {"job": _PROG["job"], "stage": _PROG["stage"],
              "stageName": STAGES[min(_PROG["stage"], 3)][0],
              "pct": _PROG["pct"], "elapsed": round(el), "eta": round(_PROG["eta"]),
              "running": _PROG["running"], "done": _PROG["done"], "ok": _PROG["ok"],
              "lines": _PROG["lines"][since:], "n": len(_PROG["lines"]),
+             # 这条通道不给过程输出时如实说明（否则用户看着不动的条只能瞎猜）
+             "quiet": bool(_PROG["running"] and not _PROG["lines"] and el > 25),
              "text": _PROG["text"]}
         return d
 
@@ -793,6 +805,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": False, "error": "目录不存在：%s" % d}, 400)
         if path == "/api/project/new":
             return self._json(self.new_project(self._body()))
+        if path == "/api/project/delete":
+            return self._json(self.delete_project(self._body()))
         if path == "/api/need":
             return self._json(self.save_need(self._body()))
         if path == "/api/ui":
@@ -857,6 +871,30 @@ class Handler(BaseHTTPRequestHandler):
         return d
 
     # ---- ①栏「＋ 新建项目」/ ②栏「需求 · 素材增删排序」----------------------
+    def delete_project(self, b):
+        """①栏项目的「删除」：**不真删**——整个项目目录移到 `<样本库根>/_已删除/<名字>-<时间戳>/`。
+
+        为什么这么做：项目里有稿子、成片、评分，误删是灾难；移走可逆（资源管理器里搬回来就行），
+        而且 `_` 开头不会被列出来（`_samples()` 跳过下划线目录）。
+        """
+        d = (b.get("dir") or "").rstrip("\\/")
+        if not (d and os.path.isdir(d)):
+            return {"ok": False, "error": "目录不存在：%s" % d}
+        root = os.path.dirname(d)
+        name = os.path.basename(d)
+        if name.startswith("_"):
+            return {"ok": False, "error": "这个目录不是项目（下划线开头）：%s" % name}
+        if os.path.normcase(d) == os.path.normcase(read_proj() or ""):
+            self._set_proj("")                       # 删的正是当前项目 → 清掉指针
+        dest_root = os.path.join(root, "_已删除")
+        dest = os.path.join(dest_root, "%s-%s" % (name, time.strftime("%Y%m%d-%H%M%S")))
+        try:
+            os.makedirs(dest_root, exist_ok=True)
+            shutil.move(d, dest)
+        except OSError as e:
+            return {"ok": False, "error": "移走失败：%s" % e}
+        return {"ok": True, "movedTo": dest}
+
     def heal_skeleton(self, pdir):
         """打开一个**缺 框架.json** 的项目时把骨架补齐（返回 True 表示补了）。
 
@@ -1159,8 +1197,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def intake_go(self, b):
         pend = self._pending()
-        if not (pcore and pend):
-            return {"ok": False, "error": "还没有待投放的素材"}
+        # 没素材也让它干一件有用的事：**把框架建出来**（2026-09-16 用户："新建项目了点击框架"）
+        # 新建的空项目还没有 框架.json，这时点「建框架归类」原本只报"还没有待投放的素材"，
+        # 用户看着像"点了没反应"。这里改成：把骨架（含 框架.json/框架.md/状态.json）建出来并说明。
+        if not pend:
+            pdir0 = self._proj(b)
+            if pdir0 and os.path.isdir(pdir0) and self.heal_skeleton(pdir0):
+                return {"ok": True, "built": True, "project": _scan_project(pdir0),
+                        "note": "框架已建好（还没有素材）：把素材拖进②栏，再点一次就能按角色归类"}
+            return {"ok": False, "error": "还没有待投放的素材——先把素材拖进②栏"}
+        if not pcore:
+            return {"ok": False, "error": "缺 project_core.py"}
         root = b.get("root") or Handler.root or detect_root()
         if not root:
             return {"ok": False, "error": "没有样本库根，请先选"}

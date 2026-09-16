@@ -349,7 +349,9 @@ function renderSamples() {
         title="创建 ${esc(s.createdAt || "（未知）")} · 素材 ${s.materials} · 成片 ${s.videos}">
        <span class="grip" title="拖动改名次（会自动切成「自定义」排序）">⋮⋮</span>
        <span class="g">${esc(s.name)}</span>
-       <span class="m">${meta}</span></div>`;
+       <span class="m">${meta}</span>
+       <button class="ibtn sm" data-delproj="1" data-icon="x"
+         title="删除这个项目（整个目录移到样本库根的 _已删除/，能搬回来）"></button></div>`;
   }).join("")
     || '<div class="meta">样本库里还没项目。把素材拖进②栏就能建，或点上面的「＋ 新建项目」。</div>';
   $("sampleList").querySelectorAll(".row").forEach((el) => {
@@ -747,6 +749,8 @@ function bindSampleDrag() {
   const box = $("sampleList");
   box.querySelectorAll(".row").forEach((row) => {
     if (!row.dataset.dir) return;
+    const del = row.querySelector("[data-delproj]");
+    if (del) del.onclick = (e) => { e.stopPropagation(); deleteProjectModal(row.dataset.dir); };
     row.setAttribute("draggable", "true");
     row.addEventListener("dragstart", (e) => {
       row.classList.add("drag");
@@ -1044,6 +1048,34 @@ async function recordsModal() {
   });
 }
 
+/* 删除项目：**不真删**——整个目录移到 <样本库根>/_已删除/，确认弹窗把这点写清楚 */
+function deleteProjectModal(dir) {
+  const s = (S.state.samples || []).find((x) => x.dir === dir) || {};
+  const name = s.name || dir.split(/[\/]/).pop();
+  const root = (S.state.root || "").replace(/[\/]+$/, "");
+  const m = document.createElement("div");
+  m.className = "modal";
+  m.innerHTML = `<div class="box"><h3>删除项目</h3>
+    <p class="meta">把「<b>${esc(name)}</b>」从样本库里拿掉（里面：素材 ${s.materials || 0} ·
+      成片 ${s.videos || 0} · 评分 ${s.reviews || 0}）。</p>
+    <p class="note"><b>不是真删</b>：整个项目目录会被搬到
+      <code>${esc(root)}${root ? "\\" : ""}_已删除\${esc(name)}-时间戳\</code>，
+      在资源管理器里搬回来就恢复。</p>
+    <div style="text-align:right;margin-top:12px">
+      <button class="btn ghost" id="dpCancel">取消</button>
+      <button class="btn danger" id="dpOk">移到 _已删除</button></div></div>`;
+  const {close} = openModal(m, "删除项目");
+  m.querySelector("#dpCancel").onclick = close;
+  m.querySelector("#dpOk").onclick = async () => {
+    const r = await api("/api/project/delete", {dir});
+    if (!r.ok) return toast(r.error || "删除失败");
+    logLine("已把项目移走：" + name + " → " + r.movedTo, "warn");
+    toast("已移到 _已删除/（能搬回来）");
+    close();
+    await loadState();
+  };
+}
+
 /* ── ①栏「＋ 新建项目」：起一张白纸（空素材、空提示词）─────────────────
    为什么要：工作台记着"上次打开的项目"，用旧项目干活时它身上已经堆满了东西，
    想从干净状态开始得自己去样本库翻。 */
@@ -1106,14 +1138,22 @@ async function intake(paths) {
 }
 
 async function intakeGo() {
-  if (!S.pending.length) return toast("先把素材拖进②栏");
+  // 没素材时也照发：项目还没有 框架.json 的话，服务端会把框架建出来（用户："新建项目了点击框架"）
+  if (!S.pending.length && !(S.state.project && S.state.project.dir)) {
+    return toast("先把素材拖进②栏，或先在①栏建个项目");
+  }
   $("btnIntakeGo").disabled = true;
   const r = await api("/api/intake/go", {});
   $("btnIntakeGo").disabled = false;
   if (!r.ok) return toast(r.error || "建框架失败");
   S.pending = [];
-  logLine("已建框架并归类：" + (r.project ? r.project.name : ""), "ok");
-  toast("框架已建好，素材归类完成");
+  if (r.built) {                       // 没素材，但把框架补出来了
+    logLine("已建框架（还没有素材）：" + (r.project ? r.project.name : ""), "ok");
+    toast(r.note || "框架已建好，把素材拖进②栏再点一次");
+  } else {
+    logLine("已建框架并归类：" + (r.project ? r.project.name : ""), "ok");
+    toast("框架已建好，素材归类完成");
+  }
   await loadState();
 }
 
@@ -1219,7 +1259,8 @@ function watchAgent() {
   es.onmessage = (ev) => {
     let d; try { d = JSON.parse(ev.data); } catch (e) { return; }
     if (d.bye) { es.close(); S.agentTimer = null; return; }
-    $("pstage").innerHTML = (d.running ? '<span class="spin"></span>' : "") + esc(d.stageName);
+    $("pstage").innerHTML = (d.running ? '<span class="spin"></span>' : "") + esc(d.stageName)
+      + (d.quiet ? '<span class="quiet">· 这条 agent 通道不吐过程输出，进度按时间估</span>' : "");
     $("pfill").style.width = (d.pct || 0) + "%";
     $("ptime").textContent = `已用 ${fmt(d.elapsed)} · ` +
       (d.done ? `用时 ${fmt(d.elapsed)}` : `预计还要 ${fmt(Math.max(0, d.eta - d.elapsed))}`);

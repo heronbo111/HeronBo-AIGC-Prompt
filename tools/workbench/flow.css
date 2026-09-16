@@ -91,3 +91,5 @@
 @media (max-width:900px){
   .scard{grid-template-columns:1fr}
 }
+
+.sprog .top .s .quiet{color:var(--muted);font-weight:400;font-size:11px;margin-left:6px}
