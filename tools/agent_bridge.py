@@ -502,7 +502,60 @@ def build_cmd_for(key, prompt, session_id=None, cwd=None, permission_mode=None,
         cmd.append(prompt)
         return cmd, "codex-json"
     return build_cmd(prompt, session_id=session_id, permission_mode=permission_mode or "acceptEdits",
-                     tools=tools, extra=extra), "workbuddy-json"
+                     tools=tools, output_format="stream-json", extra=extra), "workbuddy-json"
+
+
+def _extract_stream_line(line):
+    """WorkBuddy `--output-format stream-json` 的一行事件 → (可读文本, session_id, 最终答复, 是否报错)。
+
+    实测（2026-09-16）每行一个 JSON，常见几种：
+      {"type":"system","subtype":"init","session_id":"…"}
+      {"type":"assistant","message":{"content":[{"type":"text","text":"…"},
+                                               {"type":"tool_use","name":"Read","input":{…}}]}}
+      {"type":"result","subtype":"success","result":"…","session_id":"…","is_error":false}
+
+    **为什么非要换成 stream-json**：原来用 `--output-format json`（结束时吐一整块），
+    2026-09-16 实测一次真跑——190 秒里进度一直是 0%（没有中间事件可喂），最后直接跳 100%；
+    而且输出一长就被 tail 截断，连最终答复都抓成了 `"prompt_cache_hit_tokens": 119040`
+    这种 token 统计，还被写进了回执。换成 stream-json 后每行都能喂进度，最终答复从
+    type=result 那一行取，不会被截断影响。
+    """
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        return line.strip()[:400], None, None, None
+    if not isinstance(obj, dict):
+        return "", None, None, None
+    sid = obj.get("session_id") or obj.get("sessionId") or None
+    final = None
+    err = None
+    if obj.get("type") == "result":
+        r = obj.get("result")
+        if isinstance(r, str) and r.strip():
+            final = r.strip()
+        err = bool(obj.get("is_error"))
+    txt = _pick_text(obj)
+    if not txt:
+        msg = obj.get("message")
+        if isinstance(msg, dict):
+            c = msg.get("content")
+            if isinstance(c, list):
+                bits = []
+                for b in c:
+                    if not isinstance(b, dict):
+                        continue
+                    if b.get("type") == "text" and b.get("text"):
+                        bits.append(str(b["text"]))
+                    elif b.get("type") == "tool_use":
+                        bits.append("· 用 %s %s" % (
+                            b.get("name") or "工具",
+                            json.dumps(b.get("input") or {}, ensure_ascii=False)[:160]))
+                txt = " ".join(bits)
+            elif isinstance(c, str):
+                txt = c
+        elif isinstance(msg, str):
+            txt = msg
+    return " ".join(str(txt).split())[:400], sid, final, err
 
 
 def _extract_codex_line(line):
@@ -653,7 +706,8 @@ def ask(prompt, session_id=None, cwd=None, timeout=DEFAULT_TIMEOUT,
         os.close(fd)
         cmd = cmd[:-1] + ["-o", out_file, cmd[-1]]
     env = child_env()
-    text_parts, tail = [], []
+    text_parts, tail = [], []            # tail 只留给"最后兜底当答复"，别当解析用的全文
+    stream_sid, stream_text, stream_err = None, "", None
     try:
         p = subprocess.Popen(cmd, cwd=cwd or HERE, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
@@ -698,8 +752,8 @@ def ask(prompt, session_id=None, cwd=None, timeout=DEFAULT_TIMEOUT,
             if not line.strip():
                 continue
             tail.append(line)
-            if len(tail) > 400:
-                del tail[:-400]
+            if len(tail) > 3000:          # 留宽点：自定义 cmd 用单块 json 时，截断会让解析失败
+                del tail[:-3000]
             if mode == "codex-json":
                 txt, final = _extract_codex_line(line)
                 if final:
@@ -707,11 +761,13 @@ def ask(prompt, session_id=None, cwd=None, timeout=DEFAULT_TIMEOUT,
                 if on_line and txt:
                     on_line(txt)
             else:
-                try:
-                    obj = json.loads(line)
-                    txt = _pick_text(obj) if isinstance(obj, dict) else ""
-                except ValueError:
-                    txt = line
+                txt, sid_, fin_, err_ = _extract_stream_line(line)
+                if sid_:
+                    stream_sid = sid_
+                if fin_:
+                    stream_text = fin_
+                if err_ is not None:
+                    stream_err = err_
                 if txt and on_line:
                     on_line(txt)
         p.wait(timeout=20)
@@ -750,17 +806,19 @@ def ask(prompt, session_id=None, cwd=None, timeout=DEFAULT_TIMEOUT,
                 "error": "" if ok else ("超时 %ds 已终止" % timeout if killed["timeout"]
                                         else "CLI 返回码 %s" % rc)}
     res = _parse_output(raw)
-    sid = session_id
+    sid = stream_sid or session_id
     text = ""
-    if res:
-        sid = res.get("session_id") or res.get("sessionId") or session_id
+    if res:                                    # 老路子：--output-format json 一整块（还认它，兼容自定义 cmd）
+        sid = res.get("session_id") or res.get("sessionId") or sid
         text = res.get("result") or _pick_text(res) or ""
         if isinstance(text, list):
             text = "".join(seg.get("text", "") if isinstance(seg, dict) else str(seg)
                            for seg in text)
     if not text:
+        text = stream_text or ""               # stream-json：从 type=result 那一行取（完整、不截断）
+    if not text:
         text = raw.strip()
-    is_err = bool(res and res.get("is_error"))
+    is_err = bool((res and res.get("is_error")) or stream_err)
     ok = (rc == 0) and (not is_err) and bool(text)
     return {"ok": ok, "agent": key, "agent_label": ADAPTERS[key]["label"],
             "session_id": sid, "text": text, "res": res, "returncode": rc, "cmd": cmd,

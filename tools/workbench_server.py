@@ -38,6 +38,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -334,7 +335,19 @@ def _stage_from_line(line, cur):
 
 
 def start_agent(pdir, what, feedback=""):
-    """起一个 agent 任务（后台线程），进度写进 _PROG，页面用 SSE 读。"""
+    """起一个 agent 任务（后台线程），进度写进 _PROG，页面用 SSE 读。
+
+    **先查通道再起任务**：没有 agent（或本机没一个可用）时直接返回原因，
+    别起一个注定失败的"假进度"——界面上按钮本来就是灰的，这里是第二道闸。
+    """
+    if not abridge:
+        return {"error": "agent 通道不可用：缺 agent_bridge.py"}
+    try:
+        ok, why = abridge.available()
+    except Exception as e:                                       # noqa: BLE001
+        return {"error": "agent 通道探测失败：%s" % e}
+    if not ok:
+        return {"error": "agent 通道不可用：%s" % why}
     with _PROG_LOCK:
         if _PROG["running"]:
             return {"error": "已经有一个任务在跑"}
@@ -696,6 +709,10 @@ class Handler(BaseHTTPRequestHandler):
             pdir, plan, _log = pcore.auto_build(
                 list(pend), root=root, name=b.get("name") or None,
                 platform=b.get("platform") or "",
+                # register=False：**建项目时别顺手改全局样本库根**。2026-09-15/16 两次踩到——
+                # 用临时目录跑这一步，SAMPLES_ROOT 就被写成临时目录，临时目录一清，界面
+                # 只剩「配置里的样本库根不存在」。要换根只有一处：界面「选样本库根」→ /api/root。
+                register=False,
                 on_log=lambda s: _push_line("[归类] " + str(s)))
         except Exception as e:                                   # noqa: BLE001
             return {"ok": False, "error": "建框架失败：%s" % e}
@@ -856,6 +873,92 @@ class Handler(BaseHTTPRequestHandler):
 
 
 # ── 启动 ───────────────────────────────────────────────────────────────────
+WIN_TITLE = "HeronBo · AI 视频工作台"     # 网页工作台的窗口标题（经典界面会带「（经典界面）」后缀）
+
+
+def _http_json(port, path, body=None, timeout=0.8):
+    """跟本机已开的实例说一句话（复用/切项目用）。"""
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request("http://127.0.0.1:%d%s" % (port, path), data=data,
+                                headers={"Content-Type": "application/json"} if data else {})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def find_window(title=WIN_TITLE):
+    """按标题找我们自己那个窗口（返回句柄，没有就 0）。
+
+    **只认完全同名**：经典界面是「…（经典界面）」，不能被当成网页工作台复用。
+    """
+    if os.name != "nt":
+        return 0
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except ImportError:
+        return 0
+    u = ctypes.windll.user32
+    hit = []
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+    def _cb(hwnd, _l):
+        if not u.IsWindowVisible(hwnd):
+            return True
+        n = u.GetWindowTextLengthW(hwnd)
+        if n:
+            buf = ctypes.create_unicode_buffer(n + 1)
+            u.GetWindowTextW(hwnd, buf, n + 1)
+            if buf.value.strip() == title:
+                hit.append(hwnd)
+                return False
+        return True
+
+    u.EnumWindows(_cb, 0)
+    return hit[0] if hit else 0
+
+
+def focus_window(hwnd):
+    """把已开着的窗口叫到前面（最小化了就先还原）。
+
+    Windows 有前台锁：SetForegroundWindow 可能被拒（那就任务栏闪一下，用户点一下即可），
+    但最小化还原（ShowWindow SW_RESTORE）是稳的。
+    """
+    if not hwnd:
+        return False
+    try:
+        import ctypes
+        u = ctypes.windll.user32
+        if u.IsIconic(hwnd):
+            u.ShowWindow(hwnd, 9)          # SW_RESTORE
+        u.SetForegroundWindow(hwnd)
+        return True
+    except (OSError, AttributeError, ImportError):
+        return False
+
+
+def existing_instance():
+    """已经开着的那个实例：(窗口句柄, 端口)；都没有就 (0, 0)。
+
+    两个判据各自独立探：窗口在（标题同名）就算活着；`%TEMP%` 里记的端口还能应答 /api/state
+    也算活着。有任何一个就算"已经开着"，不再起第二个（第二个会抢 WebView2 数据目录而起不来）。
+    """
+    hwnd = find_window()
+    port = 0
+    try:
+        with open(_proj_file(), encoding="utf-8") as f:
+            port = int((json.load(f) or {}).get("port") or 0)
+    except (ValueError, OSError, TypeError):
+        port = 0
+    if port:
+        try:
+            st = _http_json(port, "/api/state")
+            if not (isinstance(st, dict) and "build" in st and "agent" in st):
+                port = 0
+        except (OSError, ValueError):
+            port = 0
+    return hwnd, port
+
+
 def native_window(title, url, width=1520, height=940):
     """用 pywebview 开一个**独立窗口**（内嵌 WebView2），返回 True 表示成功接管。
 
@@ -977,8 +1080,34 @@ def launch_web(root="", project="", hint="", port=0, wait=True, backend=None):
       2. Edge 的 `--app=` 窗口——退路（独立窗口起不来时）；
       3. 默认浏览器打开 URL——最后的退路（至少能用）。
     `backend="edge"` 可强制走退路（排查用）。
+
+    **已经开着一个就不开第二个**（2026-09-15 晚补）：两个实例会抢同一个 WebView2 数据目录
+    （`%LOCALAPPDATA%\\HeronBoScoreTool\\webview`），第二个的 pywebview 报
+    `0x8007139F 组或资源的状态不是执行请求操作的正确状态` 起不来 —— 双击两次快捷方式就会撞上
+    （表现为"没反应"或另开一个 Edge 窗口）。所以动手前先看有没有活着的实例：有就把它的窗口
+    叫到前面来（带了 --project 就顺手让它切过去），本进程直接退出。
+    `HERONBO_NO_REUSE=1` 可强制另起一个（验证/排查用）。
     """
     import webbrowser
+    prev_hwnd, prev_port = (0, 0)
+    if not os.environ.get("HERONBO_NO_REUSE"):
+        prev_hwnd, prev_port = existing_instance()
+    if prev_hwnd or prev_port:
+        if project and os.path.isdir(project) and prev_port:
+            try:
+                _http_json(prev_port, "/api/project", {"dir": project})
+            except (OSError, ValueError):
+                pass
+        if prev_hwnd and focus_window(prev_hwnd):
+            print("[工作台] 已经开着一个了，把它叫到前面来（端口 %s）" % (prev_port or "?"),
+                  flush=True)
+        elif prev_port:
+            webbrowser.open("http://127.0.0.1:%d/" % prev_port)
+            print("[工作台] 已经开着一个了，用浏览器打开它（端口 %d）" % prev_port, flush=True)
+        else:
+            focus_window(prev_hwnd)
+            print("[工作台] 已经开着一个了（没找到窗口句柄）", flush=True)
+        return None, ("http://127.0.0.1:%d/" % prev_port if prev_port else ""), "reuse"
     if project and os.path.isdir(project):
         write_proj(project)
     elif hint:
@@ -993,9 +1122,16 @@ def launch_web(root="", project="", hint="", port=0, wait=True, backend=None):
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     Handler.last_ping = time.time()
     print("[工作台] %s" % url, flush=True)
-    if backend != "edge" and native_window("HeronBo · AI 视频工作台", url):
+    if backend != "edge" and native_window(WIN_TITLE, url):
         srv.shutdown()                 # 窗口关了 → 收摊（不用再靠心跳判断）
         return srv, url, "native"
+    # 窗口起不来、而起之前就已经有一个在跑 → 就是它占着 WebView2 的数据目录：别再开 Edge 窗口
+    if prev_hwnd or prev_port:
+        srv.shutdown()
+        if prev_hwnd:
+            focus_window(prev_hwnd)
+        print("[工作台] 第二个窗口起不来（已有一个在跑），已把它叫到前面来", flush=True)
+        return srv, url, "reuse"
     # 退路：Edge app 窗口
     exe = find_edge()
     proc = None
