@@ -407,12 +407,24 @@ function agentModal() {
   }).join("");
   const m = document.createElement("div");
   m.className = "modal";
+  const usable = (a.list || []).filter((r) => r.ok).length;
+  // 一台电脑上装哪个 agent 就用哪个——全不可用时得说清"怎么办"，不然只有一句"不可用"
+  const howto = usable ? "" : `
+    <div class="note" style="margin-top:4px">
+      <b>四个都没接上？</b>这台电脑上装哪个用哪个，随便装一个就行（选一个装，装完回来点一下重试）：
+      <br>· <b>WorkBuddy</b> / <b>ZCode</b>：装它们的桌面端即可——工作台会拿它自带的 Electron 跑 CLI，<b>连 Node.js 都不用装</b>；
+      <br>· <b>Codex CLI</b>：<code>npm i -g @openai/codex</code>（需要 Node.js）；
+      <br>· <b>DSH</b>：<code>npx @deepseek-ai/dsh</code> 跑过一次（需要 Node.js）。
+      <br>装完在仓库根跑一次 <code>python tools\\deploy.py agents</code>，它会探一遍并做一次真实连通测试。
+      <br><b>不装也能用</b>：只有「出提示词 / 按反馈重出 / 核对归类 / 评价反哺」这四个按钮用不了，
+      丢素材、建框架、收片、打分这些照常。
+    </div>`;
   m.innerHTML = `<div class="box"><h3>agent 通道</h3>
     <p class="meta">选法（从上到下，先满足先用）：<b>①</b> 你在界面里点过哪个就用哪个（下面的「✓ 当前使用」）；
       <b>②</b> 没点过 → <b>跟随你正开着的客户端</b>（WorkBuddy / ZCode…）；
       <b>③</b> 都没开 → 用"把本技能装在自己名下且命令行可用"的那个。
       <span style="color:var(--ok)">● 可用</span>　<span style="color:var(--bad)">● 不可用</span>　点一行即固定用它。</p>
-    <div class="amod">${rows}</div>
+    <div class="amod">${rows}</div>${howto}
     <div class="sessbox">
       <b>当前会话</b>
       ${a.session ? `<code>${esc((a.session || "").slice(0, 22))}…</code>
