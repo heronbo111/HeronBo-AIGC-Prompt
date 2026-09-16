@@ -447,3 +447,10 @@ body[data-theme="暖夜"]{
   padding:9px 11px;margin:6px 0;font-size:12.5px;display:flex;flex-direction:column;gap:5px}
 .sessbox b{font-size:12.5px}
 .sessbox .btn{align-self:flex-start}
+
+/* 即梦上传按版本分组 */
+.upgroup{border:1px solid var(--border);border-radius:9px;margin:6px 0;background:var(--surface2);
+  padding:6px 8px}
+.upgroup .uphead{display:flex;align-items:center;gap:8px;font-size:12.5px;margin-bottom:3px}
+.upgroup .uphead b{flex:1}
+.upgroup .row.plain{padding:3px 2px}

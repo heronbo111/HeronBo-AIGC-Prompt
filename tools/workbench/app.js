@@ -30,6 +30,7 @@ const ICON = {
   reload: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 12a8 8 0 0 1 13.7-5.7L20 8"/><path d="M20 3v5h-5"/><path d="M20 12a8 8 0 0 1-13.7 5.7L4 16"/><path d="M4 21v-5h5"/></svg>',
   copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
   plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
+  folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
   x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
 };
 function paintIcons() {
@@ -579,15 +580,35 @@ function renderPrompts() {
   /* 这里**只放提示词正文**（能直接复制去平台的那份成品）。文案稿不在这一栏——
      2026-09-16 用户指出：从前把 文案/*.txt 也算提示词，于是没出提示词时这一栏显示的是文案稿。 */
   const ps = S.prompts || [];
-  $("promptBox").textContent = ps.length
-    ? ps.map((p) => `【${p.ver || "v"}${p.ratio ? " · " + p.ratio : ""}】\n${p.text || ""}`).join("\n\n")
-    : "（还没有提示词正文——素材归类后点右上「出提示词」）";
+  const cur = S.current || null;      // 项目根那份"可直接复制的提示词.txt"（有就以它为准）
+  $("promptBox").textContent = cur
+    ? cur.text
+    : (ps.length
+       ? ps.map((p) => `【${p.ver || "v"}${p.ratio ? " · " + p.ratio : ""}】\n${p.text || ""}`).join("\n\n")
+       : "（还没有提示词正文——素材归类后点右上「出提示词」）");
+  const lab = $("curLab");
+  if (lab) lab.innerHTML = cur
+    ? `· 当前：<code>${esc(cur.name)}</code>（${size(cur.size)}，复制就是它）` : "";
   $("promptBox").scrollTop = 0;                 // 重新读取后回到开头，别停在半截
-  const ups = S.uploads || [];
-  $("upList").innerHTML = ups.length ? ups.map((u) =>
+  const ups = S.uploads || [], groups = S.uploadGroups || [];
+  const loose = ups.length ? ups.map((u) =>
     `<div class="row plain"><span class="g">${esc(u.name)}</span>
-      <span class="m">${size(u.size)}</span></div>`).join("")
-    : '<div class="meta">还没生成（agent 出提示词时会按引用编号把副本放进来）</div>';
+      <span class="m">${size(u.size)}</span></div>`).join("") : "";
+  const ghtml = groups.map((g) => `
+    <div class="upgroup">
+      <div class="uphead"><b>${esc(g.ver)}</b>
+        <span class="meta">${g.files.length} 件 · ${size(g.size)}</span>
+        <button class="ibtn sm" data-openup="${esc(g.ver)}" data-icon="folder"
+          title="在资源管理器里打开这个版本"></button></div>
+      ${g.files.map((f) => `<div class="row plain"><span class="g">${esc(f.name)}</span>
+        <span class="m">${size(f.size)}</span></div>`).join("")}
+    </div>`).join("");
+  $("upList").innerHTML = (loose || ghtml)
+    ? loose + ghtml
+    : '<div class="meta">还没生成（agent 出提示词时会按引用编号把副本放进来）';
+  $("upList").querySelectorAll("[data-openup]").forEach((b) => {
+    b.onclick = () => openFolder("uploads", b.dataset.openup);
+  });
   const st = S.state.project ? (S.state.project.state || {}) : {};
   const wf = (S.wenan || []).length;
   $("stageLab").textContent = `· 阶段 ${st.stage || "—"} · 第 ${st.round || 0} 轮 · 待办 ${st.pending || 0}`
@@ -669,6 +690,7 @@ async function loadState(scrollTop) {
   S.pending = st.pending || [];        // 待投放以服务端为准（刷新页面后不会"丢"）
   const pr = await api("/api/prompts");
   S.prompts = pr.prompts || []; S.uploads = pr.uploads || []; S.wenan = pr.wenan || [];
+  S.current = pr.current || null; S.uploadGroups = pr.uploadGroups || [];
   const rv = await api("/api/review");
   renderSamples(); renderProject(); renderPrompts();
   const nd = $("need");                 // 需求：别在用户正打字时覆盖他的输入
@@ -691,6 +713,13 @@ async function selectProject(dir) {
   logLine("已切到项目 " + dir.split(/[\\/]/).pop());
   if (r.healed) logLine("这个项目缺 框架.json（大概是建到一半被打断），已自动补齐骨架", "ok");
   await loadState();
+}
+
+/* 打开文件夹（服务端 os.startfile，用户点的动作） */
+async function openFolder(kind, sub) {
+  const r = await api("/api/open", {kind, sub: sub || ""});
+  if (!r.ok) return toast(r.error || "打不开");
+  toast("已在资源管理器里打开");
 }
 
 /* ── ①栏项目列表：排序 + 拖动 ────────────────────────────────────────
@@ -1349,7 +1378,9 @@ async function saveScore() {
 
 function copyPrompt() {
   const ps = S.prompts || [];
-  const body = ps.length ? (ps[ps.length - 1].text || "") : "";
+  // 有那份"可直接复制的提示词.txt"就复制它（用户要的"只放能直接拿去复制的提示词"）
+  const body = (S.current && S.current.text) ? S.current.text
+    : (ps.length ? (ps[ps.length - 1].text || "") : "");
   const ups = (S.uploads || []).map((u) => u.name).join("\n");
   const text = body + (ups ? "\n\n---- 要上传的素材 ----\n" + ups : "");
   if (!text) return toast("还没有提示词");
@@ -1430,6 +1461,9 @@ $("btnReload").onclick = async () => {
 $("btnHelp").onclick = () => openBoard();
 $("btnNewProj").onclick = () => newProjectModal();
 $("btnAddMat").onclick = () => pickFiles("files");
+$("btnOpenMat").onclick = () => openFolder("materials");
+$("btnOpenUp").onclick = () => openFolder("uploads");
+$("btnOpenProj").onclick = () => openFolder("project");
 $("btnSaveNeed").onclick = () => saveNeed();
 $("need").addEventListener("blur", () => {           // 失焦自动存（改了才存）
   const cur = (S.state && S.state.need) || "";

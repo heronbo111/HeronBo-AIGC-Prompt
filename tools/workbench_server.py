@@ -287,7 +287,7 @@ def prompts_payload(pdir):
     是**文案稿（输入）**，另放 `wenan`——从前把它也算提示词，结果没出提示词时③栏显示的是文案稿，
     用户看到的是"提示词正文里塞了文案"（2026-09-16 截图指出）。
     """
-    out = {"prompts": [], "uploads": [], "wenan": [], "need": "",
+    out = {"prompts": [], "uploads": [], "uploadGroups": [], "wenan": [], "need": "",
            "state": _proj_state(pdir)}
     sk = None
     if pcore:
@@ -297,6 +297,19 @@ def prompts_payload(pdir):
             sk = None
     proj = ((sk or {}).get("project") or {}) if isinstance(sk, dict) else {}
     out["need"] = proj.get("need") or ""
+    # **单独那份"可直接复制的提示词"**（用户 2026-09-16 要求）：项目根的 提示词.txt；
+    # 有它就以它为准（③栏只显示它、复制也复制它），框架.json 里的历史版本仍留着。
+    for cand in ("提示词.txt", os.path.join("文案", "提示词.txt")):
+        fp = os.path.join(pdir, cand) if pdir else ""
+        if fp and os.path.isfile(fp):
+            try:
+                body = open(fp, encoding="utf-8-sig").read().strip()
+            except OSError:
+                continue
+            if body:
+                out["current"] = {"name": cand, "text": body,
+                                  "size": os.path.getsize(fp)}
+                break
     for pr in (proj.get("prompts") or []):
         if isinstance(pr, dict):
             out["prompts"].append({"ver": pr.get("name") or "提示词",
@@ -325,6 +338,8 @@ def prompts_payload(pdir):
                     sz = 0
                 out["wenan"].append({"name": fn, "size": sz,
                                      "text": body[:2000]})
+    # 即梦上传：**按版本分子目录**列（红白模替换那种一版几十个文件，平铺就看不清了）；
+    # 根目录下的散件算"（未分版本）"。每组给个"打开这个文件夹"的入口。
     up = os.path.join(pdir, "即梦上传")
     if os.path.isdir(up):
         for fn in sorted(os.listdir(up)):
@@ -334,6 +349,19 @@ def prompts_payload(pdir):
                     out["uploads"].append({"name": fn, "size": os.path.getsize(p)})
                 except OSError:
                     out["uploads"].append({"name": fn, "size": 0})
+            elif os.path.isdir(p):
+                group = {"ver": fn, "dir": p, "files": [], "size": 0}
+                for f2 in sorted(os.listdir(p)):
+                    fp = os.path.join(p, f2)
+                    if os.path.isfile(fp):
+                        try:
+                            sz = os.path.getsize(fp)
+                        except OSError:
+                            sz = 0
+                        group["files"].append({"name": f2, "size": sz})
+                        group["size"] += sz
+                out["uploadGroups"].append(group)
+        out["uploadGroups"].sort(key=lambda g: g["ver"])
     return out
 
 
@@ -637,7 +665,8 @@ def start_agent(pdir, what, feedback=""):
         todo = (head +
                 "用户在界面上给了第 %s 轮反馈：\n%s\n\n"
                 "请按反馈重出一版提示词：更新 %s\\文案\\ 下的稿子与 框架.json 的 prompts，"
-                "并把要上传的文件副本放进 即梦上传\\（含上传说明.txt）。"
+                "并把要上传的文件副本放进 即梦上传\\（含上传说明.txt；一版文件多就按 即梦上传\\<版本名>\\ 分子目录）；"
+                "同时把当前版本的正文覆盖写到项目根 提示词.txt（只放能直接复制的提示词，历史版本留在 框架.json 的 prompts）。"
                 "完成后跑 tools\\project_core.py --project \"%s\" --receipt \"改了什么\" "
                 "--todo-done 写回执。" % (st.get("round", 1), feedback, pdir, pdir))
     elif what == "intake":
@@ -670,7 +699,10 @@ def start_agent(pdir, what, feedback=""):
         todo = (head +
                 "用户点了「叫 agent 出提示词」。请扫描 %s\\ 下的 框架.json 与 素材/、文案/，"
                 "按 skill 规则出一版提示词，写回 框架.json 的 prompts 与 文案/，"
-                "并把要上传的文件副本按引用编号放进 即梦上传\\；"
+                "并把要上传的文件副本按引用编号放进 即梦上传\\（**一版文件多就按版本分子目录**："
+                "即梦上传\\v1 主推\\、即梦上传\\v2 换服装\\…，每版带自己的 上传说明.txt，旧版保留）；"
+                "**项目根再写一份 提示词.txt**＝当前版本、可直接复制的正文（只放提示词本身，"
+                "不要塞版本说明/素材对照；历史版本留在 框架.json 的 prompts）；"
                 "完成后跑 tools\\project_core.py --project \"%s\" --receipt \"改了什么\" "
                 "--todo-done 写回执。" % (pdir, pdir))
 
@@ -876,6 +908,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(self.save_need(self._body()))
         if path == "/api/ui":
             return self._json(write_ui(self._body()))
+        if path == "/api/open":
+            return self._json(self.open_path(self._body()))
         if path == "/api/records/open":
             return self._json(self.open_record(self._body()))
         if path == "/api/material/remove":
@@ -1095,6 +1129,39 @@ class Handler(BaseHTTPRequestHandler):
         pcore.save_skeleton(pdir, sk)
         return {"ok": True, "moved": moved, "materials": materials_payload(pdir),
                 "project": _scan_project(pdir)}
+
+    def open_path(self, b):
+        """在资源管理器里打开一个项目相关的目录/文件（用户点的动作）。
+
+        kind: uploads（即梦上传）/ project（项目根）/ materials（素材）/ code（文案）/
+              finals（成片）/ rejects（废片）/ reviews（评价）/ records（对话记录）
+        sub: 打开某个子目录（比如即梦上传的某个版本）
+        """
+        pdir = self._proj(b)
+        if not (pdir and os.path.isdir(pdir)):
+            return {"ok": False, "error": "还没有项目"}
+        kind = (b.get("kind") or "project").strip()
+        sub = (b.get("sub") or "").strip()
+        rel = {"uploads": "即梦上传", "project": "", "materials": "素材", "code": "文案",
+               "finals": "成片", "rejects": "废片", "reviews": "评价",
+               "records": os.path.join("_会话", "agent记录")}.get(kind)
+        if rel is None:
+            return {"ok": False, "error": "不认识的 kind：%s" % kind}
+        target = os.path.normpath(os.path.join(pdir, rel, sub)) if sub else             os.path.normpath(os.path.join(pdir, rel))
+        # 防目录穿越：必须还在项目里
+        if not os.path.normcase(target).startswith(os.path.normcase(os.path.normpath(pdir))):
+            return {"ok": False, "error": "路径越界"}
+        if not os.path.exists(target):
+            try:
+                os.makedirs(target, exist_ok=True)
+            except OSError as e:
+                return {"ok": False, "error": "建不了目录：%s" % e}
+        if os.name == "nt":
+            try:
+                os.startfile(target)                             # noqa: S606（本机动作，用户点的）
+            except OSError as e:
+                return {"ok": False, "error": "打不开：%s" % e}
+        return {"ok": True, "opened": target}
 
     def records(self):
         """本项目跑过的 agent 轮次 + agent 自己那份会话正文的路径。
