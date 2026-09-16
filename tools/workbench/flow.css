@@ -79,6 +79,15 @@
 .bfoot .ftxt b{color:var(--text)}
 .bfoot .fmeta{font-size:11px;color:var(--muted);text-align:right;line-height:1.6}
 
+/* 第①张卡里的「需求」与素材清单（需求是硬约束，得在同一眼看到） */
+.sneed{font-size:12.5px;border-left:3px solid var(--accent);background:var(--accent-soft);
+  border-radius:8px;padding:6px 10px;color:var(--text);word-break:break-word}
+.smats{display:flex;flex-wrap:wrap;gap:5px}
+.smats .mtag{font-size:11px;border:1px solid var(--accent-border);background:var(--surface2);
+  color:var(--muted);border-radius:999px;padding:1px 8px;max-width:260px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.smats .mtag.nr{border-color:var(--border);background:var(--track)}
+
 @media (max-width:900px){
   .scard{grid-template-columns:1fr}
 }

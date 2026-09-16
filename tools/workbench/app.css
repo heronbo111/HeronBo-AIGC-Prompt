@@ -185,7 +185,32 @@ textarea{width:100%;resize:vertical}
 .boardwrap{position:fixed;inset:0;z-index:70;background:var(--bg)}
 .boardwrap iframe{display:block;width:100%;height:100%;border:0}
 
-/* 样本库路径：整行截断，别去挤栏标题的按钮（原来把「刷新」挤成两行）*/
+/* ── ②栏「文案 / 素材识别」：需求框 + 可拖可删的素材行 ─────────────────── */
+.btn.wide{width:100%;margin:2px 0 8px}
+.needbox{border:1px solid var(--border);border-radius:10px;background:var(--surface2);
+  padding:8px 9px;margin-bottom:6px}
+.needbox textarea{border:0;background:transparent;padding:0;font-size:12.5px;resize:vertical}
+.needbox textarea:focus{box-shadow:none}
+.needfoot{display:flex;align-items:center;gap:8px;margin-top:4px}
+.needfoot .meta{flex:1}
+.row.mat{gap:6px;padding:6px 4px 6px 6px;cursor:default}
+.row.mat .grip{color:var(--dot-idle);font-size:12px;letter-spacing:-1px;cursor:grab;
+  flex:0 0 auto;user-select:none}
+.row.mat .role{flex:0 0 auto;font-size:11px;border-radius:999px;padding:0 7px;
+  border:1px solid var(--accent-border);background:var(--accent-soft);color:var(--accent)}
+.row.mat.noready .role{border-color:var(--border);background:var(--track);color:var(--muted)}
+.row.mat.gone .g{text-decoration:line-through;color:var(--muted)}
+.row.mat.drag{opacity:.45}
+.row.mat.over{outline:2px dashed var(--accent);outline-offset:-2px}          /* 插到这行前面 */
+.row.mat.over-after{border-bottom:2px solid var(--accent)}                   /* 插到这行后面 */
+.row.mat .ibtn.sm{width:22px;height:22px;flex:0 0 auto}
+.row.mat .ibtn.sm svg{width:12px;height:12px}
+.row.mat:hover .ibtn.sm{color:var(--bad)}
+.ibtn.sm{width:22px;height:22px}
+.ibtn.sm svg{width:12px;height:12px}
+.seclab .ibtn.sm{vertical-align:middle;margin-left:4px}
+
+/* 样本库根路径：整行截断，别去挤栏标题的按钮（原来把「刷新」挤成两行）*/
 .pathtext{font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;direction:rtl;text-align:left;margin:-2px 0 6px}
 .pathtext:hover{color:var(--text)}
@@ -298,3 +323,6 @@ body[data-theme="暖夜"]{
   --sh-sm:0 1px 2px rgba(0,0,0,.45);
   --sh:0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.5);
 }
+
+/* ②栏「文案 / 素材识别」那一行的两个小动作（标题条放不下两个按钮，第二个挪到这行） */
+.seclab .btn.sm{float:right;margin-top:-2px}

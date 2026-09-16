@@ -241,13 +241,15 @@ def build_info():
 
 
 def prompts_payload(pdir):
-    """③栏读的东西：提示词正文 + 即梦上传清单 + 状态里的阶段。
+    """③栏读的东西：**只给提示词正文** + 即梦上传清单 + 状态里的阶段。
 
-    口径与 Tk 版 `wb_load_prompts` **完全一致**（同一份 框架.json、同一个 文案/）：
-    提示词在 `框架.json → project.prompts`（[{name,text}]），另外 `文案/` 里的
-    .txt/.md 也算提示词来源（agent 两种写法都用过）。
+    口径（2026-09-16 用户裁定后改）：`框架.json → project.prompts` 是提示词正文；`文案/` 下
+    **只有文件名里带「提示词」的**才算（agent 有时写在 `文案/提示词.txt`）；其余 `文案/*.txt|md`
+    是**文案稿（输入）**，另放 `wenan`——从前把它也算提示词，结果没出提示词时③栏显示的是文案稿，
+    用户看到的是"提示词正文里塞了文案"（2026-09-16 截图指出）。
     """
-    out = {"prompts": [], "uploads": [], "state": _proj_state(pdir)}
+    out = {"prompts": [], "uploads": [], "wenan": [], "need": "",
+           "state": _proj_state(pdir)}
     sk = None
     if pcore:
         try:
@@ -255,10 +257,14 @@ def prompts_payload(pdir):
         except Exception:                                        # noqa: BLE001
             sk = None
     proj = ((sk or {}).get("project") or {}) if isinstance(sk, dict) else {}
+    out["need"] = proj.get("need") or ""
     for pr in (proj.get("prompts") or []):
         if isinstance(pr, dict):
             out["prompts"].append({"ver": pr.get("name") or "提示词",
-                                   "text": pr.get("text") or ""})
+                                   "text": pr.get("text") or "",
+                                   "ratio": pr.get("ratio") or "",
+                                   "type": pr.get("type") or "",
+                                   "refs": pr.get("refs") or {}})
         elif isinstance(pr, str):
             out["prompts"].append({"ver": "提示词", "text": pr})
     wenan = os.path.join(pdir, "文案")
@@ -266,11 +272,20 @@ def prompts_payload(pdir):
         for fn in sorted(os.listdir(wenan)):
             if not fn.lower().endswith((".txt", ".md")):
                 continue
+            p = os.path.join(wenan, fn)
             try:
-                body = open(os.path.join(wenan, fn), encoding="utf-8-sig").read().strip()
+                body = open(p, encoding="utf-8-sig").read().strip()
             except OSError:
                 continue
-            out["prompts"].append({"ver": "文案/" + fn, "text": body})
+            if "提示词" in fn:
+                out["prompts"].append({"ver": "文案/" + fn, "text": body})
+            else:
+                try:
+                    sz = os.path.getsize(p)
+                except OSError:
+                    sz = 0
+                out["wenan"].append({"name": fn, "size": sz,
+                                     "text": body[:2000]})
     up = os.path.join(pdir, "即梦上传")
     if os.path.isdir(up):
         for fn in sorted(os.listdir(up)):
@@ -281,6 +296,68 @@ def prompts_payload(pdir):
                 except OSError:
                     out["uploads"].append({"name": fn, "size": 0})
     return out
+
+
+def materials_payload(pdir):
+    """②栏「文案/素材识别」的清单。
+
+    来源是 `框架.json → project.materials`——**这份数组的顺序就是引用编号的顺序**
+    （agent 按它排 @图片1 / @音频1），所以②栏里拖动排序改的就是它。
+    另外兜底扫描 `文案/` `素材/` 里没登记进框架的文件（agent 或人手拷进去的）。
+    """
+    rows = []
+    sk = None
+    if pcore:
+        try:
+            sk = pcore.load_skeleton(pdir)
+        except Exception:                                        # noqa: BLE001
+            sk = None
+    proj = ((sk or {}).get("project") or {}) if isinstance(sk, dict) else {}
+    seen = set()
+    for m in (proj.get("materials") or []):
+        if not isinstance(m, dict):
+            continue
+        rel = (m.get("file") or "").replace("\\", "/")
+        name = m.get("name") or os.path.basename(rel)
+        fp = os.path.join(pdir, rel.replace("/", os.sep)) if rel else ""
+        size = m.get("size") or 0
+        exists = bool(fp) and os.path.isfile(fp)
+        if exists:
+            try:
+                size = os.path.getsize(fp)
+            except OSError:
+                pass
+        seen.add(name)
+        rows.append({"id": m.get("id") or "", "file": rel, "name": name,
+                     "role": m.get("role") or "", "size": size,
+                     "type": m.get("type") or "", "note": m.get("note") or "",
+                     "missing": bool(rel) and not exists})
+    for sub in ("文案", "素材"):
+        d = os.path.join(pdir, sub)
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            fp = os.path.join(d, fn)
+            if not os.path.isfile(fp) or fn in seen:
+                continue
+            try:
+                sz = os.path.getsize(fp)
+            except OSError:
+                sz = 0
+            rows.append({"id": "", "file": "%s/%s" % (sub, fn), "name": fn, "role": "",
+                         "size": sz, "type": "", "note": "还没登记进框架", "missing": False})
+    return rows
+
+
+def proj_need(pdir):
+    """用户填的「简单需求」（框架.json → project.need）：agent 出提示词时必须按它来。"""
+    if not pcore or not pdir:
+        return ""
+    try:
+        sk = pcore.load_skeleton(pdir)
+    except Exception:                                            # noqa: BLE001
+        return ""
+    return (((sk or {}).get("project") or {}).get("need") or "").strip()
 
 
 # ── agent 进度：把 stdout 实时转成阶段事件 ─────────────────────────────────
@@ -361,20 +438,51 @@ def start_agent(pdir, what, feedback=""):
     st = _proj_state(pdir)
     skill_md = os.path.join(os.path.dirname(HERE), "SKILL.md")
     sid = st.get("agentSession") or None
+    need = proj_need(pdir)
+    head = ("先读技能说明 %s 再动手（本机已装，直接读文件即可）。\n\n" % skill_md)
+    if need:
+        # 用户填的「简单需求」是这次任务的硬约束，放在最前面
+        head += "用户需求（**必须按它来**，与技能默认口径冲突时先满足它并在回执里说清）：\n%s\n\n" % need
     if what == "feedback":
-        todo = ("先读技能说明 %s 再动手（本机已装，直接读文件即可）。\n\n"
+        todo = (head +
                 "用户在界面上给了第 %s 轮反馈：\n%s\n\n"
                 "请按反馈重出一版提示词：更新 %s\\文案\\ 下的稿子与 框架.json 的 prompts，"
                 "并把要上传的文件副本放进 即梦上传\\（含上传说明.txt）。"
                 "完成后跑 tools\\project_core.py --project \"%s\" --receipt \"改了什么\" "
-                "--todo-done 写回执。" % (skill_md, st.get("round", 1), feedback, pdir, pdir))
+                "--todo-done 写回执。" % (st.get("round", 1), feedback, pdir, pdir))
+    elif what == "intake":
+        # 归类复核（2026-09-16 用户指出：光靠文件名/扩展名猜角色不够准，这一步要 agent 来）
+        todo = (head +
+                "用户点了「核对归类」。软件只按文件名/扩展名猜了角色，**不一定准**。请打开 "
+                "%s\\框架.json 的 materials、以及 素材/ 与 文案/ 里的实际文件，逐件核对每件的 role"
+                "（形象参考 / 音色参考 / 参考视频 / 文案 / 道具 / 场景 …）："
+                "能读到内容的按内容判（图片看画面、音频看用途、文本看体裁），拿不准的**标成「待确认」"
+                "并在回执里说清为什么**，别硬猜。把修正后的 role 写回 框架.json，"
+                "并把要上传的文件副本按引用编号放进 即梦上传\\（含上传说明.txt）。"
+                "完成后跑 tools\\project_core.py --project \"%s\" "
+                "--receipt \"归类复核：改了哪几件、依据是什么\" --todo-done 写回执。"
+                % (pdir, pdir))
+    elif what == "learn":
+        # 评价反哺 skill（2026-09-16 用户指出：④⑤两栏的结论要回到 skill 里，闭环才成立）
+        todo = (head +
+                "用户点了「评价反哺 skill」。请读：\n"
+                "  · %s\\评价\\*.json（六维 / 违禁项 / 整体评分 / 结论 / 备注）\n"
+                "  · %s\\废片\\ 的文件名（废因写在文件名里）\n"
+                "  · %s\\_会话\\回执.jsonl（这一轮 agent 自己报的做了什么）\n\n"
+                "把**可复用的经验**沉淀回技能，别写流水账：本机个人经验写 "
+                "references\\rules.local.md，跨机通用规则写 references\\rules.md"
+                "（只追加或修订自己的条目，别重排/改写别人的规则；规则只写「规则 + 依据（日期/来源）」）。"
+                "已经吸收过的评价别重复写（可对照 tools\\评价回收.py 的账本）。"
+                "完成后跑 tools\\project_core.py --project \"%s\" "
+                "--receipt \"反哺：改了哪几条规则、依据哪条评价\" --todo-done 写回执。"
+                % (pdir, pdir, pdir, pdir))
     else:
-        todo = ("先读技能说明 %s 再动手（本机已装，直接读文件即可）。\n\n"
+        todo = (head +
                 "用户点了「叫 agent 出提示词」。请扫描 %s\\ 下的 框架.json 与 素材/、文案/，"
                 "按 skill 规则出一版提示词，写回 框架.json 的 prompts 与 文案/，"
                 "并把要上传的文件副本按引用编号放进 即梦上传\\；"
                 "完成后跑 tools\\project_core.py --project \"%s\" --receipt \"改了什么\" "
-                "--todo-done 写回执。" % (skill_md, pdir, pdir))
+                "--todo-done 写回执。" % (pdir, pdir))
 
     def run():
         t0 = time.time()
@@ -528,6 +636,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._set_proj(d)
                 return self._json({"ok": True, "project": _scan_project(d)})
             return self._json({"ok": False, "error": "目录不存在：%s" % d}, 400)
+        if path == "/api/project/new":
+            return self._json(self.new_project(self._body()))
+        if path == "/api/need":
+            return self._json(self.save_need(self._body()))
+        if path == "/api/material/remove":
+            return self._json(self.remove_material(self._body()))
+        if path == "/api/material/order":
+            return self._json(self.order_materials(self._body()))
         if path == "/api/pick":
             b = self._body()
             return self._json(picker().ask(b.get("kind") or "files"))
@@ -570,9 +686,136 @@ class Handler(BaseHTTPRequestHandler):
         d = dims_payload()
         d.update({"root": root, "samples": _samples(root), "project": proj,
                   "build": build_info(), "agent": self.agent_ok(),
-                  "theme": self.theme_name(), "stages": [n for n, _w in STAGES]})
+                  "theme": self.theme_name(), "stages": [n for n, _w in STAGES],
+                  "materials": materials_payload(pdir) if (pdir and os.path.isdir(pdir)) else [],
+                  # 待投放的素材以**服务端为准**：页面一刷新，前端的 S.pending 就空了，
+                  # 但服务端还留着（不然"建框架归类"会误判成"还没丢素材"，2026-09-16 实测踩到）
+                  "pending": list(self.server.pending or []),
+                  "need": proj_need(pdir) if (pdir and os.path.isdir(pdir))
+                          else (self.server.need or "")})
         d.update(self.root_issue(root))
         return d
+
+    # ---- ①栏「＋ 新建项目」/ ②栏「需求 · 素材增删排序」----------------------
+    def new_project(self, b):
+        """给一张白纸：空骨架 + 空提示词 + 空素材，并切过去。
+
+        为什么要有（2026-09-16 用户要求）：工作台记着"上次打开的项目"，用旧项目干活时它身上
+        已经堆满了东西，想从干净状态开始得自己去样本库翻。名字留空就自动起一个。
+        register=False：建项目**不动**全局样本库根（换根只走①栏「选样本库根」）。
+        """
+        name = (b.get("name") or "").strip() or ("新项目-" + time.strftime("%m%d-%H%M"))
+        root = b.get("root") or Handler.root or detect_root()
+        if not (pcore and root):
+            return {"ok": False, "error": "还没有样本库根，先在①栏选一个目录"}
+        try:
+            pdir, _sk, _log = pcore.build_skeleton(root, name, register=False)
+        except Exception as e:                                   # noqa: BLE001
+            return {"ok": False, "error": "建项目失败：%s" % e}
+        try:                       # 规则第 270 条：交付提示词时必须同步建 即梦上传/
+            os.makedirs(os.path.join(pdir, "即梦上传"), exist_ok=True)
+        except OSError:
+            pass
+        self._set_proj(pdir)
+        return {"ok": True, "dir": pdir, "project": _scan_project(pdir)}
+
+    def save_need(self, b):
+        """用户的「简单需求」：写进 框架.json→project.need 与 备注/需求.txt。
+
+        为什么要落盘：agent 出提示词/复核归类时都读 框架.json 与 备注/，需求必须跟项目在一起，
+        不能只活在页面里（关掉就没了）。
+        """
+        text = (b.get("text") or "").strip()
+        pdir = self._proj(b)
+        if not (pdir and os.path.isdir(pdir)):
+            self.server.need = text          # 还没建项目：先记着，建框架时带上
+            return {"ok": True, "pending": True, "need": text}
+        if not pcore:
+            return {"ok": False, "error": "缺 project_core.py"}
+        sk = pcore.load_skeleton(pdir)
+        if not isinstance(sk, dict):
+            return {"ok": False, "error": "读不到 框架.json"}
+        sk.setdefault("project", {})["need"] = text
+        pcore.save_skeleton(pdir, sk)
+        try:
+            d = os.path.join(pdir, "备注")
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "需求.txt"), "w", encoding="utf-8", newline="\n") as f:
+                f.write(text + "\n")
+        except OSError:
+            pass
+        return {"ok": True, "need": text}
+
+    def remove_material(self, b):
+        """②栏素材的「移除」。
+
+        - 还没归类的（待投放）→ 直接从待投放里拿掉；
+        - 已归类的 → 从 框架.json 的 materials 里删掉，文件**移到项目里的 `_已移除/`**
+          （不真删：素材是用户辛苦攒的，误删要能捞回来），`即梦上传/` 下的同名副本一并挪走。
+        """
+        f = (b.get("file") or "").strip().replace("\\", "/")
+        name = (b.get("name") or "").strip()
+        if b.get("pending"):
+            pend = self._pending()
+            for p_ in list(pend):
+                if p_ == b.get("pending") or os.path.basename(p_) == name:
+                    pend.remove(p_)
+            return {"ok": True, "pending": pend, "moved": []}
+        pdir = self._proj(b)
+        if not (pcore and pdir and os.path.isdir(pdir)):
+            return {"ok": False, "error": "没有项目"}
+        sk = pcore.load_skeleton(pdir)
+        if not isinstance(sk, dict):
+            return {"ok": False, "error": "读不到 框架.json"}
+        mats = (sk.get("project") or {}).get("materials") or []
+        keep, moved = [], []
+        dest = os.path.join(pdir, "_已移除")
+        for m in mats:
+            if not isinstance(m, dict):
+                continue
+            rel = (m.get("file") or "").replace("\\", "/")
+            if (f and rel == f) or (not f and name and (m.get("name") or "") == name):
+                try:
+                    os.makedirs(dest, exist_ok=True)
+                    src = os.path.join(pdir, rel.replace("/", os.sep))
+                    if os.path.isfile(src):
+                        shutil.move(src, os.path.join(dest, os.path.basename(src)))
+                        moved.append(rel)
+                    up = os.path.join(pdir, "即梦上传", os.path.basename(rel))
+                    if os.path.isfile(up):
+                        shutil.move(up, os.path.join(dest, os.path.basename(up)))
+                        moved.append("即梦上传/" + os.path.basename(rel))
+                except OSError as e:
+                    return {"ok": False, "error": "移动失败：%s" % e}
+                continue
+            keep.append(m)
+        if len(keep) == len(mats) and not moved:
+            return {"ok": False, "error": "框架里没有这件素材：%s" % (f or name)}
+        sk["project"]["materials"] = keep
+        pcore.save_skeleton(pdir, sk)
+        return {"ok": True, "moved": moved, "materials": materials_payload(pdir),
+                "project": _scan_project(pdir)}
+
+    def order_materials(self, b):
+        """②栏拖动排序：按传来的顺序重写 框架.json 的 materials。
+
+        **顺序有意义**：agent 按这份数组的先后排 @图片1 / @音频1，用户想要的引用编号顺序
+        就靠它（2026-09-16 用户要求"可以拖动素材顺序"）。
+        """
+        order = [str(x).replace("\\", "/") for x in (b.get("files") or [])]
+        pdir = self._proj(b)
+        if not (pcore and pdir and os.path.isdir(pdir)):
+            return {"ok": False, "error": "没有项目"}
+        sk = pcore.load_skeleton(pdir)
+        if not isinstance(sk, dict):
+            return {"ok": False, "error": "读不到 框架.json"}
+        mats = [m for m in ((sk.get("project") or {}).get("materials") or [])
+                if isinstance(m, dict)]
+        idx = {o: i for i, o in enumerate(order)}
+        mats.sort(key=lambda m: idx.get((m.get("file") or "").replace("\\", "/"), len(idx)))
+        sk["project"]["materials"] = mats
+        pcore.save_skeleton(pdir, sk)
+        return {"ok": True, "materials": materials_payload(pdir)}
 
     def root_issue(self, root):
         """样本库根的问题要说清楚：**配置指向的目录不存在**时最容易被误判成"没配"。
@@ -719,6 +962,12 @@ class Handler(BaseHTTPRequestHandler):
         if pdir and os.path.isdir(pdir):
             self._set_proj(pdir)
             del pend[:]
+            # 建项目前填的「简单需求」带进新项目（用户可能先写需求再丢素材）
+            if (self.server.need or "").strip():
+                try:
+                    self.save_need({"text": self.server.need, "project": pdir})
+                except Exception:                                # noqa: BLE001
+                    pass
         return {"ok": bool(pdir), "project": _scan_project(pdir) if pdir else None,
                 "plan": {"final_name": (plan or {}).get("final_name"),
                          "count": (plan or {}).get("count")}}
@@ -1028,6 +1277,7 @@ def serve(root="", port=0, host="127.0.0.1"):
     Handler.root = root or ""
     srv = ThreadingHTTPServer((host, port or 0), Handler)
     srv.pending = []
+    srv.need = ""            # 用户填的「简单需求」（还没建项目时先记在这，建框架时带进去）
     srv.daemon_threads = True
     return srv
 

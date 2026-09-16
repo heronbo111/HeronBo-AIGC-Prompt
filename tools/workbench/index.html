@@ -36,6 +36,8 @@
     <div class="colbody">
       <div class="seclab">样本库</div>
       <div class="pathtext" id="rootPath" title=""></div>
+      <button class="btn ghost sm wide" id="btnNewProj"
+              title="起一个干净项目：空素材、空提示词，名字留空会自动起一个">＋ 新建项目</button>
       <div class="note bad" id="rootIssue" hidden></div>
       <div id="sampleList" class="list"></div>
       <div class="seclab">当前项目</div>
@@ -44,8 +46,9 @@
   </section>
 
   <section class="col">
-    <div class="colhead"><h2><span class="no">2</span>素材</h2>
-      <div class="acts"><button class="btn" id="btnIntakeGo">建框架归类</button></div></div>
+    <div class="colhead"><h2><span class="no">2</span>文案/素材识别</h2>
+      <div class="acts">
+        <button class="btn" id="btnIntakeGo">建框架归类</button></div></div>
     <div class="colbody" id="col2">
       <div class="dropzone" id="dz">
         <b>把素材拖到这里</b>
@@ -54,9 +57,18 @@
         <button class="btn ghost" id="btnPick">选择素材</button>
         <button class="btn ghost" id="btnPickDir" style="margin-left:6px">选文件夹</button>
       </div>
-      <div class="seclab" id="pendLab">待投放 · 角色识别</div>
+      <div class="seclab">文案 / 素材识别
+        <button class="ibtn sm" id="btnAddMat" title="添加素材（图片/视频/音频/文本）" data-icon="plus"></button>
+        <button class="btn ghost sm" id="btnCheckRole" style="float:right"
+                title="软件只按文件名/扩展名猜角色，不一定准；点这里让 agent 逐件核对并写回框架">让 agent 核对归类</button>
+      </div>
+      <div class="needbox">
+        <textarea id="need" rows="2"
+          placeholder="你的简单需求（一句话说清要什么；agent 出提示词与核对归类时都按它来）"></textarea>
+        <div class="needfoot"><span class="meta" id="needHint">改完点「存」</span>
+          <button class="btn ghost sm" id="btnSaveNeed">存</button></div>
+      </div>
       <div id="pendList" class="list"></div>
-      <div class="seclab">已归类</div>
       <div id="matList" class="list"></div>
     </div>
   </section>
@@ -75,8 +87,8 @@
         <div class="stages" id="pstages"></div>
       </div>
       <div class="seclab">提示词正文 <span class="meta" id="stageLab"></span></div>
-      <div class="prompt" id="promptBox">（还没有提示词。先在②栏丢素材 → 建框架归类 → 点右上「出提示词」。）</div>
-      <div class="seclab">即梦上传清单（点右上复制图标会连素材名一起给你）</div>
+      <div class="prompt" id="promptBox">（还没有提示词正文）</div>
+      <div class="seclab">即梦上传清单</div>
       <div id="upList" class="list"></div>
       <div class="seclab">成片 / 废片</div>
       <div class="rowline">
@@ -84,10 +96,10 @@
         <button class="btn ghost danger" id="btnBad">收废片</button>
         <input id="why" placeholder="废因（废片必填）">
       </div>
-      <div class="seclab">本轮反馈（提交后 agent 接着干）</div>
+      <div class="seclab">本轮反馈</div>
       <textarea id="fb" rows="3" placeholder="哪里好、哪里不对？写清现象，agent 好照着改"></textarea>
       <div class="rowline">
-        <span class="meta">写完点右边 →</span>
+        <button class="btn ghost" id="btnLearn" title="把 评价/*.json、废片废因 交给 agent，沉淀回 references/rules*.md">评价反哺 skill</button>
         <button class="btn" id="btnSubmitFb">提交反馈 · 再出一版</button>
       </div>
       <div class="seclab">执行记录</div>

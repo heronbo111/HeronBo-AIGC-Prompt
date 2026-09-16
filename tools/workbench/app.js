@@ -29,6 +29,8 @@ const ICON = {
   refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>',
   reload: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 12a8 8 0 0 1 13.7-5.7L20 8"/><path d="M20 3v5h-5"/><path d="M20 12a8 8 0 0 1-13.7 5.7L4 16"/><path d="M4 21v-5h5"/></svg>',
   copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
+  plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
+  x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
 };
 function paintIcons() {
   document.querySelectorAll("[data-icon]").forEach((b) => {
@@ -235,6 +237,7 @@ function boardFacts() {
 function boardState() {
   const c = currentStep();
   const st = S.state || {};
+  const fo = (st.project && st.project.folders) || {};
   return {
     t: "init",
     theme: document.body.dataset.theme || "原版",
@@ -246,7 +249,13 @@ function boardState() {
     manual: S.manualStep != null,
     prompts: {n: (S.prompts || []).length},
     uploads: (S.uploads || []).map((u) => u.name),
+    // 「评价反哺 skill」的门槛：有评分或有废片才亮
+    hasReview: ((fo["评价"] || []).length + (fo["废片"] || []).length) > 0,
     pending: S.pending || [], facts: boardFacts(),
+    need: (S.state && S.state.need) || "",
+    wenan: (S.wenan || []).length,
+    mats: (S.mats || []).map((m) => ({name: m.name, role: m.role, size: m.size,
+                                      missing: m.missing})),
     agent: S.agent || {}, prog: S.prog || null,
   };
 }
@@ -292,6 +301,8 @@ function boardAct(d) {
     return;
   }
   if (k === "feedback") return submitFeedback(d.fb);
+  if (k === "intakeCheck") return askAgent("intake");     // 让 agent 逐件核对角色归类
+  if (k === "learn") return askAgent("learn");            // 评价/废因沉淀回 skill
 }
 
 window.addEventListener("message", (ev) => {
@@ -419,41 +430,128 @@ function renderProject() {
          待办 ${st.pending || 0}</div>
        <div class="meta" style="word-break:break-all">${esc(p.dir)}</div>`;
   }
-  // ②栏已归类清单
+  // ②栏「文案 / 素材识别」：框架里登记的素材（**顺序＝引用编号顺序**，可拖动改）+ 没登记的兜底
   const f = p ? (p.folders || {}) : {};
-  const mats = []
-    .concat((f["文案"] || []).map((x) => ["文案", x]))
-    .concat((f["素材"] || []).map((x) => ["素材", x]))
-    .concat((f["即梦上传"] || []).map((x) => ["即梦上传", x]));
-  $("matList").innerHTML = mats.length ? mats.map(([k, x]) =>
-    `<div class="row plain"><span class="m" style="flex:0 0 62px">${k}</span>
-      <span class="g">${esc(x.name)}</span><span class="m">${size(x.size)}</span></div>`).join("")
-    : '<div class="meta">还没有归类好的素材</div>';
+  const rows = S.mats || [];
+  $("matList").innerHTML = rows.length ? rows.map(matRow).join("")
+    : '<div class="meta">还没有素材——丢进来 → 点右上「建框架归类」</div>';
+  bindMatRows($("matList"), "material");
   // ④栏成片下拉
   const vids = (f["成片"] || []).map((x) => x.name);
   $("videoSel").innerHTML = (vids.length ? vids : ["（无成片）"])
     .map((v) => `<option>${esc(v)}</option>`).join("");
 }
 
-function renderPending() {
-  $("pendLab").textContent = S.pending.length
-    ? `待投放 · 角色识别（${S.pending.length}）` : "待投放 · 角色识别";
-  $("pendList").innerHTML = S.pending.length ? S.pending.map((p, i) =>
-    `<div class="row plain"><span class="g">${esc(p.split(/[\\/]/).pop())}</span>
-      <span class="m">${esc((p.split(/[\\/]/).slice(-2, -1)[0] || ""))}</span>
-      <button class="btn ghost sm" data-i="${i}">移除</button></div>`).join("")
-    : '<div class="meta">把素材拖进上面的框，或点「选择素材」</div>';
-  $("pendList").querySelectorAll("button").forEach((b) => {
-    b.onclick = () => { S.pending.splice(+b.dataset.i, 1); renderPending(); renderFlow(); };
+/* 素材一行：拖动手柄 + 角色 + 文件名 + 大小 + 移除（移除＝移到项目里的 _已移除/，不真删） */
+function matRow(m) {
+  const role = m.role ? esc(m.role) : "待识别";
+  return `<div class="row mat${m.role ? "" : " noready"}${m.missing ? " gone" : ""}"
+      draggable="true" data-file="${esc(m.file)}" data-name="${esc(m.name)}">
+    <span class="grip" title="拖动改顺序（顺序就是 @图片1 / @音频1 的编号顺序）">⋮⋮</span>
+    <span class="role">${role}</span>
+    <span class="g">${esc(m.name)}</span>
+    <span class="m">${m.missing ? "文件不在" : size(m.size)}</span>
+    <button class="ibtn sm" data-del="1" data-icon="x"
+      title="移除这件素材（文件移到项目里的 _已移除/，不会真删）"></button>
+  </div>`;
+}
+
+/* 素材行的交互：移除按钮 + 拖动排序。两种列表都走这里（已登记 / 待投放）。 */
+function bindMatRows(box, kind) {
+  paintIcons();
+  box.querySelectorAll(".row.mat").forEach((row) => {
+    const del = row.querySelector("[data-del]");
+    if (del) {
+      del.onclick = async (e) => {
+        e.stopPropagation();
+        if (kind === "pending") {
+          const r = await api("/api/material/remove",
+                              {pending: S.pending[+row.dataset.i], name: row.dataset.name});
+          if (r.ok) { S.pending = r.pending || []; renderPending(); renderFlow(); }
+          else toast(r.error || "移除失败");
+          return;
+        }
+        const r = await api("/api/material/remove", {file: row.dataset.file,
+                                                     name: row.dataset.name});
+        if (!r.ok) return toast(r.error || "移除失败");
+        toast("已移除到项目里的 _已移除/（能捞回来）");
+        logLine("已移除素材：" + row.dataset.name, "warn");
+        await loadState();
+      };
+    }
   });
+  // 拖动排序：只在同一种列表内拖；拖的是"顺序"，不是文件投放
+  box.querySelectorAll(".row.mat").forEach((row) => {
+    row.addEventListener("dragstart", (e) => {
+      row.classList.add("drag");
+      try {
+        e.dataTransfer.setData("text/heronbo-mat", row.dataset.file || row.dataset.name || "");
+        e.dataTransfer.effectAllowed = "move";
+      } catch (err) {}
+    });
+    row.addEventListener("dragend", () => {
+      row.classList.remove("drag");
+      box.querySelectorAll(".over").forEach((x) => x.classList.remove("over"));
+    });
+    row.addEventListener("dragover", (e) => {
+      if (row.classList.contains("drag")) return;
+      e.preventDefault();
+      // 落在上半 → 插到这行前面；落在下半 → 插到这行后面。
+      // 少了这个判断，"往下拖一行"会变成空操作（插到目标前面＝原地不动，2026-09-16 实测踩到）。
+      const r = row.getBoundingClientRect();
+      const after = (e.clientY || 0) > r.top + r.height / 2;
+      row.classList.toggle("over", !after);
+      row.classList.toggle("over-after", after);
+    });
+    row.addEventListener("dragleave", () => {
+      row.classList.remove("over"); row.classList.remove("over-after");
+    });
+    row.addEventListener("drop", async (e) => {
+      const dragged = box.querySelector(".row.drag");
+      e.preventDefault(); e.stopPropagation();
+      const r = row.getBoundingClientRect();
+      const after = (e.clientY || 0) > r.top + r.height / 2;
+      row.classList.remove("over"); row.classList.remove("over-after");
+      if (!dragged || dragged === row) return;
+      if (after) box.insertBefore(dragged, row.nextSibling);
+      else box.insertBefore(dragged, row);
+      if (kind === "pending") {                 // 待投放只改页面上的次序
+        const order = [...box.querySelectorAll(".row.mat")].map((x) => x.dataset.i);
+        S.pending = order.map((i) => S.pending[+i]);
+        renderPending();
+        return;
+      }
+      const files = [...box.querySelectorAll(".row.mat")].map((x) => x.dataset.file);
+      const r2 = await api("/api/material/order", {files});
+      if (!r2.ok) return toast(r2.error || "排序没存上");
+      toast("顺序已存（@图片1/@音频1 按这个来）");
+      await loadState();
+    });
+  });
+}
+
+function renderPending() {
+  // 待投放的也放在「文案 / 素材识别」那张清单里，角色标「待识别」，跟已登记的一起能拖能删
+  $("pendList").innerHTML = S.pending.length ? S.pending.map((p, i) =>
+    `<div class="row mat noready" draggable="true" data-i="${i}" data-pend="${esc(p)}"
+        data-name="${esc(p.split(/[\\/]/).pop())}">
+      <span class="grip" title="拖动改顺序">⋮⋮</span>
+      <span class="role">待识别</span>
+      <span class="g">${esc(p.split(/[\\/]/).pop())}</span>
+      <span class="m">待归类</span>
+      <button class="ibtn sm" data-del="1" data-icon="x" title="从待投放里拿掉"></button>
+    </div>`).join("") : "";
+  bindMatRows($("pendList"), "pending");
   syncBoard();
 }
 
 function renderPrompts() {
+  /* 这里**只放提示词正文**（能直接复制去平台的那份成品）。文案稿不在这一栏——
+     2026-09-16 用户指出：从前把 文案/*.txt 也算提示词，于是没出提示词时这一栏显示的是文案稿。 */
   const ps = S.prompts || [];
   $("promptBox").textContent = ps.length
-    ? ps.map((p) => `【${p.ver || "v"}】\n${p.text || ""}`).join("\n\n")
-    : "（还没有提示词。先在②栏丢素材 → 建框架归类 → 点右上「出提示词」。）";
+    ? ps.map((p) => `【${p.ver || "v"}${p.ratio ? " · " + p.ratio : ""}】\n${p.text || ""}`).join("\n\n")
+    : "（还没有提示词正文——素材归类后点右上「出提示词」）";
   $("promptBox").scrollTop = 0;                 // 重新读取后回到开头，别停在半截
   const ups = S.uploads || [];
   $("upList").innerHTML = ups.length ? ups.map((u) =>
@@ -461,7 +559,9 @@ function renderPrompts() {
       <span class="m">${size(u.size)}</span></div>`).join("")
     : '<div class="meta">还没生成（agent 出提示词时会按引用编号把副本放进来）</div>';
   const st = S.state.project ? (S.state.project.state || {}) : {};
-  $("stageLab").textContent = `· 阶段 ${st.stage || "—"} · 第 ${st.round || 0} 轮 · 待办 ${st.pending || 0}`;
+  const wf = (S.wenan || []).length;
+  $("stageLab").textContent = `· 阶段 ${st.stage || "—"} · 第 ${st.round || 0} 轮 · 待办 ${st.pending || 0}`
+    + (wf ? ` · 文案稿 ${wf} 份（不在这一栏）` : "");
 }
 
 function renderScoreForm() {
@@ -533,10 +633,14 @@ async function loadState(scrollTop) {
   const st = await api("/api/state");
   S.state = st;
   S.dims = st.dims || [];
+  S.mats = st.materials || [];
+  S.pending = st.pending || [];        // 待投放以服务端为准（刷新页面后不会"丢"）
   const pr = await api("/api/prompts");
-  S.prompts = pr.prompts || []; S.uploads = pr.uploads || [];
+  S.prompts = pr.prompts || []; S.uploads = pr.uploads || []; S.wenan = pr.wenan || [];
   const rv = await api("/api/review");
   renderSamples(); renderProject(); renderPrompts();
+  const nd = $("need");                 // 需求：别在用户正打字时覆盖他的输入
+  if (nd && document.activeElement !== nd) nd.value = st.need || "";
   renderScoreForm(); fillReview(rv.review);
   renderFlow(); renderPending(); renderAgent(st.agent);
   paintIcons();
@@ -554,6 +658,50 @@ async function selectProject(dir) {
   S.pending = [];
   logLine("已切到项目 " + dir.split(/[\\/]/).pop());
   await loadState();
+}
+
+/* ── ①栏「＋ 新建项目」：起一张白纸（空素材、空提示词）─────────────────
+   为什么要：工作台记着"上次打开的项目"，用旧项目干活时它身上已经堆满了东西，
+   想从干净状态开始得自己去样本库翻。 */
+function newProjectModal() {
+  const d = new Date();
+  const guess = "新项目-" + String(d.getMonth() + 1).padStart(2, "0")
+    + String(d.getDate()).padStart(2, "0") + "-"
+    + String(d.getHours()).padStart(2, "0") + String(d.getMinutes()).padStart(2, "0");
+  const m = document.createElement("div");
+  m.className = "modal";
+  m.innerHTML = `<div class="box"><h3>新建项目</h3>
+    <p class="meta">建在样本库根下，空素材、空提示词。名字留空就自动起一个。</p>
+    <div class="rowline" style="margin:10px 0 4px">
+      <input id="npName" value="${esc(guess)}" placeholder="项目名，例如 四六级背单词带货"></div>
+    <p class="note" style="margin-top:10px">建完把素材拖进②栏即可；想换项目点①栏列表里的名字。</p>
+    <div style="text-align:right;margin-top:12px">
+      <button class="btn ghost" id="npCancel">取消</button>
+      <button class="btn" id="npOk">建这个项目</button></div></div>`;
+  document.body.appendChild(m);
+  const close = () => m.remove();
+  m.querySelector("#npCancel").onclick = close;
+  m.onclick = (e) => { if (e.target === m) close(); };
+  m.querySelector("#npName").focus();
+  m.querySelector("#npOk").onclick = async () => {
+    const r = await api("/api/project/new", {name: m.querySelector("#npName").value.trim()});
+    if (!r.ok) return toast(r.error || "建项目失败");
+    close();
+    S.pending = [];
+    logLine("已新建项目：" + ((r.project || {}).name || r.dir), "ok");
+    toast("新项目建好了，把素材拖进②栏");
+    await loadState();
+  };
+}
+
+/* ── ②栏「简单需求」：落进项目（框架.json→need + 备注/需求.txt），agent 会读它 ── */
+async function saveNeed() {
+  const r = await api("/api/need", {text: $("need").value});
+  if (!r.ok) return toast(r.error || "存不上");
+  if (S.state) S.state.need = $("need").value.trim();   // 本地状态跟着更新，指挥台那张卡也才显示
+  $("needHint").textContent = "已存（agent 会按它来）";
+  syncBoard();
+  toast(r.pending ? "先记着了；建框架归类时带进新项目" : "需求已存进这个项目");
 }
 
 async function pickFiles(kind) {
@@ -652,15 +800,20 @@ function pickAgentModal(cb) {
   });
 }
 
+/* 四种 agent 任务（都走同一个 /api/agent，只是 todo 不同）：出提示词 / 按反馈重出 /
+   核对归类（软件只按文件名猜角色，不准的靠 agent 复核）/ 评价反哺 skill（把评价与废因沉淀回规则） */
+const ASK_LABEL = {prompt: "出提示词", feedback: "按反馈重出一版",
+                   intake: "核对归类", learn: "评价反哺 skill"};
+
 function askAgent(what, feedback) {
   ensureAgent(async () => {
     const r = await api("/api/agent", {what, feedback});
     if (r.error) return toast(r.error);
+    const name = ASK_LABEL[what] || "出提示词";
     $("prog").hidden = false;
     const who = (S.agent && S.agent.label) ? "（" + S.agent.label + "）" : "";
-    logLine(what === "feedback" ? "→ 正在按反馈重出一版…" + who
-                               : "→ 正在叫 agent 出提示词…" + who);
-    toast(`已叫 ${S.agent && S.agent.label || "agent"} 出提示词，预计 `
+    logLine("→ agent 开始干活：" + name + "…" + who);
+    toast(`已叫 ${S.agent && S.agent.label || "agent"} 干「${name}」，预计 `
           + Math.round((r.eta || 180) / 60) + " 分钟"
           + (r.eta_n ? `（按本项目 ${r.eta_n} 次历史）` : ""));
     S.prog = {on: true, job: r.job, stage: 0, stageName: "正在叫 agent…", pct: 0,
@@ -764,16 +917,26 @@ async function reloadPrompts() {
 function bindDrop() {
   const dz = $("dz"), col2 = $("col2"), col = col2.closest(".col");
   let depth = 0;
+  // ②栏内部的"拖动排序"也走 HTML5 拖放：靠这个私有类型把它跟"投放文件"区分开
+  const isMatDrag = (e) => {
+    try { return [...((e.dataTransfer && e.dataTransfer.types) || [])]
+      .includes("text/heronbo-mat"); } catch (err) { return false; }
+  };
   const set = (on, extra) => {
     dz.classList.toggle("hot", on); col.classList.toggle("hot", on);
     dz.querySelector("b").textContent = on ? "松开即投放 → 自动归类" : "把素材拖到这里";
     if (extra !== undefined) $("dzHint").textContent = extra;
   };
-  window.addEventListener("dragenter", (e) => { e.preventDefault(); depth++; set(true); });
+  window.addEventListener("dragenter", (e) => {
+    e.preventDefault();
+    if (isMatDrag(e)) return;                 // 拖的是清单里的素材行，不是要投放文件
+    depth++; set(true);
+  });
   window.addEventListener("dragover", (e) => { e.preventDefault(); });
   window.addEventListener("dragleave", () => { if (--depth <= 0) { depth = 0; set(false); } });
   window.addEventListener("drop", async (e) => {
     e.preventDefault(); depth = 0; set(false);
+    if (isMatDrag(e)) return;                 // 排序落点由素材行自己处理
     const items = [...((e.dataTransfer && e.dataTransfer.items) || [])];
     const dirs = items.filter((it) => it.kind === "file"
       && it.webkitGetAsEntry && (it.webkitGetAsEntry() || {}).isDirectory);
@@ -811,6 +974,15 @@ $("btnReload").onclick = async () => {
   toast("已重新载入上次评分");
 };
 $("btnHelp").onclick = () => openBoard();
+$("btnNewProj").onclick = () => newProjectModal();
+$("btnAddMat").onclick = () => pickFiles("files");
+$("btnSaveNeed").onclick = () => saveNeed();
+$("need").addEventListener("blur", () => {           // 失焦自动存（改了才存）
+  const cur = (S.state && S.state.need) || "";
+  if ($("need").value.trim() !== cur.trim()) saveNeed();
+});
+$("btnCheckRole").onclick = () => askAgent("intake");
+$("btnLearn").onclick = () => askAgent("learn");
 $("btnTheme").onclick = () => themeModal();
 $("btnClassic").onclick = async () => {
   const r = await api("/api/classic", {});

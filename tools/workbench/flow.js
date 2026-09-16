@@ -14,9 +14,12 @@ let keep = {};                // 重画前把用户正在输入的内容存一�
 /* ── 每一步：怎么做 + 能当场点的动作 ─────────────────────────────── */
 const DOC = [
   {what: ["把 <b>文案 / 形象图 / 音频 / 原片</b> 拖进②栏；整个文件夹用「选文件夹」（浏览器拿不到文件夹路径）",
-          "点「建框架归类」：软件判角色、按 <code>文案/ 素材/ 即梦上传/</code> 落位，并回报每件去了哪"],
+          "在②栏「文案 / 素材识别」里**写清你的简单需求**（要什么、几个人、几秒），agent 出提示词与核对归类都按它来",
+          "点「建框架归类」：软件按文件名/扩展名先落位；**猜得不一定准**——不准就点「核对归类」让 agent 逐件复核",
+          "素材能<b>拖动改顺序</b>：这个顺序就是 @图片1 / @音频1 的编号顺序"],
    acts: [{k: "pick", label: "选素材", main: 1}, {k: "pickdir", label: "选文件夹"},
-          {k: "intake", label: "建框架归类", need: "pending"}]},
+          {k: "intake", label: "建框架归类", need: "pending"},
+          {k: "intakeCheck", label: "核对归类", need: "mats"}]},
   {what: ["点「出提示词」：agent 读技能与框架 → 写提示词 → 按引用编号把素材副本放进 <code>即梦上传/</code> → 写回执",
           "本机有多个可用 agent 时，第一次会先问用哪个，选完记住（记在哪见右下角）",
           "用时按本项目历史中位数估，跑完自动记账"],
@@ -32,11 +35,13 @@ const DOC = [
           "废片点「收废片」并写废因（必填）：失败片先让 agent 做机器诊断，别凭感觉重跑"],
    acts: [{k: "good", label: "收成片", main: 1},
           {k: "bad", label: "收废片", with: "why"}]},
-  {what: ["④栏逐项打分（拖动滑块）→ 保存，写进 <code>评价/</code>",
-          "想改就写本轮反馈 → 提交，agent 照它再出一版；反馈会记成新一轮",
-          "反馈写<b>现象</b>，别写「不好看」——agent 拿不到你的眼睛"],
+  {what: ["④栏逐项打分（拖动滑块）→ 保存，写进 <code>评价/</code>；废片会连废因一起留在 <code>废片/</code>",
+          "写清现象 → 提交反馈，agent 照它再出一版（反馈写<b>现象</b>，别写「不好看」）",
+          "**评价与废因要还回 skill**：点「评价反哺 skill」让 agent 读 <code>评价/*.json</code> 与废因，"
+          + "把可复用的经验沉淀成 <code>references/rules*.md</code> 里的规则——闭环才真正合上"],
    acts: [{k: "score", label: "去④栏打分", main: 1},
-          {k: "feedback", label: "提交反馈 · 再出一版", with: "fb", need: "prompts"}]},
+          {k: "feedback", label: "提交反馈 · 再出一版", with: "fb", need: "prompts"},
+          {k: "learn", label: "评价反哺 skill", need: "review"}]},
 ];
 
 function toast(msg) {
@@ -82,6 +87,8 @@ function has(need) {
   if (need === "pending") return (S.pending || []).length > 0;
   if (need === "prompts") return (S.prompts || {}).n > 0;
   if (need === "agent") return !!(S.agent || {}).ok;
+  if (need === "mats") return (S.mats || []).length > 0;
+  if (need === "review") return !!S.hasReview;
   return true;
 }
 
@@ -89,6 +96,8 @@ function whyNot(need) {
   if (need === "pending") return "②栏还没有待归类的素材";
   if (need === "prompts") return "还没有提示词，先在第②步出提示词";
   if (need === "agent") return "agent 通道不可用：" + ((S.agent || {}).why || "");
+  if (need === "mats") return "②栏还没有素材，先丢素材并建框架归类";
+  if (need === "review") return "还没有评分或废片，先收成片/废片并在④栏打分";
   return "";
 }
 
@@ -109,6 +118,16 @@ function stepCard(i) {
            .map((t, k) => `<span data-i="${k}">${t}</span>`).join("")}</div>
          <div class="lines"></div></div>`
     : "";
+  // 第①张卡把用户的需求和素材清单摆出来（需求是硬约束，得看得见）
+  const need = i === 0
+    ? `<div class="sneed">${S.need ? "需求：" + esc(S.need)
+        : "（还没写需求——②栏可以写一句，agent 会按它来）"}</div>`
+      + ((S.mats || []).length
+         ? `<div class="smats">${(S.mats || []).map((m) =>
+             `<span class="mtag${m.role ? "" : " nr"}">${esc(m.role || "待识别")}·${esc(m.name)}</span>`)
+             .join("")}</div>`
+         : "")
+    : "";
   return `<section class="scard ${cls}" data-i="${i}">
     <div class="sident">
       <div class="sline"><span class="sno">${i + 1}</span>
@@ -120,6 +139,7 @@ function stepCard(i) {
     <div class="sbody">
       <div class="stask">${esc(st.man)}</div>
       <ul class="slist">${doc.what.map((x) => `<li>${x}</li>`).join("")}</ul>
+      ${need}
       ${prog}
       <div class="sacts">${doc.acts.map((a) => actBtn(i, a)).join("")}${inputs}</div>
     </div>
