@@ -31,6 +31,7 @@
   <section class="col">
     <div class="colhead"><h2><span class="no">1</span>项目</h2>
       <div class="acts">
+        <button class="iconbtn sm" id="btnSort" title="项目列表排序（也能直接拖动项目改名次）">排序 · 默认</button>
         <button class="ibtn" id="btnRefresh" title="重新扫描样本库" data-icon="refresh"></button>
       </div></div>
     <div class="colbody">
@@ -102,7 +103,10 @@
         <button class="btn ghost" id="btnLearn" title="把 评价/*.json、废片废因 交给 agent，沉淀回 references/rules*.md">评价反哺 skill</button>
         <button class="btn" id="btnSubmitFb">提交反馈 · 再出一版</button>
       </div>
-      <div class="seclab">执行记录</div>
+      <div class="seclab">执行记录
+        <button class="btn ghost sm" id="btnRecords" style="float:right"
+                title="看 agent 每一轮到底干了什么（工作台每轮自己记一份）">对话记录</button>
+      </div>
       <div class="log" id="log"></div>
     </div>
   </section>

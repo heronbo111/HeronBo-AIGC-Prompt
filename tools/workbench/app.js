@@ -340,14 +340,17 @@ function renderSamples() {
     issue.hidden = true;
   }
   const cur = st.project ? st.project.dir : "";
-  $("sampleList").innerHTML = (st.samples || []).map((s) =>
+  $("sampleList").innerHTML = sortedSamples().map((s) =>
     `<div class="row ${s.dir === cur ? "on" : ""}" data-dir="${esc(s.dir)}">
+       <span class="grip" title="拖动改名次（会自动切成「自定义」排序）">⋮⋮</span>
        <span class="g">${esc(s.name)}</span>
        <span class="m">素材 ${s.materials} · 成片 ${s.videos}</span></div>`).join("")
-    || '<div class="meta">样本库里还没项目。把素材拖进②栏就能建。</div>';
+    || '<div class="meta">样本库里还没项目。把素材拖进②栏就能建，或点上面的「＋ 新建项目」。</div>';
   $("sampleList").querySelectorAll(".row").forEach((el) => {
     el.onclick = () => selectProject(el.dataset.dir);
   });
+  bindSampleDrag();
+  renderSampleSortBtn();
 }
 
 /* agent 通道：显示选中谁，点开看候选（exe 跟着 skill 走，谁装了本技能就用谁） */
@@ -383,14 +386,16 @@ function agentModal() {
   const m = document.createElement("div");
   m.className = "modal";
   m.innerHTML = `<div class="box"><h3>agent 通道</h3>
-    <p class="meta">工作台跟着 skill 走：谁把本技能装在自己名下、且命令行可用，就用谁。
-      <span style="color:var(--ok)">● 可用</span>　<span style="color:var(--bad)">● 不可用</span>　点一行即可切换。</p>
+    <p class="meta">选法（从上到下，先满足先用）：<b>①</b> 你在界面里点过哪个就用哪个（下面的「✓ 当前使用」）；
+      <b>②</b> 没点过 → <b>跟随你正开着的客户端</b>（WorkBuddy / ZCode…）；
+      <b>③</b> 都没开 → 用"把本技能装在自己名下且命令行可用"的那个。
+      <span style="color:var(--ok)">● 可用</span>　<span style="color:var(--bad)">● 不可用</span>　点一行即固定用它。</p>
     <div class="amod">${rows}</div>
     <p class="note" style="margin-top:4px">选择记在 <code>${esc(a.cfg || "—")}</code>（关掉工作台也在）。
       想直接写文件：<code>{"agent": "codex"}</code>；要接没适配的命令行：
       <code>{"cmd": ["命令", "{prompt}"], "cmd_mode": "text"}</code>。</p>
     <div style="text-align:right;margin-top:12px">
-      ${a.chosen ? '<button class="btn ghost" id="mauto">恢复自动挑选</button>' : ""}
+      ${a.chosen ? '<button class="btn ghost" id="mauto">恢复自动（跟随我开着的软件）</button>' : ""}
       <button class="btn" id="mclose">知道了</button></div>
     </div>`;
   document.body.appendChild(m);
@@ -410,7 +415,7 @@ function agentModal() {
     const r = await api("/api/agent/set", {key: ""});
     if (!r.ok) return toast(r.why || "设置失败");
     S.agent = r.agent; renderAgent(S.agent); m.remove();
-    toast("已恢复自动挑选（当前 " + (S.agent.label || "") + "）");
+    toast("已恢复自动：以后跟着你打开的那个软件走（当前 " + (S.agent.label || "") + "）");
   };
 }
 
@@ -634,6 +639,7 @@ async function loadState(scrollTop) {
   S.state = st;
   S.dims = st.dims || [];
   S.mats = st.materials || [];
+  S.ui = st.ui || S.ui || {};
   S.pending = st.pending || [];        // 待投放以服务端为准（刷新页面后不会"丢"）
   const pr = await api("/api/prompts");
   S.prompts = pr.prompts || []; S.uploads = pr.uploads || []; S.wenan = pr.wenan || [];
@@ -658,6 +664,177 @@ async function selectProject(dir) {
   S.pending = [];
   logLine("已切到项目 " + dir.split(/[\\/]/).pop());
   await loadState();
+}
+
+/* ── ①栏项目列表：排序 + 拖动 ────────────────────────────────────────
+   排序方式：默认（样本库扫描顺序）/ 名称 / 素材数 / 成片数 / 创建时间 / 自定义。
+   **拖动即切到"自定义"**并把名次存进本机偏好（tools/workbench.local.json，gitignored）。 */
+const SORTS = [["default", "默认（扫描顺序）"], ["time", "按创建时间（新→旧）"],
+               ["mats", "按素材数（多→少）"], ["videos", "按成片数（多→少）"],
+               ["name", "按名称（A→Z）"]];
+
+function sortedSamples() {
+  const list = (S.state.samples || []).slice();
+  const ui = S.ui || {};
+  const sort = ui.projSort || "default";
+  if (sort === "custom") {
+    const ord = ui.projOrder || [];
+    const idx = new Map(ord.map((d, i) => [d, i]));
+    list.sort((a, b) => (idx.has(a.dir) ? idx.get(a.dir) : 1e9)
+                        - (idx.has(b.dir) ? idx.get(b.dir) : 1e9));
+    return list;
+  }
+  if (sort === "name") list.sort((a, b) => a.name.localeCompare(b.name, "zh"));
+  if (sort === "mats") list.sort((a, b) => (b.materials || 0) - (a.materials || 0));
+  if (sort === "videos") list.sort((a, b) => (b.videos || 0) - (a.videos || 0));
+  if (sort === "time") list.sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+  return list;
+}
+
+function renderSampleSortBtn() {
+  const ui = S.ui || {};
+  const sort = ui.projSort || "default";
+  const hit = SORTS.find((x) => x[0] === sort);
+  const b = $("btnSort");
+  b.textContent = "排序 · " + (sort === "custom" ? "自定义" : (hit ? hit[1].replace(/（.*）/, "") : "默认"));
+  b.title = "项目列表排序；拖动项目行也会自动切成「自定义」";
+}
+
+function sortMenu() {
+  const ui = S.ui || {};
+  const cur = ui.projSort || "default";
+  const rows = SORTS.map(([k, label]) =>
+    `<div class="arow ${k === cur ? "on" : ""}" data-s="${esc(k)}">
+       <span class="an">${esc(label)}</span>
+       <span class="aw">${k === "default" ? "样本库扫描出来的顺序" : ""}</span>
+       <span class="ar">${k === cur ? "✓ 当前" : "用它"}</span></div>`).join("")
+    + `<div class="arow ${cur === "custom" ? "on" : ""}" data-s="custom">
+         <span class="an">自定义（拖动排的）</span>
+         <span class="aw">${(ui.projOrder || []).length} 个已排名次</span>
+         <span class="ar">${cur === "custom" ? "✓ 当前" : "用它"}</span></div>`;
+  const m = document.createElement("div");
+  m.className = "modal";
+  m.innerHTML = `<div class="box"><h3>项目列表排序</h3>
+    <p class="meta">选一种排序，或者直接在列表里拖动项目行（拖动会自动切到「自定义」并记住名次）。</p>
+    <div class="amod">${rows}</div>
+    <div style="text-align:right;margin-top:12px"><button class="btn ghost" id="mclose">关掉</button></div>
+    </div>`;
+  document.body.appendChild(m);
+  m.querySelector("#mclose").onclick = () => m.remove();
+  m.onclick = (e) => { if (e.target === m) m.remove(); };
+  m.querySelectorAll(".arow").forEach((r) => {
+    r.onclick = async () => {
+      const res = await api("/api/ui", {projSort: r.dataset.s});
+      if (!res.ok) return toast(res.error || "存不上");
+      S.ui = res.ui; m.remove();
+      renderSamples(); renderSampleSortBtn();
+      toast("排序已换成：" + r.querySelector(".an").textContent);
+    };
+  });
+}
+
+/* 项目行拖动：拖完把整个名次存下来（顺手切成自定义） */
+function bindSampleDrag() {
+  const box = $("sampleList");
+  box.querySelectorAll(".row").forEach((row) => {
+    if (!row.dataset.dir) return;
+    row.setAttribute("draggable", "true");
+    row.addEventListener("dragstart", (e) => {
+      row.classList.add("drag");
+      try {
+        e.dataTransfer.setData("text/heronbo-proj", row.dataset.dir);
+        e.dataTransfer.effectAllowed = "move";
+      } catch (err) {}
+    });
+    row.addEventListener("dragend", () => {
+      row.classList.remove("drag");
+      box.querySelectorAll(".over,.over-after").forEach((x) =>
+        x.classList.remove("over", "over-after"));
+    });
+    row.addEventListener("dragover", (e) => {
+      if (row.classList.contains("drag")) return;
+      e.preventDefault();
+      const r = row.getBoundingClientRect();
+      const after = (e.clientY || 0) > r.top + r.height / 2;
+      row.classList.toggle("over", !after);
+      row.classList.toggle("over-after", after);
+    });
+    row.addEventListener("dragleave", () => row.classList.remove("over", "over-after"));
+    row.addEventListener("drop", async (e) => {
+      const dragged = box.querySelector(".row.drag");
+      e.preventDefault(); e.stopPropagation();
+      const r = row.getBoundingClientRect();
+      const after = (e.clientY || 0) > r.top + r.height / 2;
+      row.classList.remove("over", "over-after");
+      if (!dragged || dragged === row) return;
+      if (after) box.insertBefore(dragged, row.nextSibling);
+      else box.insertBefore(dragged, row);
+      const order = [...box.querySelectorAll(".row[data-dir]")].map((x) => x.dataset.dir);
+      const res = await api("/api/ui", {projSort: "custom", projOrder: order});
+      if (!res.ok) return toast(res.error || "名次没存上");
+      S.ui = res.ui;
+      renderSampleSortBtn();
+      toast("名次已存（排序切成「自定义」）");
+    });
+  });
+}
+
+/* ── agent 对话记录：工作台每轮自己落一份，翻起来能看见它到底干了什么 ───────── */
+async function recordsModal() {
+  const r = await api("/api/records");
+  if (!r.ok) return toast(r.error || "读不到记录");
+  const rows = (r.records || []).map((x) =>
+    `<div class="arow" data-n="${esc(x.name)}">
+       <span class="an">${esc(x.name.replace(/\.jsonl$/, "").replace(/-/, " ").replace(/-/, "  "))}</span>
+       <span class="aw">${size(x.size)}</span>
+       <span class="ar">点开看</span></div>`).join("")
+    || '<div class="meta">这个项目还没跑过 agent（跑一轮就会出现在这里）</div>';
+  const m = document.createElement("div");
+  m.className = "modal";
+  m.innerHTML = `<div class="box" style="max-width:860px">
+    <h3>agent 对话记录</h3>
+    <p class="meta">每一轮 agent 干活，工作台都自己记一份（时间线：它在读什么、写了什么、最后说了什么）。
+      <b>桌面端里看不到这些</b>，所以这里存一份。</p>
+    ${r.transcript ? `<p class="note" style="margin:8px 0"><b>agent 自己的会话正文：</b>
+      <code>${esc(r.transcript)}</code>
+      <button class="btn ghost sm" id="rcCopy">复制路径</button>
+      <button class="btn ghost sm" id="rcOpenT">打开它</button></p>`
+    : `<p class="note" style="margin:8px 0">没找到 agent 自己那份会话正文文件（<b>WorkBuddy 的无头跑本机不一定落盘</b>，
+      我全盘搜过；ZCode 会落在 <code>~/.zcode/cli/rollout/</code> 下）。所以这里这份「工作台自己记的」
+      通常就是最全的——再加上项目里 <code>_会话/回执.jsonl</code>（agent 自己写的回执）。</p>`}
+    <div class="amod">${rows}</div>
+    <div class="recbox" id="recBox" hidden></div>
+    <div style="text-align:right;margin-top:12px">
+      <button class="btn ghost" id="rcOpenDir">打开记录文件夹</button>
+      <button class="btn" id="mclose">知道了</button></div></div>`;
+  document.body.appendChild(m);
+  m.querySelector("#mclose").onclick = () => m.remove();
+  m.onclick = (e) => { if (e.target === m) m.remove(); };
+  const cp = m.querySelector("#rcCopy");
+  if (cp) cp.onclick = () => navigator.clipboard.writeText(r.transcript).then(
+    () => toast("路径已复制"), () => toast("复制失败"));
+  const ot = m.querySelector("#rcOpenT");
+  if (ot) ot.onclick = () => api("/api/records/open", {path: r.transcript})
+    .then((x) => !x.ok && toast("打不开这份；用「打开记录文件夹」"));
+  m.querySelector("#rcOpenDir").onclick = async () => {
+    const x = await api("/api/records/open", {});
+    toast(x.ok ? "已在资源管理器里打开" : (x.error || "打不开"));
+  };
+  m.querySelectorAll(".arow").forEach((row) => {
+    row.onclick = async () => {
+      const d = await api("/api/records/read?name=" + encodeURIComponent(row.dataset.n));
+      const box = m.querySelector("#recBox");
+      box.hidden = false;
+      if (!d.ok) { box.innerHTML = `<div class="meta">${esc(d.error || "读不了")}</div>`; return; }
+      box.innerHTML = `<div class="seclab">${esc(d.name)}</div>`
+        + (d.lines || []).map((o) => {
+          const k = o.kind || "";
+          const t = esc(o.text || (k === "start" ? "（开始：" + (o.agent || "") + "）"
+                                 : k === "end" ? "（结束：ok=" + o.ok + "，用时 " + o.seconds + "s）" : ""));
+          return `<div class="rl ${k}">${o.at ? '<i>' + esc(o.at) + '</i> ' : ""}${t}</div>`;
+        }).join("");
+    };
+  });
 }
 
 /* ── ①栏「＋ 新建项目」：起一张白纸（空素材、空提示词）─────────────────
@@ -765,7 +942,13 @@ function ensureAgent(cb) {
   const a = S.agent || {};
   const use = usableAgents();
   if (!use.length) return toast("没找到可用的 agent：" + (a.why || ""));
-  if (a.chosen || use.length === 1) return cb();
+  if (a.chosen) return cb();                                  // 你在界面里选过 → 就按你选的
+  // 你正开着某个客户端 → 自动跟随它，不打断你（2026-09-16 用户要的"跟着软件自动切"）
+  if ((a.running || []).length && a.picked) {
+    logLine("agent 自动跟随你正开着的 " + (a.label || a.picked));
+    return cb();
+  }
+  if (use.length === 1) return cb();
   pickAgentModal(cb);
 }
 
@@ -958,6 +1141,8 @@ setInterval(() => { fetch("/api/ping", {method: "POST"}).catch(() => {}); }, 300
 
 /* ── 绑定 ─────────────────────────────────────────────────────────── */
 $("btnRefresh").onclick = () => loadState();
+$("btnSort").onclick = () => sortMenu();
+$("btnRecords").onclick = () => recordsModal();
 $("btnLoadPrompts").onclick = () => reloadPrompts();
 $("btnAgent").onclick = () => agentModal();
 $("btnAsk").onclick = () => askAgent("prompt");

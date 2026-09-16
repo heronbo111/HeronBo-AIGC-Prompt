@@ -360,6 +360,91 @@ def proj_need(pdir):
     return (((sk or {}).get("project") or {}).get("need") or "").strip()
 
 
+# ── 本机界面偏好（项目列表排序等）：写在 gitignored 的 tools/workbench.local.json ────
+UI_CFG = os.path.join(HERE, "workbench.local.json")
+_UI_LOCK = threading.Lock()
+
+
+def read_ui():
+    try:
+        with open(UI_CFG, encoding="utf-8-sig") as f:
+            d = json.load(f) or {}
+    except (OSError, ValueError):
+        d = {}
+    d.setdefault("projSort", "default")     # default | name | mats | videos | time | custom
+    d.setdefault("projOrder", [])           # custom 时用：项目目录列表
+    return d
+
+
+def write_ui(patch):
+    with _UI_LOCK:
+        cur = read_ui()
+        cur.update(patch or {})
+        try:
+            with open(UI_CFG, "w", encoding="utf-8") as f:
+                json.dump(cur, f, ensure_ascii=False, indent=2)
+        except OSError as e:
+            return {"ok": False, "error": "写不进 %s：%s" % (UI_CFG, e)}
+    return {"ok": True, "ui": cur}
+
+
+# ── agent 记录：工作台自己给每一轮落一份（跟哪个 agent 无关，翻起来最省事）─────
+def agent_records_dir(pdir):
+    return os.path.join(pdir, "_会话", "agent记录")
+
+
+def list_records(pdir):
+    """本项目跑过的 agent 轮次（新的在前）。"""
+    d = agent_records_dir(pdir)
+    out = []
+    if os.path.isdir(d):
+        for fn in sorted(os.listdir(d), reverse=True):
+            if not fn.endswith(".jsonl"):
+                continue
+            p = os.path.join(d, fn)
+            try:
+                st = os.stat(p)
+            except OSError:
+                continue
+            out.append({"name": fn, "size": st.st_size, "mtime": st.st_mtime,
+                        "path": p})
+    return out
+
+
+def read_record(pdir, name, limit=4000):
+    """读一份记录：返回 {meta, lines:[{t,kind,text}]}（名字要防目录穿越）。"""
+    name = os.path.basename(name or "")
+    p = os.path.join(agent_records_dir(pdir), name)
+    if not (name and os.path.isfile(p)):
+        return {"ok": False, "error": "没有这份记录：%s" % name}
+    rows, meta = [], {}
+    try:
+        with open(p, encoding="utf-8", errors="replace") as f:
+            for i, line in enumerate(f):
+                if i >= limit:
+                    rows.append({"kind": "line", "text": "…（记录太长，只显示前 %d 行）" % limit})
+                    break
+                try:
+                    o = json.loads(line)
+                except ValueError:
+                    continue
+                if o.get("kind") == "start" or o.get("kind") == "end":
+                    meta.update(o)
+                rows.append(o)
+    except OSError as e:
+        return {"ok": False, "error": "读不了：%s" % e}
+    return {"ok": True, "name": name, "path": p, "meta": meta, "lines": rows}
+
+
+def _append_record(path, obj):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8", newline="\n") as f:
+            f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
 # ── agent 进度：把 stdout 实时转成阶段事件 ─────────────────────────────────
 STAGES = [("读技能 / 框架", 15), ("写提示词", 65), ("落即梦上传", 15), ("写回执", 5)]
 _PROG = {"job": 0, "stage": 0, "pct": 0, "lines": [], "done": False, "ok": None,
@@ -439,6 +524,17 @@ def start_agent(pdir, what, feedback=""):
     skill_md = os.path.join(os.path.dirname(HERE), "SKILL.md")
     sid = st.get("agentSession") or None
     need = proj_need(pdir)
+    # 这一轮的记录文件：**工作台自己落一份**（跟哪个 agent 无关，用户想了解软件在干什么时翻它）
+    try:
+        _k, _why = abridge.pick_agent()
+        agent_label = (_why or "")[:80]
+    except Exception:                                            # noqa: BLE001
+        agent_label = ""
+    rec = os.path.join(agent_records_dir(pdir),
+                       "%s-%s.jsonl" % (time.strftime("%Y-%m-%d-%H%M%S"), what or "prompt"))
+    _append_record(rec, {"kind": "start", "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                         "what": what or "prompt", "agent": agent_label,
+                         "session": sid or "", "project": pdir})
     head = ("先读技能说明 %s 再动手（本机已装，直接读文件即可）。\n\n" % skill_md)
     if need:
         # 用户填的「简单需求」是这次任务的硬约束，放在最前面
@@ -489,7 +585,7 @@ def start_agent(pdir, what, feedback=""):
         try:
             res = abridge.ask(todo, session_id=sid, cwd=pdir, timeout=1800,
                               permission_mode="bypassPermissions",
-                              on_line=lambda ln: _push_line(ln))
+                              on_line=lambda ln: _push_line(ln, rec))
         except Exception as e:                                   # noqa: BLE001
             res = {"ok": False, "error": "起不来：%s" % e}
         usec = time.time() - t0
@@ -500,24 +596,39 @@ def start_agent(pdir, what, feedback=""):
             if res.get("ok"):
                 pcore.push_receipt(pdir, res.get("text", ""), kind="出提示词")
                 pcore.mark_todos_done(pdir)
-                _push_line("✅ agent 回来了：" + (res.get("text") or "")[:400])
+                _push_line("✅ agent 回来了：" + (res.get("text") or "")[:400], rec)
             else:
-                _push_line("!! agent 没跑成：" + (res.get("error") or "")[:400])
+                _push_line("!! agent 没跑成：" + (res.get("error") or "")[:400], rec)
         except Exception as e:                                   # noqa: BLE001
-            _push_line("!! 回写失败：%s" % e)
+            _push_line("!! 回写失败：%s" % e, rec)
+        # 收尾：把结果、耗时、以及 agent 自己那份会话正文的路径写进记录
+        tpath = ""
+        try:                       # 定位失败也要落"结束"这条（别把整条收尾记录一起吞掉）
+            if abridge and res.get("session_id"):
+                tpath = abridge.transcript_path(_k or "", pdir, res.get("session_id"))
+        except Exception:                                        # noqa: BLE001
+            tpath = ""
+        _append_record(rec, {"kind": "end", "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                             "ok": bool(res.get("ok")), "seconds": round(usec, 1),
+                             "session": res.get("session_id") or sid or "",
+                             "transcript": tpath,
+                             "text": (res.get("text") or res.get("error") or "")[:4000]})
         with _PROG_LOCK:
             _PROG.update({"done": True, "ok": bool(res.get("ok")), "running": False,
                           "pct": 100 if res.get("ok") else _PROG["pct"],
                           "text": res.get("text") or res.get("error") or "",
-                          "seconds": round(usec, 1)})
+                          "seconds": round(usec, 1),
+                          "record": rec})
     threading.Thread(target=run, daemon=True).start()
-    return {"job": job, "eta": _PROG["eta"], "eta_n": _PROG.get("eta_n", 0)}
+    return {"job": job, "eta": _PROG["eta"], "eta_n": _PROG.get("eta_n", 0), "record": rec}
 
 
-def _push_line(line):
+def _push_line(line, rec=None):
     line = (line or "").rstrip()
     if not line:
         return
+    if rec:
+        _append_record(rec, {"kind": "line", "at": time.strftime("%H:%M:%S"), "text": line})
     with _PROG_LOCK:
         _PROG["lines"].append(line)
         if len(_PROG["lines"]) > 400:
@@ -599,6 +710,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.sse()
         if path == "/api/agent/status":
             return self._json(progress_snapshot())
+        if path == "/api/records":
+            return self._json(self.records())
+        if path == "/api/records/read":
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            return self._json(read_record(self._proj(), (q.get("name") or [""])[0]))
         if path.startswith("/api/upload/") and path.endswith("/open"):
             return self._json({"skip": True})
         if path == "/favicon.ico":
@@ -640,6 +756,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(self.new_project(self._body()))
         if path == "/api/need":
             return self._json(self.save_need(self._body()))
+        if path == "/api/ui":
+            return self._json(write_ui(self._body()))
+        if path == "/api/records/open":
+            return self._json(self.open_record(self._body()))
         if path == "/api/material/remove":
             return self._json(self.remove_material(self._body()))
         if path == "/api/material/order":
@@ -691,6 +811,7 @@ class Handler(BaseHTTPRequestHandler):
                   # 待投放的素材以**服务端为准**：页面一刷新，前端的 S.pending 就空了，
                   # 但服务端还留着（不然"建框架归类"会误判成"还没丢素材"，2026-09-16 实测踩到）
                   "pending": list(self.server.pending or []),
+                  "ui": read_ui(),
                   "need": proj_need(pdir) if (pdir and os.path.isdir(pdir))
                           else (self.server.need or "")})
         d.update(self.root_issue(root))
@@ -796,9 +917,46 @@ class Handler(BaseHTTPRequestHandler):
         return {"ok": True, "moved": moved, "materials": materials_payload(pdir),
                 "project": _scan_project(pdir)}
 
+    def records(self):
+        """本项目跑过的 agent 轮次 + agent 自己那份会话正文的路径。
+
+        为什么要工作台自己记一份：各家 agent 的会话存储格式/位置都不一样（WorkBuddy 在
+        `~/.workbuddy/projects/<路径打平>/<id>.jsonl`，ZCode 在 `~/.zcode/cli/rollout/model-io-<id>.jsonl`），
+        而且**桌面端里看不到**。工作台每跑一轮就写一份人能读的记录（时间线），翻起来最省事。
+        """
+        pdir = self._proj()
+        if not (pdir and os.path.isdir(pdir)):
+            return {"ok": False, "error": "还没有项目", "records": []}
+        st = _proj_state(pdir)
+        sid = st.get("agentSession") or ""
+        tpath = ""
+        if abridge and sid:
+            try:
+                key, _why = abridge.pick_agent()
+                tpath = abridge.transcript_path(key or "", pdir, sid)
+            except Exception:                                    # noqa: BLE001
+                tpath = ""
+        return {"ok": True, "dir": agent_records_dir(pdir),
+                "session": sid, "transcript": tpath,
+                "records": list_records(pdir)}
+
+    def open_record(self, b):
+        """在资源管理器里打开这条记录（或它所在的文件夹）——看"agent 到底干了什么"最直接。"""
+        pdir = self._proj()
+        name = (b.get("name") or "").strip()
+        target = os.path.join(agent_records_dir(pdir), os.path.basename(name)) if name \
+            else agent_records_dir(pdir)
+        if not os.path.exists(target):
+            return {"ok": False, "error": "没有这个：%s" % target}
+        if os.name == "nt":
+            try:
+                os.startfile(target)                             # noqa: S606（本机动作，用户点的）
+            except OSError as e:
+                return {"ok": False, "error": "打不开：%s" % e}
+        return {"ok": True, "opened": os.path.normpath(target)}
+
     def order_materials(self, b):
         """②栏拖动排序：按传来的顺序重写 框架.json 的 materials。
-
         **顺序有意义**：agent 按这份数组的先后排 @图片1 / @音频1，用户想要的引用编号顺序
         就靠它（2026-09-16 用户要求"可以拖动素材顺序"）。
         """
