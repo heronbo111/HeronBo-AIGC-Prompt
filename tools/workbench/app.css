@@ -396,6 +396,15 @@ body[data-theme="暖夜"]{
 .modal .box{transform:translateY(6px) scale(.985);transition:transform .16s cubic-bezier(.2,.8,.3,1)}
 .modal.in .box{transform:none}
 .modal .box{max-width:720px}
+/* ── 弹窗观感统一（2026-09-16 用户："尽可能做得对应页面美观一点"）────────────────
+   标题带一条分隔细线、正文行距放松、底部按钮区独立成一条栏（不再靠内联 style）。 */
+.modal .box h3{margin:0 0 10px;padding-bottom:9px;font-size:15px;
+  border-bottom:1px solid var(--border);letter-spacing:.2px}
+.modal .box .meta{line-height:1.75}
+.modal .box .meta:first-of-type{margin-top:0}
+.modal .box .mfoot{display:flex;justify-content:flex-end;align-items:center;gap:8px;
+  margin-top:14px;padding-top:12px;border-top:1px solid var(--border)}
+.modal .box .amod{display:flex;flex-direction:column;gap:6px}
 /* 2) 右下角「拖我调大小」的抓手 */
 .modal .box{position:relative}
 .modal .box .rz{position:absolute;right:3px;bottom:3px;width:15px;height:15px;
@@ -463,9 +472,12 @@ body[data-theme="暖夜"]{
 .vrz.on::after{opacity:1;background:var(--accent)}
 
 /* 刷新按钮：指上去**不做变化**（用户要求），只有点击时才转 */
-#btnRefresh:hover{background:transparent;border-color:transparent;color:var(--muted)}
-#btnRefresh.spinning svg{animation:spin .9s linear infinite}
-#btnRefresh:hover svg{transform:none}          /* 指上去连图标也别转 */
+/* 刷新类按钮（①栏重新扫描 ②栏? ③栏重新读取提示词 ④栏重新载入评分）：**指上去什么都不变**，
+   点下去才转（至少 600ms，见 spinRefresh）——三个按钮一套规则，别各做各的（2026-09-16 用户要求统一） */
+.refbtn:hover{background:transparent;border-color:transparent;color:var(--muted)}
+.refbtn:hover svg{transform:none}               /* 指上去连图标也别转 */
+.refbtn.spinning svg{animation:spin .9s linear infinite}
+.refbtn.spinning{color:var(--accent);border-color:var(--accent-soft);background:var(--accent-soft)}
 
 /* 外包一层 .vbox 的框：**只有用户拖过（.sized）才填满外层**。
    否则内层原来的 max-height（提示词 340px）会被干掉 → 长提示词把整栏撑到几千像素。 */

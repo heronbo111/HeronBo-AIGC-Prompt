@@ -226,7 +226,7 @@ function themeModal() {
   m.className = "modal";
   m.innerHTML = `<div class="box"><h3>主题</h3>
     <div class="amod">${rows}</div>
-    <div style="text-align:right;margin-top:12px"><button class="btn" id="mclose">知道了</button></div></div>`;
+    <div class="mfoot"><button class="btn" id="mclose">知道了</button></div></div>`;
   const M = openModal(m, "主题");
   m.querySelectorAll(".arow").forEach((r) => {
     r.onclick = () => { applyTheme(r.dataset.t); M.close(); toast("主题已换成 " + r.dataset.t); };
@@ -463,10 +463,7 @@ function agentModal() {
       : '<span class="meta">还没有会话（下一轮会新建一个）</span>'}
       <div class="meta">续同一个会话 = 技能与项目上下文留在上下文里、带着缓存，更快；太长了就点「开新会话」。</div>
     </div>
-    <p class="note" style="margin-top:4px">选择记在 <code>${esc(a.cfg || "—")}</code>（关掉工作台也在）。
-      想直接写文件：<code>{"agent": "codex"}</code>；要接没适配的命令行：
-      <code>{"cmd": ["命令", "{prompt}"], "cmd_mode": "text"}</code>。</p>
-    <div style="text-align:right;margin-top:12px">
+    <div class="mfoot">
       ${a.chosen ? '<button class="btn ghost" id="mauto">恢复自动（跟随我开着的软件）</button>' : ""}
       <button class="btn" id="mclose">知道了</button></div>
     </div>`;
@@ -870,8 +867,7 @@ function sortMenu() {
     <p class="meta">选一种排序，或者直接在列表里拖动项目行（拖动会自动切到「自定义」并记住名次）。
       选过的排序、主题都存在本机偏好文件里，下次打开照上次来。</p>
     <div class="amod">${rows}</div>
-    <p class="meta" title="${esc(S.uiCfg || "")}">存在：<code>${esc(S.uiCfg || "（未知）")}</code></p>
-    <div style="text-align:right;margin-top:12px"><button class="btn ghost" id="mclose">关掉</button></div>
+    <div class="mfoot"><button class="btn ghost" id="mclose">关掉</button></div>
     </div>`;
   const M = openModal(m, "项目列表排序", () => $("btnSort").classList.remove("on"));
   $("btnSort").classList.add("on");          // 排序按钮上的小三脚跟着转（打开态）
@@ -1061,8 +1057,10 @@ function makeVResizable(el, key, minH, maxH) {
 }
 
 /* 刷新按钮：**指上去不变**（用户要求），点一下才让两个箭头转起来（至少转 600ms 看得见） */
-function spinRefresh(ms) {
-  const b = $("btnRefresh");
+/* 刷新按钮的统一动效：**指上去不变、点下去才转**（2026-09-16 用户要求；三个刷新按钮共用一套）。
+   `which` 不给就转①栏那颗（重新扫描样本库）。 */
+function spinRefresh(ms, which) {
+  const b = $(which || "btnRefresh");
   if (!b) return;
   b.classList.add("spinning");
   clearTimeout(spinRefresh._t);
@@ -1150,16 +1148,13 @@ async function recordsModal() {
     <h3>agent 对话记录</h3>
     <p class="meta">每一轮 agent 干活，工作台都自己记一份（时间线：它在读什么、写了什么、最后说了什么）。
       <b>桌面端里看不到这些</b>，所以这里存一份。</p>
-    ${r.transcript ? `<p class="note" style="margin:8px 0"><b>agent 自己的会话正文：</b>
-      <code>${esc(r.transcript)}</code>
+    ${r.transcript ? `<div class="rowline" style="margin:6px 0 2px">
+      <span class="meta">agent 会话正文</span>
       <button class="btn ghost sm" id="rcCopy">复制路径</button>
-      <button class="btn ghost sm" id="rcOpenT">打开它</button></p>`
-    : `<p class="note" style="margin:8px 0">没找到 agent 自己那份会话正文文件（<b>WorkBuddy 的无头跑本机不一定落盘</b>，
-      我全盘搜过；ZCode 会落在 <code>~/.zcode/cli/rollout/</code> 下）。所以这里这份「工作台自己记的」
-      通常就是最全的——再加上项目里 <code>_会话/回执.jsonl</code>（agent 自己写的回执）。</p>`}
+      <button class="btn ghost sm" id="rcOpenT">打开它</button></div>` : ""}
     <div class="amod">${rows}</div>
     <div class="recbox" id="recBox" hidden></div>
-    <div style="text-align:right;margin-top:12px">
+    <div class="mfoot">
       <button class="btn ghost" id="rcOpenDir">打开记录文件夹</button>
       <button class="btn" id="mclose">知道了</button></div></div>`;
   const {close: closeRec} = openModal(m, "agent 对话记录");
@@ -1210,7 +1205,7 @@ function deleteProjectModal(dir) {
     <div class="note bad" id="dpWarn" hidden>
       <b>永久删除要再点一次确认</b>：这会真删掉整个目录，删完找不回来。</div>
     <p class="meta">目录：<code title="${esc(dir)}">${esc(dir)}</code></p>
-    <div style="text-align:right;margin-top:12px">
+    <div class="mfoot">
       <button class="btn ghost" id="dpCancel">取消</button></div></div>`;
   const {close} = openModal(m, "删除项目");
   let armed = false;
@@ -1260,8 +1255,8 @@ function newProjectModal() {
     <p class="meta">建在样本库根下，空素材、空提示词。名字留空就自动起一个。</p>
     <div class="rowline" style="margin:10px 0 4px">
       <input id="npName" value="${esc(guess)}" placeholder="项目名，例如 四六级背单词带货"></div>
-    <p class="note" style="margin-top:10px">建完把素材拖进②栏即可；想换项目点①栏列表里的名字。</p>
-    <div style="text-align:right;margin-top:12px">
+    <p class="meta" style="margin-top:8px">建完把素材拖进②栏就行。</p>
+    <div class="mfoot">
       <button class="btn ghost" id="npCancel">取消</button>
       <button class="btn" id="npOk">建这个项目</button></div></div>`;
   const {close} = openModal(m, "新建项目");
@@ -1382,7 +1377,7 @@ function pickAgentModal(cb) {
   m.innerHTML = '<div class="box"><h3>这次用哪个 agent？</h3>' +
     '<p class="meta">本机检索到多个可用 agent。选一个我就记住，以后不再问；想换点③栏的 agent 徽章。</p>' +
     rows +
-    '<div style="text-align:right;margin-top:12px"><button class="btn ghost" id="mclose">取消</button></div></div>';
+    '<div class="mfoot"><button class="btn ghost" id="mclose">取消</button></div></div>';
   const M = openModal(m, "这次用哪个 agent");
   m.querySelectorAll("button[data-k]").forEach((b) => {
     b.onclick = async () => {
@@ -1625,7 +1620,7 @@ setInterval(() => { fetch("/api/ping", {method: "POST"}).catch(() => {}); }, 300
 $("btnRefresh").onclick = () => loadState();
 $("btnSort").onclick = () => sortMenu();
 $("btnRecords").onclick = () => recordsModal();
-$("btnLoadPrompts").onclick = () => reloadPrompts();
+$("btnLoadPrompts").onclick = () => { spinRefresh(600, "btnLoadPrompts"); reloadPrompts(); };
 $("btnCheckPrompt").onclick = () => checkPrompt();
 $("btnAgent").onclick = () => agentModal();
 $("btnAsk").onclick = () => askAgent("prompt");
@@ -1637,6 +1632,7 @@ $("btnBad").onclick = () => receive(false);
 $("btnSubmitFb").onclick = () => submitFeedback();
 $("btnSave").onclick = () => saveScore();
 $("btnReload").onclick = async () => {
+  spinRefresh(600, "btnReload");
   const rv = await api("/api/review");
   fillReview(rv.review);
   toast("已重新载入上次评分");
