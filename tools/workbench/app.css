@@ -344,3 +344,55 @@ body[data-theme="暖夜"]{
 .recbox .rl i{color:var(--muted);font-style:normal;font-size:11px}
 .recbox .rl.start,.recbox .rl.end{color:var(--accent);font-weight:600}
 .recbox .rl.end{color:var(--ok)}
+
+/* ── 动效（2026-09-16 用户要求"给部分按钮加动效，例如那个展开的三角"）─────── */
+/* 1) 弹窗进出场：淡入 + 轻微放大 */
+.modal{animation:fadein .14s ease}
+@keyframes fadein{from{opacity:0}to{opacity:1}}
+.modal.out{opacity:0;transition:opacity .14s ease}
+.modal .box{transform:translateY(6px) scale(.985);transition:transform .16s cubic-bezier(.2,.8,.3,1)}
+.modal.in .box{transform:none}
+.modal .box{max-width:720px}
+/* 2) 右下角「拖我调大小」的抓手 */
+.modal .box{position:relative}
+.modal .box .rz{position:absolute;right:3px;bottom:3px;width:15px;height:15px;
+  cursor:nwse-resize;opacity:.45;transition:opacity .15s}
+.modal .box .rz::before{content:"";position:absolute;right:2px;bottom:2px;width:9px;height:9px;
+  border-right:2px solid var(--muted);border-bottom:2px solid var(--muted);border-radius:0 0 3px 0}
+.modal .box .rz:hover{opacity:1}
+.modal .box.rz-drag{user-select:none}
+.modal .box.rz-drag .rz{opacity:1}
+/* 3) 下拉框的三角：自绘 + 展开/聚焦时转一下（原生 select 的箭头没法动，所以自绘）*/
+.selwrap{position:relative;display:block;min-width:0}
+.selwrap select{appearance:none;-webkit-appearance:none;width:100%;padding-right:28px}
+.selwrap::after{content:"";position:absolute;right:10px;top:50%;width:7px;height:7px;
+  border-right:1.7px solid var(--muted);border-bottom:1.7px solid var(--muted);
+  transform:translateY(-70%) rotate(45deg);
+  transition:transform .18s ease,border-color .18s ease;pointer-events:none}
+.selwrap:hover::after{border-color:var(--text)}
+.selwrap:focus-within::after{transform:translateY(-30%) rotate(225deg);border-color:var(--accent)}
+/* 4) 排序按钮上的小三脚：菜单打开时转 180° */
+#btnSort{display:inline-flex;align-items:center;gap:6px}
+#btnSort::after{content:"";width:5px;height:5px;border-right:1.6px solid currentColor;
+  border-bottom:1.6px solid currentColor;transform:rotate(45deg) translate(-1px,-1px);
+  transition:transform .18s ease}
+#btnSort.on::after{transform:rotate(225deg) translate(-1px,-1px)}
+/* 5) 按钮与图标：按下/悬停的轻微反馈（不做弹跳，克制一点）*/
+.btn{transition:background .14s ease,border-color .14s ease,transform .08s ease,box-shadow .14s ease}
+.btn:not(:disabled):active{transform:translateY(1px)}
+.btn:not(:disabled):hover{box-shadow:var(--sh-sm)}
+.iconbtn,.ibtn{transition:background .14s ease,border-color .14s ease,color .14s ease,transform .12s ease}
+.ibtn:hover svg,.iconbtn:hover svg{transition:transform .25s ease}
+.ibtn:hover svg{transform:rotate(18deg)}
+.ibtn.spinning svg{animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+/* 6) 流程条当前步的光圈轻轻呼吸 */
+.step.now .dot{animation:breathe 2.2s ease-in-out infinite}
+@keyframes breathe{0%,100%{box-shadow:0 0 0 3px rgba(47,111,237,.18)}
+  50%{box-shadow:0 0 0 6px rgba(47,111,237,.10)}}
+/* 7) 进度块出现时往下滑一点 */
+.sprog{animation:slidein .22s ease}
+@keyframes slidein{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+/* 8) toast 上浮一点 */
+.toast{transform:translateX(-50%) translateY(6px);transition:opacity .25s,transform .25s}
+.toast.on{transform:translateX(-50%) translateY(0)}

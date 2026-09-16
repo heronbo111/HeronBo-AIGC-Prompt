@@ -198,11 +198,9 @@ function themeModal() {
   m.innerHTML = `<div class="box"><h3>主题</h3>
     <div class="amod">${rows}</div>
     <div style="text-align:right;margin-top:12px"><button class="btn" id="mclose">知道了</button></div></div>`;
-  document.body.appendChild(m);
-  m.querySelector("#mclose").onclick = () => m.remove();
-  m.onclick = (e) => { if (e.target === m) m.remove(); };
+  const M = openModal(m, "主题");
   m.querySelectorAll(".arow").forEach((r) => {
-    r.onclick = () => { applyTheme(r.dataset.t); m.remove(); toast("主题已换成 " + r.dataset.t); };
+    r.onclick = () => { applyTheme(r.dataset.t); M.close(); toast("主题已换成 " + r.dataset.t); };
   });
 }
 
@@ -340,11 +338,19 @@ function renderSamples() {
     issue.hidden = true;
   }
   const cur = st.project ? st.project.dir : "";
-  $("sampleList").innerHTML = sortedSamples().map((s) =>
-    `<div class="row ${s.dir === cur ? "on" : ""}" data-dir="${esc(s.dir)}">
+  const sort = (S.ui || {}).projSort || "default";
+  const shortTime = (v) => (v || "").replace(/^\d\d(\d\d)-(\d\d)-(\d\d) (\d\d:\d\d)$/, "$2-$3 $4");
+  $("sampleList").innerHTML = sortedSamples().map((s) => {
+    // 按时间排时把时间显出来（不然用户看不出"到底排没排"）；其它排序显示素材/成片数
+    const meta = (sort === "time" || sort === "mtime")
+      ? `${shortTime(s.createdAt) || "—"} · 素材 ${s.materials}`
+      : `素材 ${s.materials} · 成片 ${s.videos}`;
+    return `<div class="row ${s.dir === cur ? "on" : ""}" data-dir="${esc(s.dir)}"
+        title="创建 ${esc(s.createdAt || "（未知）")} · 素材 ${s.materials} · 成片 ${s.videos}">
        <span class="grip" title="拖动改名次（会自动切成「自定义」排序）">⋮⋮</span>
        <span class="g">${esc(s.name)}</span>
-       <span class="m">素材 ${s.materials} · 成片 ${s.videos}</span></div>`).join("")
+       <span class="m">${meta}</span></div>`;
+  }).join("")
     || '<div class="meta">样本库里还没项目。把素材拖进②栏就能建，或点上面的「＋ 新建项目」。</div>';
   $("sampleList").querySelectorAll(".row").forEach((el) => {
     el.onclick = () => selectProject(el.dataset.dir);
@@ -398,15 +404,13 @@ function agentModal() {
       ${a.chosen ? '<button class="btn ghost" id="mauto">恢复自动（跟随我开着的软件）</button>' : ""}
       <button class="btn" id="mclose">知道了</button></div>
     </div>`;
-  document.body.appendChild(m);
-  m.querySelector("#mclose").onclick = () => m.remove();
-  m.onclick = (e) => { if (e.target === m) m.remove(); };
+  const M = openModal(m, "agent 通道");
   m.querySelectorAll(".arow").forEach((row) => {
     row.onclick = async () => {
       if (row.dataset.ok !== "1") return toast("这个 agent 现在不可用");
       const r = await api("/api/agent/set", {key: row.dataset.k});
       if (!r.ok) return toast(r.why || "设置失败");
-      S.agent = r.agent; renderAgent(S.agent); m.remove();
+      S.agent = r.agent; renderAgent(S.agent); M.close();
       toast("已切换为 " + (S.agent.label || ""));
     };
   });
@@ -414,7 +418,7 @@ function agentModal() {
   if (auto) auto.onclick = async () => {
     const r = await api("/api/agent/set", {key: ""});
     if (!r.ok) return toast(r.why || "设置失败");
-    S.agent = r.agent; renderAgent(S.agent); m.remove();
+    S.agent = r.agent; renderAgent(S.agent); M.close();
     toast("已恢复自动：以后跟着你打开的那个软件走（当前 " + (S.agent.label || "") + "）");
   };
 }
@@ -635,7 +639,10 @@ function fillReview(rev) {
 
 /* ── 动作 ─────────────────────────────────────────────────────────── */
 async function loadState(scrollTop) {
+  const br = $("btnRefresh");
+  if (br) br.classList.add("spinning");           // 刷新时图标转起来（动效：让人知道在扫）
   const st = await api("/api/state");
+  if (br) br.classList.remove("spinning");
   S.state = st;
   S.dims = st.dims || [];
   S.mats = st.materials || [];
@@ -663,6 +670,7 @@ async function selectProject(dir) {
   if (!r.ok) return toast(r.error || "切项目失败");
   S.pending = [];
   logLine("已切到项目 " + dir.split(/[\\/]/).pop());
+  if (r.healed) logLine("这个项目缺 框架.json（大概是建到一半被打断），已自动补齐骨架", "ok");
   await loadState();
 }
 
@@ -670,6 +678,7 @@ async function selectProject(dir) {
    排序方式：默认（样本库扫描顺序）/ 名称 / 素材数 / 成片数 / 创建时间 / 自定义。
    **拖动即切到"自定义"**并把名次存进本机偏好（tools/workbench.local.json，gitignored）。 */
 const SORTS = [["default", "默认（扫描顺序）"], ["time", "按创建时间（新→旧）"],
+               ["mtime", "按最近改动（新→旧）"],
                ["mats", "按素材数（多→少）"], ["videos", "按成片数（多→少）"],
                ["name", "按名称（A→Z）"]];
 
@@ -687,7 +696,10 @@ function sortedSamples() {
   if (sort === "name") list.sort((a, b) => a.name.localeCompare(b.name, "zh"));
   if (sort === "mats") list.sort((a, b) => (b.materials || 0) - (a.materials || 0));
   if (sort === "videos") list.sort((a, b) => (b.videos || 0) - (a.videos || 0));
-  if (sort === "time") list.sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+  // 时间类：用服务端算好的 epoch（两种来源格式不同，比字符串会排错），空的沉底
+  if (sort === "time") list.sort((a, b) => (b.createdTs || 0) - (a.createdTs || 0)
+                                          || a.name.localeCompare(b.name, "zh"));
+  if (sort === "mtime") list.sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
   return list;
 }
 
@@ -719,14 +731,13 @@ function sortMenu() {
     <div class="amod">${rows}</div>
     <div style="text-align:right;margin-top:12px"><button class="btn ghost" id="mclose">关掉</button></div>
     </div>`;
-  document.body.appendChild(m);
-  m.querySelector("#mclose").onclick = () => m.remove();
-  m.onclick = (e) => { if (e.target === m) m.remove(); };
+  const M = openModal(m, "项目列表排序", () => $("btnSort").classList.remove("on"));
+  $("btnSort").classList.add("on");          // 排序按钮上的小三脚跟着转（打开态）
   m.querySelectorAll(".arow").forEach((r) => {
     r.onclick = async () => {
       const res = await api("/api/ui", {projSort: r.dataset.s});
       if (!res.ok) return toast(res.error || "存不上");
-      S.ui = res.ui; m.remove();
+      S.ui = res.ui; M.close();
       renderSamples(); renderSampleSortBtn();
       toast("排序已换成：" + r.querySelector(".an").textContent);
     };
@@ -779,7 +790,72 @@ function bindSampleDrag() {
   });
 }
 
-/* ── agent 对话记录：工作台每轮自己落一份，翻起来能看见它到底干了什么 ───────── */
+/* ── 弹窗通用：可调大小 + 位置记住 ────────────────────────────────────
+   用户要求"每个对话框窗口都能调大小"。做法统一在一个函数里，所有弹窗都调它：
+   右下角给个抓手，拖它就改宽高（有下限/上限），尺寸按弹窗标题存进 localStorage；
+   双击抓手＝恢复默认大小。 */
+function modalKey(box) {
+  const h = box.querySelector("h3");
+  return (h ? h.textContent : "modal").trim().slice(0, 20);
+}
+
+function makeResizable(m, key) {
+  const box = m.querySelector(".box");
+  if (!box) return;
+  const k = "heronbo.box." + (key || modalKey(box));
+  try {
+    const saved = JSON.parse(localStorage.getItem(k) || "null");
+    if (saved && saved.w) {
+      box.style.width = Math.min(saved.w, innerWidth - 40) + "px";
+      box.style.height = Math.min(saved.h || 0, innerHeight - 40) + "px";
+    }
+  } catch (e) {}
+  const rz = document.createElement("span");
+  rz.className = "rz";
+  rz.title = "拖我调大小（双击恢复默认）";
+  box.appendChild(rz);
+  let dragging = false, sx = 0, sy = 0, w0 = 0, h0 = 0;
+  const rect0 = () => box.getBoundingClientRect();
+  rz.addEventListener("pointerdown", (e) => {
+    dragging = true; box.classList.add("rz-drag");
+    const r = rect0(); w0 = r.width; h0 = r.height; sx = e.clientX; sy = e.clientY;
+    box.style.maxWidth = "none"; box.style.maxHeight = "none";
+    try { rz.setPointerCapture(e.pointerId); } catch (err) {}
+    e.preventDefault(); e.stopPropagation();
+  });
+  rz.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    const w = Math.max(320, Math.min(innerWidth - 24, w0 + e.clientX - sx));
+    const h = Math.max(160, Math.min(innerHeight - 24, h0 + e.clientY - sy));
+    box.style.width = w + "px"; box.style.height = h + "px";
+  });
+  const stop = () => {
+    if (!dragging) return;
+    dragging = false; box.classList.remove("rz-drag");
+    const r = rect0();
+    try { localStorage.setItem(k, JSON.stringify({w: Math.round(r.width), h: Math.round(r.height)})); } catch (e) {}
+  };
+  rz.addEventListener("pointerup", stop);
+  rz.addEventListener("pointercancel", stop);
+  rz.addEventListener("dblclick", () => {
+    box.style.width = ""; box.style.height = "";
+    try { localStorage.removeItem(k); } catch (e) {}
+    toast("弹窗大小已恢复默认");
+  });
+}
+
+/* 所有弹窗都走这里：加动画类 + 可调大小 */
+function openModal(m, key, onClose) {
+  document.body.appendChild(m);
+  makeResizable(m, key);
+  requestAnimationFrame(() => m.classList.add("in"));       // 淡入 + 轻微放大（动效）
+  const close = () => { m.classList.add("out");
+    setTimeout(() => { m.remove(); if (onClose) onClose(); }, 140); };
+  const btn = m.querySelector("#mclose");
+  if (btn) btn.onclick = close;
+  m.onclick = (e) => { if (e.target === m) close(); };
+  return {close, m};
+}
 async function recordsModal() {
   const r = await api("/api/records");
   if (!r.ok) return toast(r.error || "读不到记录");
@@ -807,10 +883,8 @@ async function recordsModal() {
     <div style="text-align:right;margin-top:12px">
       <button class="btn ghost" id="rcOpenDir">打开记录文件夹</button>
       <button class="btn" id="mclose">知道了</button></div></div>`;
-  document.body.appendChild(m);
-  m.querySelector("#mclose").onclick = () => m.remove();
-  m.onclick = (e) => { if (e.target === m) m.remove(); };
-  const cp = m.querySelector("#rcCopy");
+  const {close: closeRec} = openModal(m, "agent 对话记录");
+  const cpx = m.querySelector("#rcCopy");
   if (cp) cp.onclick = () => navigator.clipboard.writeText(r.transcript).then(
     () => toast("路径已复制"), () => toast("复制失败"));
   const ot = m.querySelector("#rcOpenT");
@@ -855,10 +929,8 @@ function newProjectModal() {
     <div style="text-align:right;margin-top:12px">
       <button class="btn ghost" id="npCancel">取消</button>
       <button class="btn" id="npOk">建这个项目</button></div></div>`;
-  document.body.appendChild(m);
-  const close = () => m.remove();
+  const {close} = openModal(m, "新建项目");
   m.querySelector("#npCancel").onclick = close;
-  m.onclick = (e) => { if (e.target === m) close(); };
   m.querySelector("#npName").focus();
   m.querySelector("#npOk").onclick = async () => {
     const r = await api("/api/project/new", {name: m.querySelector("#npName").value.trim()});
@@ -967,16 +1039,14 @@ function pickAgentModal(cb) {
     '<p class="meta">本机检索到多个可用 agent。选一个我就记住，以后不再问；想换点③栏的 agent 徽章。</p>' +
     rows +
     '<div style="text-align:right;margin-top:12px"><button class="btn ghost" id="mclose">取消</button></div></div>';
-  document.body.appendChild(m);
-  m.querySelector("#mclose").onclick = () => m.remove();
-  m.onclick = (e) => { if (e.target === m) m.remove(); };
+  const M = openModal(m, "这次用哪个 agent");
   m.querySelectorAll("button[data-k]").forEach((b) => {
     b.onclick = async () => {
       const r = await api("/api/agent/set", {key: b.dataset.k});
       if (!r.ok) return toast(r.why || "设置失败");
       S.agent = r.agent;
       renderAgent(S.agent);
-      m.remove();
+      M.close();
       toast("以后就用 " + (S.agent.label || ""));
       cb();
     };

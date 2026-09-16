@@ -27,6 +27,7 @@
     POST /api/ping          页面心跳（页面关了服务自己退）
 """
 import datetime
+import datetime
 import importlib.util
 import json
 import os
@@ -164,6 +165,37 @@ def _scan_project(pdir):
     return out
 
 
+def _proj_created(p):
+    """项目创建时间 → (显示用 "YYYY-MM-DD HH:MM", 可排序的 epoch 秒)。
+
+    两种来源格式不一样（框架.json 里是 ISO `2026-09-15T14:19:57`，目录时间戳是
+    `2026-09-15 14:19`）——**直接比字符串会排错**（'T' 和空格的码位不同），
+    所以这里统一算一个 epoch 给前端排序用。2026-09-16 用户指出"按创建时间排了却没变"：
+    根因是 `_samples()` 压根没返回时间字段，前端拿空串比空串。
+    """
+    raw, ts = "", 0.0
+    try:
+        with open(os.path.join(p, "框架.json"), encoding="utf-8-sig") as f:
+            raw = str(((json.load(f) or {}).get("project") or {}).get("createdAt") or "")
+    except (OSError, ValueError):
+        raw = ""
+    for fmt in (None, "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+        if not raw:
+            break
+        try:
+            dt = (datetime.datetime.fromisoformat(raw) if fmt is None
+                  else datetime.datetime.strptime(raw, fmt))
+            ts = dt.timestamp()
+            return dt.strftime("%Y-%m-%d %H:%M"), ts
+        except ValueError:
+            continue
+    try:
+        ts = os.path.getctime(p)
+        return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts)), ts
+    except OSError:
+        return raw[:16], 0.0
+
+
 def _samples(root):
     if not root or not os.path.isdir(root):
         return []
@@ -190,8 +222,14 @@ def _samples(root):
             rev = len([x for x in os.listdir(os.path.join(p, "评价")) if x.endswith(".json")])
         except OSError:
             rev = 0
+        try:
+            mtime = os.path.getmtime(p)
+        except OSError:
+            mtime = 0.0
+        created_disp, created_ts = _proj_created(p)
         rows.append({"name": fn, "dir": p, "materials": mats, "videos": gen,
-                     "rejects": bad, "reviews": rev})
+                     "rejects": bad, "reviews": rev,
+                     "createdAt": created_disp, "createdTs": created_ts, "mtime": mtime})
     return rows
 
 
@@ -750,7 +788,8 @@ class Handler(BaseHTTPRequestHandler):
             d = b.get("dir") or ""
             if d and os.path.isdir(d):
                 self._set_proj(d)
-                return self._json({"ok": True, "project": _scan_project(d)})
+                return self._json({"ok": True, "project": _scan_project(d),
+                                   "healed": self.heal_skeleton(d)})
             return self._json({"ok": False, "error": "目录不存在：%s" % d}, 400)
         if path == "/api/project/new":
             return self._json(self.new_project(self._body()))
@@ -818,6 +857,25 @@ class Handler(BaseHTTPRequestHandler):
         return d
 
     # ---- ①栏「＋ 新建项目」/ ②栏「需求 · 素材增删排序」----------------------
+    def heal_skeleton(self, pdir):
+        """打开一个**缺 框架.json** 的项目时把骨架补齐（返回 True 表示补了）。
+
+        2026-09-16 实测遇到一个只有空目录、没有 框架.json/_会话 的项目（建到一半被打断，
+        或目录是人手建的）——打开它界面什么都不显示，用户也不知道该怎么办。这里自动补一下：
+        **只在文件不存在时补**（文件在但坏了不动，免得把内容覆盖掉）。
+        """
+        if not pcore:
+            return False
+        if os.path.isfile(os.path.join(pdir, "框架.json")):
+            return False
+        try:
+            base = pdir.rstrip("\\/")
+            pcore.build_skeleton(os.path.dirname(base), os.path.basename(base),
+                                 project_dir=pdir, register=False)
+            return True
+        except Exception:                                        # noqa: BLE001
+            return False
+
     def new_project(self, b):
         """给一张白纸：空骨架 + 空提示词 + 空素材，并切过去。
 
