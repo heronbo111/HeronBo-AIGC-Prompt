@@ -222,4 +222,9 @@ WorkBuddy 的 headless CLI（`tools\agent_bridge.py` 封装，已自动避开端
   workbuddy"）。**配置必须落在 exe 旁边，不能落在 `__file__` 旁边**——EXE 内其它写盘同理。
 - **部署**：`python tools\部署.py check|agents|install|shortcut|all`（体检 → 接 agent 通道 → 装依赖 →
   建桌面快捷方式）。**装任何东西前不加 `--yes` 只打印命令**。图标：`python tools\图标.py`。
+- **打包替换 exe**（2026-09-16 加）：`python -m PyInstaller --noconfirm --distpath _stage --workpath build
+  score-tool.spec`（在 `tools\` 下跑）→ `python tools\换exe.py` 换到 `tools\dist\score-tool.exe`
+  （自动留一份 `score-tool_旧_*.exe` 回滚）。**换位工具会拦"工作台还开着"**：exe 在跑的时候换，
+  正在跑的实例会读到改过的文件、可能莫名崩（2026-09-16 用 `mv -f` 硬换踩到过）；真被拦下就关掉
+  工作台再跑，实在要硬换加 `--force` 并**手工关掉重开**那个实例。
 - **图文教程**：`docs/工作台与新手教程.html`（内容与本节同步；改规则请改仓库文件，不要只改那份 html）。
