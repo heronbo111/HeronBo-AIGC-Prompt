@@ -1539,6 +1539,18 @@ async function saveScore() {
   loadState();
 }
 
+/* 一键复制"只有正文"的那份（2026-09-16 用户要求）：③栏那颗小复制按钮用它——
+   粘到即梦就是完整提示词，不带"要上传的素材"清单、不带元信息。 */
+function copyPromptBody() {
+  const ps = S.prompts || [];
+  const body = (S.current && S.current.text) ? S.current.text
+    : (ps.length ? (ps[ps.length - 1].text || "") : "");
+  if (!body.trim()) return toast("还没有提示词正文");
+  navigator.clipboard.writeText(body).then(
+    () => toast("已复制提示词正文（" + body.length + " 字）"),
+    () => toast("复制失败，手动选中文本框里的内容"));
+}
+
 function copyPrompt() {
   const ps = S.prompts || [];
   // 有那份"可直接复制的提示词.txt"就复制它（用户要的"只放能直接拿去复制的提示词"）
@@ -1623,6 +1635,7 @@ $("btnSort").onclick = () => sortMenu();
 $("btnRecords").onclick = () => recordsModal();
 $("btnLoadPrompts").onclick = () => { spinRefresh(600, "btnLoadPrompts"); reloadPrompts(); };
 $("btnCheckPrompt").onclick = () => checkPrompt();
+$("btnCopyBody").onclick = () => copyPromptBody();
 $("btnAgent").onclick = () => agentModal();
 $("btnAsk").onclick = () => askAgent("prompt");
 $("btnIntakeGo").onclick = () => intakeGo();
