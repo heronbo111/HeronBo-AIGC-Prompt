@@ -183,10 +183,42 @@ def _glob_first(patterns):
     return None
 
 
+def _app_roots():
+    """可能装着"带 CLI 的桌面应用"的根目录（WorkBuddy / ZCode …）。
+
+    2026-09-16 别的机器上踩到：ZCode 装在 `F:\\新建文件夹 (3)\\ZCode\\`，原来只搜
+    `<盘>\\ZCode\\...` 与 `<盘>\\*\\resources\\...` 两种形状（`*` 只覆盖一层），
+    它多了一层 → 探测说"没找到 ZCode 自带的 CLI"，可文件明明是有的（12.3MB）。
+    所以这里按"根目录 + 1~3 层通配"多铺几种，浅的先试（`_glob_first` 按返回值排序取第一个）。
+    """
+    roots = []
+    for base in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)"),
+                 os.environ.get("ProgramW6432"),
+                 os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs"),
+                 os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Python"),
+                 "F:\\", "D:\\", "E:\\", "C:\\"):
+        if base and os.path.isdir(base) and base not in roots:
+            roots.append(base)
+    return roots
+
+
+def _glob_in_roots(rel_parts, max_depth=3):
+    """在候选根目录里找 `rel_parts` 这么一段相对路径（逐层加深，浅的先试）。
+
+    例：`resources/glm/zcode.cjs` → `<根>/resources/...`、`<根>/*/resources/...`、
+    `<根>/*/*/resources/...`。**故意的**：多一层少一层都能找到，代价只是多几次 glob。
+    """
+    pats = []
+    for r in _app_roots():
+        for d in range(0, max_depth + 1):
+            pats.append(os.path.join(r, *(["*"] * d), *rel_parts))
+    return pats
+
+
 def cli_js():
     """找 WorkBuddy 的 headless CLI 入口。
 
-    推导顺序：显式配置 → 环境变量给的安装位置 → 常见安装目录 glob。
+    推导顺序：显式配置 → 环境变量给的安装位置 → 常见安装目录 glob（含"多套一层目录"的形状）。
     """
     cfg = _local_cfg().get("cli_js")
     if cfg and os.path.isfile(cfg):
@@ -203,37 +235,98 @@ def cli_js():
             p = os.path.dirname(p)
             if p and p not in roots:
                 roots.append(p)
-    for base in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)"),
-                 os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs"),
-                 os.environ.get("ProgramW6432"), "F:\\", "C:\\"):
-        if base and os.path.isdir(base):
-            roots.append(base)
-    pats = []
-    for r in roots:
-        pats += [
-            os.path.join(r, "WorkBuddy", "resources", "app.asar.unpacked", "cli",
-                         "dist", "codebuddy-headless.js"),
-            os.path.join(r, "*", "resources", "app.asar.unpacked", "cli",
-                         "dist", "codebuddy-headless.js"),
-        ]
-    pats.append(os.path.join("**", "resources", "app.asar.unpacked", "cli", "dist",
-                             "codebuddy-headless.js"))
-    return _glob_first(pats)
+    tail = ("resources", "app.asar.unpacked", "cli", "dist", "codebuddy-headless.js")
+    pats = [os.path.join(r, *tail) for r in roots]
+    pats += [os.path.join(r, "WorkBuddy", *tail) for r in roots]
+    pats += _glob_in_roots(tail)
+    hit = _glob_first(pats)
+    if hit:
+        return hit
+    # 有些版本把 CLI 打进 asar 里（没有 unpacked 目录）→ 只能靠命令行入口，别硬猜
+    return None
 
 
 def node_exe():
-    """找 node：显式配置 → PATH → 常见安装位置。"""
+    """找 node：显式配置 → PATH → 常见安装位置（含 winget / nvm / volta / scoop / 各盘）。"""
     cfg = _local_cfg().get("node")
     if cfg and os.path.isfile(cfg):
         return cfg
     hit = shutil.which("node")
     if hit:
         return hit
-    pats = [r"C:\Program Files\nodejs\node.exe", r"C:\Program Files (x86)\nodejs\node.exe"]
+    pats = [r"C:\Program Files\nodejs\node.exe", r"C:\Program Files (x86)\nodejs\node.exe",
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "nodejs", "node.exe"),
+            os.path.join(os.environ.get("ProgramData", ""), "chocolatey", "bin", "node.exe"),
+            os.path.join(os.path.expanduser("~"), "scoop", "shims", "node.exe"),
+            os.path.join(os.environ.get("APPDATA", ""), "nvm", "node.exe"),
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "Volta", "bin", "node.exe")]
     for d in os.environ.get("PATH", "").split(os.pathsep):
         if d and "node" in d.lower():
             pats.append(os.path.join(d, "node.exe"))
+    for r in _app_roots()[len(_app_roots()) - 4:]:     # 各盘根里的 nodejs\node.exe
+        pats.append(os.path.join(r, "nodejs", "node.exe"))
     return _glob_first(pats)
+
+
+# 被我们"当 node 用"的 Electron 宿主 exe（跑的时候要注入 ELECTRON_RUN_AS_NODE=1）。
+# 2026-09-16 新增：别的机器上**没有独立 node**，但 WorkBuddy / ZCode 都是 Electron 应用，
+# 它们自带的那个 exe 加上这个环境变量就是一个完整的 node（这正是它们 CLI 元信息里写的
+# "runtime": "electron-node" 的意思）。不开这条，新机永远接不上 agent 通道。
+_ELECTRON_AS_NODE = set()
+
+
+def _is_node_exe(path):
+    return os.path.basename(path or "").lower() in ("node", "node.exe", "node64.exe")
+
+
+def electron_host(script):
+    """给一个 Electron 应用里的脚本，找它的宿主 exe（CLI 就是拿它当 node 跑的）。
+
+    从脚本往上找 `resources` 那一层：它上面就是应用根，根里通常只有一个主 exe
+    （`WorkBuddy.exe` / `ZCode.exe`）。卸载器、更新器之类排除掉。
+    """
+    d = os.path.dirname(os.path.abspath(script))
+    for _ in range(6):
+        if not d or os.path.dirname(d) == d:
+            break
+        if os.path.basename(d).lower() == "resources":
+            root = os.path.dirname(d)
+            skip = ("unins", "uninstall", "update", "setup", "squirrel", "crashpad")
+            try:
+                exes = [f for f in sorted(os.listdir(root))
+                        if f.lower().endswith(".exe")
+                        and not any(s in f.lower() for s in skip)]
+            except OSError:
+                return None
+            # 名字跟目录同名的最优先（WorkBuddy.exe / ZCode.exe）
+            base = os.path.basename(root).lower()
+            exes.sort(key=lambda f: (0 if f.lower() == base + ".exe" else 1, len(f)))
+            return os.path.join(root, exes[0]) if exes else None
+        d = os.path.dirname(d)
+    return None
+
+
+def lib_runner(script):
+    """跑一个 Node CLI 脚本要用什么、带什么环境 → `(exe, env_extra)`。
+
+    优先独立 node；**没有 node 就借该应用自带的 Electron 当 node**（注入
+    `ELECTRON_RUN_AS_NODE=1`）——新机器上最省事的一条路，不用额外装 Node.js。
+    """
+    n = node_exe()
+    if n and _is_node_exe(n):
+        return n, {}
+    host = electron_host(script)
+    if host:
+        _ELECTRON_AS_NODE.add(os.path.normcase(host))
+        return host, {"ELECTRON_RUN_AS_NODE": "1"}
+    return n, {}
+
+
+def runtime_env_for(cmd):
+    """跑之前要补的环境变量（只有"拿 Electron 当 node"时才需要）。"""
+    if cmd and not _is_node_exe(cmd[0]) and os.path.normcase(cmd[0]) in _ELECTRON_AS_NODE:
+        return {"ELECTRON_RUN_AS_NODE": "1"}
+    return {}
 
 
 def available(prefer=None):
@@ -304,11 +397,14 @@ def child_env():
 
 def build_cmd(prompt, session_id=None, permission_mode="acceptEdits",
               tools=None, output_format="json", extra=None):
-    """拼命令行。tools=None 表示不限制；tools="" 表示禁用全部工具（自检用）。"""
-    js, nd = cli_js(), node_exe()
-    if not (js and nd):
+    """拼命令行（WorkBuddy）。tools=None 表示不限制；tools="" 表示禁用全部工具（自检用）。"""
+    js = cli_js()
+    if not js:
         raise RuntimeError("headless CLI 不可用：%s" % available()[1])
-    cmd = [nd, js, "-p", "--output-format", output_format]
+    runner, _renv = lib_runner(js)
+    if not runner:
+        raise RuntimeError("WorkBuddy 的 CLI 找到了，但没有 node、也没找到 WorkBuddy 的 exe")
+    cmd = [runner, js, "-p", "--output-format", output_format]
     if session_id:
         cmd += ["-r", session_id]
     if permission_mode:
@@ -431,37 +527,35 @@ def zcode_cli():
     cfg = _local_cfg().get("zcode")
     if cfg and os.path.isfile(cfg):
         return cfg
-    import glob as _glob
-    pats = []
-    for base in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)"),
-                 os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs"),
-                 os.environ.get("ProgramW6432"), "F:\\", "C:\\"):
-        if base and os.path.isdir(base):
-            pats.append(os.path.join(base, "ZCode", "resources", "glm", "zcode.cjs"))
-            pats.append(os.path.join(base, "*", "resources", "glm", "zcode.cjs"))
-    return _glob_first(pats)
+    # 2026-09-16 修：原来只试 `<盘>\ZCode\...` 与 `<盘>\*\resources\...`，
+    # 装在 `F:\新建文件夹 (3)\ZCode\` 这种"多一层"的机器上就找不到 → 改走统一的逐层搜索。
+    return _glob_first(_glob_in_roots(("resources", "glm", "zcode.cjs")))
 
 
 def _probe_zcode():
     cli = zcode_cli()
     if not cli:
         return False, "没找到 ZCode 自带的 CLI（resources/glm/zcode.cjs）"
-    if not node_exe():
-        return False, "没找到 node 可执行文件"
+    runner, renv = lib_runner(cli)
+    if not runner:
+        return False, ("找到了 CLI 但没东西能跑它：既没有 node，也没在 %s 旁边找到 ZCode 的 exe"
+                       % os.path.dirname(cli))
+    how = "Electron 当 node（没装 Node.js 也能跑）" if renv else "node"
     # 就绪检查：CLI 明确要求 ~/.zcode/cli/config.json 里有 provider（2026-09-15 实测报
     # "Model config is missing"）。顺手查一下，别让用户"选了才发现"。
     cfgp = os.path.join(os.path.expanduser("~"), ".zcode", "cli", "config.json")
     try:
         cfg = json.load(open(cfgp, encoding="utf-8-sig"))
     except (OSError, ValueError):
-        return False, "找不到 %s" % cfgp
+        return False, ("CLI 找到了（用 %s 跑），但缺 %s：先跑一次 `zcode login`"
+                       "（或把桌面端 ~/.zcode/v2/config.json 的 provider 搬过去）" % (how, cfgp))
     # 两种就绪形态都认：① 有 provider（自己填的 API Key 通道）
     # ② 有 model（`zcode login` 后它自己写的 "provider/model" 引用，如 zai/glm-5.1）
     if cfg.get("provider") or cfg.get("model"):
         return True, cli
-    return False, ("CLI 要 %s 里有 provider 或 model（现在只有 %s）；"
+    return False, ("CLI 找到了（用 %s 跑），但 %s 里没有 provider 或 model（现在只有 %s）；"
                    "先跑一次 `zcode login`，或把桌面端 ~/.zcode/v2/config.json 的 provider 搬过去"
-                   % (cfgp, "/".join(cfg.keys())))
+                   % (how, cfgp, "/".join(cfg.keys())))
 
 
 def _dsh_note():
@@ -478,11 +572,13 @@ def _dsh_note():
 
 
 def _probe_dsh():
-    if not dsh_pkg():
+    pkg = dsh_pkg()
+    if not pkg:
         return False, "没找到 DSH（需要 npx @deepseek-ai/dsh 跑过一次，或全局安装）"
-    if not node_exe():
-        return False, "没找到 node 可执行文件"
-    return True, dsh_pkg() + _dsh_note()
+    runner, _renv = lib_runner(pkg)
+    if not runner:
+        return False, "DSH 脚本找到了，但本机没有 node（DSH 不是 Electron 应用，必须装 Node.js）"
+    return True, pkg + _dsh_note()
 
 
 def _probe_codex():
@@ -493,11 +589,14 @@ def _probe_codex():
 
 
 def _probe_workbuddy():
-    if not cli_js():
-        return False, "没找到 headless CLI（codebuddy-headless.js）"
-    if not node_exe():
-        return False, "没找到 node 可执行文件"
-    return True, "OK"
+    js = cli_js()
+    if not js:
+        return False, "没找到 headless CLI（codebuddy-headless.js）——装 WorkBuddy 桌面端即可"
+    runner, renv = lib_runner(js)
+    if not runner:
+        return False, ("CLI 找到了，但没有 node、也没在 %s 旁边找到 WorkBuddy 的 exe"
+                       % os.path.dirname(js))
+    return True, (js + ("（用 WorkBuddy 自带 Electron 跑，没装 Node.js 也行）" if renv else ""))
 
 
 ADAPTERS = {
@@ -654,7 +753,10 @@ def build_cmd_for(key, prompt, session_id=None, cwd=None, permission_mode=None,
         cli = zcode_cli()
         if not cli:
             raise RuntimeError("ZCode CLI 不可用（没找到 resources/glm/zcode.cjs）")
-        cmd = [node_exe(), cli, "--prompt", prompt, "--mode", "yolo"]
+        runner, _renv = lib_runner(cli)
+        if not runner:
+            raise RuntimeError("ZCode CLI 找到了，但没有 node、也没找到 ZCode 的 exe")
+        cmd = [runner, cli, "--prompt", prompt, "--mode", "yolo"]
         if cwd:
             cmd += ["--cwd", cwd]
         if session_id:
@@ -664,7 +766,10 @@ def build_cmd_for(key, prompt, session_id=None, cwd=None, permission_mode=None,
         pkg = dsh_pkg()
         if not pkg:
             raise RuntimeError("DSH 不可用（没找到 @deepseek-ai/dsh）")
-        cmd = [node_exe(), pkg, "--profile", "headless", prompt]
+        runner, _renv = lib_runner(pkg)
+        if not runner:
+            raise RuntimeError("DSH 找到了，但没有 node 可跑（先装 Node.js）")
+        cmd = [runner, pkg, "--profile", "headless", prompt]
         return cmd, "text"          # stdout = 最终答复；stderr = 推理过程（当进度用）
     if key == "codex":
         exe = codex_exe()
@@ -883,6 +988,8 @@ def ask(prompt, session_id=None, cwd=None, timeout=DEFAULT_TIMEOUT,
         os.close(fd)
         cmd = cmd[:-1] + ["-o", out_file, cmd[-1]]
     env = child_env()
+    # 拿某个应用的 Electron 当 node 时，必须带这个开关，否则它会去开窗口而不是跑脚本
+    env.update(runtime_env_for(cmd))
     snap_before = zcode_sessions() if key == "zcode" else {}
     snap_t0 = time.time()
     text_parts, tail = [], []            # tail 只留给"最后兜底当答复"，别当解析用的全文

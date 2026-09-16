@@ -45,12 +45,39 @@ AI 视频提示词生成 + 成片六维评价工具。把「文案/台词 + 素�
 | DeepSeek Harness（DSH） | `C:\Users\你的用户名\.dsh\skills\HeronBo-AIGC-Prompt\`（用户级；也可项目级 `<项目>\.dsh\skills\`） |
 | 其他 agent harness | 对 agent 说：`读取 <解压路径>\HeronBo-AIGC-Prompt\SKILL.md 并严格按其工作流执行` |
 
-克隆：`git clone https://gitee.com/HeronBo/seedance-prompt.git`（国内直连建议 Gitee；作者主库为 GitHub 私有）。GitHub 私有库地址 `https://github.com/heronbo111/seedance-prompt.git`。
+克隆（**建议带 `--depth 1`**：仓库历史里有历代 18 MB 的 exe，完整 clone 要下 70 MB+ 的历史，浅克隆只要 20 MB 上下——"装得很慢"一半是这里的钱）：
+
+```bash
+git clone --depth 1 https://gitee.com/HeronBo/seedance-prompt.git      # 国内
+git clone --depth 1 https://github.com/heronbo111/seedance-prompt.git   # GitHub（已公开）
+```
+
+### 一键安装（新机最短路径）
+
+**双击仓库根的 `一键安装.cmd`**，或者：
+
+```bash
+python tools\部署.py all --yes
+```
+
+它会：找 Python → **用仓库自带的离线 wheel 装必需依赖（免联网、秒级）** → 接 agent 通道并**真跑一句验证连通**
+→ 建桌面快捷方式 → **把工作台弹出来**。装完桌面上就有「HeronBo 视频工作台」，双击即可用。
+
+要自己一步步来：`check`（体检）· `install`（依赖）· `agents`（agent 通道）· `shortcut`（快捷方式）·
+`start`（起工作台）· `wx`（修 WebView2）。**没打包 exe 也能用**——`python tools\工作台.py` 直接跑源码版工作台。
+
+**依赖分两档，新机别一次装全**：必需＝pywebview / pythonnet / clr_loader（走仓库里的离线包）；
+按需＝numpy / opencv / faster-whisper / onnxruntime（成片对比、人物遮罩、拆解转写、深度视频**用到才装**，
+几百 MB）。要一次装全：`python tools\环境检查.py --install --extras --yes`。
+
+**工作台窗口一片空白？** 那是 WebView2 运行库坏了（注册表写着装了、目录里 `msedgewebview2.exe` 却没了）——
+`python tools\部署.py check` 会报出来，`python tools\部署.py wx --yes` 一条命令修好；工作台现在还会
+**自动退到 Edge 窗口**，不会再晾你一个白窗。整条新机流程见 `docs/新机部署.md`。
 
 ### 换机四件套（必做，约 5 分钟）
 
-0. **环境检查（第一件事）**：`python tools\环境检查.py` —— 逐项自检 python≥3.9 / ffmpeg / ffprobe / numpy / opencv / faster-whisper（拆解转写）/ onnxruntime（深度视频）/ Yunet 人脸模型 / 系统 OCR / Depth 模型，缺什么就打印该装什么。
-   装缺项：**先问用户**，同意后 `python tools\环境检查.py --install --yes`（pip 包直装；ffmpeg 走 `winget install Gyan.FFmpeg`）；模型另跑 `--models`（Depth，约 99MB，HF 需代理）与 `--warm-asr`（预下转写模型）。**装软件必须用户同意，不许静默安装。**
+0. **环境检查（第一件事）**：`python tools\环境检查.py` —— 逐项自检 python≥3.9 / ffmpeg / ffprobe / WebView2 / pywebview，以及**按需**的 numpy / opencv / faster-whisper（拆解转写）/ onnxruntime（深度视频）/ Yunet 人脸模型 / 系统 OCR / Depth 模型，缺什么就打印该装什么。
+   装缺项：**先问用户**，同意后 `python tools\环境检查.py --install --yes`（**默认只装必需项**；要连大包一起装加 `--extras`；ffmpeg 走 `winget install Gyan.FFmpeg`）；模型另跑 `--models`（Depth，约 99MB，HF 需代理）与 `--warm-asr`（预下转写模型）。**装软件必须用户同意，不许静默安装。**
 1. **问项目位置**：agent 问「请问您要把项目建在哪里？您提供好素材后，我会自动将其进行归类」→ `python tools\首次配置.py --project "<项目目录>"` 建框架（`文案/素材/成片/废片/评价/备注`）+ 自动归类素材 + 写入 `references/paths.local.md`（已 gitignore，不进仓库）。
 2. **问平台（可选装 CLI）**：agent 问「你主要用哪个平台做 AI 视频？即梦 / 小云雀 / updream」→ 按 `references/platforms.md` 检测：
    - 即梦 = `dreamina`（官方脚本 `curl -fsSL https://jimeng.jianying.com/cli | bash`；Windows 用 Git Bash 或按官方指引）；

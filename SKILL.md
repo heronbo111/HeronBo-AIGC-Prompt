@@ -220,11 +220,30 @@ WorkBuddy 的 headless CLI（`tools\agent_bridge.py` 封装，已自动避开端
   2026-09-15 修过一个 bug：原先固定写 `__file__` 同目录，打包后那是 PyInstaller 的 `%TEMP%\_MEIxxxx`
   临时解包目录，程序一关连文件一起被删 → 每次重开都退回自动挑选（用户看到的现象是"agent 总是重置成
   workbuddy"）。**配置必须落在 exe 旁边，不能落在 `__file__` 旁边**——EXE 内其它写盘同理。
-- **部署**：`python tools\部署.py check|agents|install|shortcut|all`（体检 → 接 agent 通道 → 装依赖 →
-  建桌面快捷方式）。**装任何东西前不加 `--yes` 只打印命令**。图标：`python tools\图标.py`。
+- **部署（新机最短路径）**：**双击仓库根的 `一键安装.cmd`**，或 `python tools\部署.py all --yes`
+  —— 找 Python → 装依赖（**优先用仓库自带的离线 wheel**：`tools/_vendor/wheels/`，约 4 MB，免联网）
+  → 接 agent 通道并**真跑一句最小任务验证"装完就能干活"** → 建桌面快捷方式 → **把工作台弹出来**。
+  单项：`check|install|agents|shortcut|start|wx`。**装任何东西前不加 `--yes` 只打印命令**。
+  图标：`python tools\图标.py`。**没打包 exe 也能用**：`python tools\工作台.py` 起源码版工作台。
+  **依赖分两档**（2026-09-16：新机一次装几百 MB、用户反馈"装得慢"）：必需＝pywebview/pythonnet/clr_loader
+  （离线包）；按需＝numpy/opencv/faster-whisper/onnxruntime（用到才装，`--extras` 一次装全）。
+- **工作台界面白屏 = WebView2 运行库坏了**（2026-09-16 另一台机器实测：注册表写着装了某版本，但那个目录里
+  `msedgewebview2.exe` 不见了，`msedge.dll` 还在）→ 现在三道防线：①起窗前 `webview2_state()` 预检
+  （注册表版本 + 宿主 exe 是否真在），不可用就**根本不试独立窗口**、直接退 Edge；②**白窗看门狗**：25 秒内
+  页面没连上来就关窗退 Edge 并写 `%TEMP%\heronbo_webview2.txt`；③`部署.py check` 里有「WebView2 运行库」一行。
+  修：`python tools\部署.py wx --yes`（微软官方引导器，装前校验签名）。**这条不只影响工作台**——本机所有用
+  WebView2 的程序都会白屏。整条新机流程见 `docs/新机部署.md`。
+- **agent 通道与 node**：探测**不绑定某一家**，哪台电脑装了哪个就用哪个（明确选过 > 跟随正开着的客户端 >
+  装了本技能的 > 任意可用）。**没有 Node.js 也能接 WorkBuddy / ZCode**——它们自带 Electron，加
+  `ELECTRON_RUN_AS_NODE=1` 就是一个完整 node（ZCode.exe 实测报 v24.14.0）；Codex / DSH 才必须有 Node.js。
+  ZCode 的 CLI 找法按"根目录 + 1~3 层通配"搜（能认出 `F:\新建文件夹 (3)\ZCode\resources\glm\zcode.cjs`
+  这种多套一层的情况）；跑之前还会查 `~/.zcode/cli/config.json` 有没有 provider/model，没有就直说
+  「先跑一次 zcode login」，别让用户"选了才发现跑不了"。
 - **打包替换 exe**（2026-09-16 加）：`python -m PyInstaller --noconfirm --distpath _stage --workpath build
   score-tool.spec`（在 `tools\` 下跑）→ `python tools\换exe.py` 换到 `tools\dist\score-tool.exe`
   （自动留一份 `score-tool_旧_*.exe` 回滚）。**换位工具会拦"工作台还开着"**：exe 在跑的时候换，
   正在跑的实例会读到改过的文件、可能莫名崩（2026-09-16 用 `mv -f` 硬换踩到过）；真被拦下就关掉
   工作台再跑，实在要硬换加 `--force` 并**手工关掉重开**那个实例。
+- **clone 用 `--depth 1`**（2026-09-16）：仓库历史里有历代 18 MB 的 exe，完整 clone 要下 70 MB+ 历史，
+  浅克隆 20 MB 左右。新机照着 `docs/新机部署.md` 走。
 - **图文教程**：`docs/工作台与新手教程.html`（内容与本节同步；改规则请改仓库文件，不要只改那份 html）。

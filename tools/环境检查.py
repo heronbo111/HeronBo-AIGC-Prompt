@@ -11,14 +11,19 @@
 - 不检测平台账号、不代登录、不提交生成、不消耗积分。
 
 检查项与分级：
-    [必需]     python≥3.9 / ffmpeg / ffprobe / numpy / opencv(cv2)
-    [拆解用]   faster-whisper（口播/唱词转写）、Yunet 人脸模型（随仓库走）、Windows OCR（读画面文字）
-    [深度视频] onnxruntime + Depth-Anything-V2-Small（L4 复刻动作的前置）
+    [必需]     python≥3.9 / ffmpeg / ffprobe
+    [源码运行用] pywebview + pythonnet（用 dist 里的 exe 时不需要，exe 自带）
+    [可选]     numpy / opencv（成片对比、人物遮罩、竖版画布、拆解抽帧）——**用到才装**
+               faster-whisper（转写）、Yunet 人脸模型（随仓库走）、Windows OCR（读画面文字）
+    [可选]     onnxruntime + Depth-Anything-V2-Small（L4 复刻动作的前置）
+    **大包默认不装**：`--install` 只补必需项，`--install --extras` 才连可选的一起装
+    （2026-09-16：新机一上来就下几百 MB、装很久，用户反馈过）。
 
 用法：
     python tools\\环境检查.py                     # 只检查（缺项 exit 1）
     python tools\\环境检查.py --json               # 机读输出（agent 用）
-    python tools\\环境检查.py --install            # 装缺的 pip 包 / ffmpeg（会先确认一次）
+    python tools\\环境检查.py --install            # 装缺的必需项（会先确认一次）
+    python tools\\环境检查.py --install --extras   # 连可选大包一起装
     python tools\\环境检查.py --install --yes      # 无人值守（用户已同意）
     python tools\\环境检查.py --warm-asr           # 预下 faster-whisper 模型（默认 small）
     python tools\\环境检查.py --models             # 额外下 Depth 模型（约 99MB，HF 需代理）
@@ -98,8 +103,11 @@ def probe():
         add(b, "必需", bool(p), (p or "不在 PATH"),
             "" if p else "winget install --id Gyan.FFmpeg -e（或官网下载后加入 PATH）")
 
-    for mod, level in (("numpy", "必需"), ("cv2", "必需"),
-                       ("faster_whisper", "拆解用"), ("onnxruntime", "深度视频")):
+    # 分级很重要（2026-09-16 用户反馈"新机安装花了很长时间"）：numpy/opencv 只在
+    # 「成片对比 / 人物遮罩 / 竖版画布 / 拆解抽帧」这些工具里用得上，新机不该为了跑
+    # 提示词流程先下几百 MB。核心链路（写提示词、评分、工作台）不依赖它们。
+    for mod, level in (("numpy", "可选（对比/画布工具用）"), ("cv2", "可选（遮罩/抽帧用）"),
+                       ("faster_whisper", "可选（拆解转写）"), ("onnxruntime", "可选（深度视频）")):
         ok, detail = mod_state(mod)
         add(mod, level, ok, detail, "" if ok else "pip install %s" % PIP_PKGS[mod])
 
@@ -179,7 +187,9 @@ def do_warm_asr(model):
 
 def main():
     ap = argparse.ArgumentParser(description="Seedance skill 环境检查 / 部署自检")
-    ap.add_argument("--install", action="store_true", help="安装缺的 pip 包（ffmpeg 走 winget，会先问一次）")
+    ap.add_argument("--install", action="store_true", help="安装缺的必需项（ffmpeg 走 winget，会先问一次）")
+    ap.add_argument("--extras", action="store_true",
+                    help="连「用到才装」的大包一起装（numpy/opencv/转写/深度，几百 MB）")
     ap.add_argument("--yes", action="store_true", help="不询问（供 agent 在用户已同意后使用）")
     ap.add_argument("--models", action="store_true", help="下载 Depth 模型（约 99MB，HF 需代理）")
     ap.add_argument("--warm-asr", action="store_true", help="预下 faster-whisper 模型")
@@ -203,9 +213,16 @@ def main():
             len(miss), "齐了" if not any(i["级别"] == "必需" for i in miss) else "有缺失（先补必需项）"))
 
     if args.install:
+        # **默认只装必需项**（2026-09-16）：numpy/opencv/转写/深度这几个是"用到才装"的大包，
+        # 一次全下就是几百 MB、新机要等很久（用户反馈过）。要一次装全加 --extras。
         todo = [PIP_PKGS[i["项"]] for i in items
-                if i["状态"] == "缺" and i["项"] in PIP_PKGS]
+                if i["状态"] == "缺" and i["项"] in PIP_PKGS
+                and (args.extras or i["级别"] == "必需")]
+        skipped = [i["项"] for i in items if i["状态"] == "缺" and i["项"] in PIP_PKGS
+                   and not (args.extras or i["级别"] == "必需")]
         need_ff = any(i["状态"] == "缺" and i["项"] == "ffmpeg" for i in items)
+        if skipped:
+            print("\n[按需] 这几个先不装（用到再加 --extras）：%s" % "、".join(skipped))
         if not todo and not need_ff:
             print("\n没有需要安装的项。")
         else:
