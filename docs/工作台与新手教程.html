@@ -219,9 +219,15 @@
     <div class="grid2">
       <div class="card">
         <h3>第 0 步 · 装好（约 5 分钟）</h3>
-        <p>把仓库克隆到你的 agent 技能目录（ZCode 是 <code>~\.zcode\skills\</code>，Codex 是 <code>~\.codex\skills\</code>，DSH 是 <code>~\.dsh\skills\</code>）：</p>
-        <p><code>git clone https://gitee.com/HeronBo/seedance-prompt.git</code></p>
-        <p>然后跑环境自检：<code>python tools\环境检查.py</code>。缺什么它会打印装法——<b>装之前会先问你</b>，不会静默安装。</p>
+        <p>把仓库克隆到你的 agent 技能目录（ZCode 是 <code>~\.zcode\skills\</code>，Codex 是 <code>~\.codex\skills\</code>，DSH 是 <code>~\.dsh\skills\</code>）。
+        <b>带上 <code>--depth 1</code></b>——仓库历史里有历代 18 MB 的 exe，浅克隆能少下 50 MB：</p>
+        <p><code>git clone --depth 1 https://gitee.com/HeronBo/seedance-prompt.git</code>（GitHub 同款：
+        <code>https://github.com/heronbo111/seedance-prompt.git</code>，已公开）</p>
+        <p><b>然后双击仓库根的「一键安装.cmd」</b>：它会装依赖（用仓库自带的离线包，免联网、几秒）、
+        接 agent 通道并真跑一句验证、建桌面快捷方式，最后<b>把工作台弹出来</b>。装完桌面上有
+        「HeronBo 视频工作台」，以后双击它就能开工。</p>
+        <p>想看清楚每一步在做什么，就跑 <code>python tools\deploy.py check</code>（只体检、不改任何东西）。
+        缺什么它会打印装法——<b>装之前会先问你，不会静默安装</b>。完整流程与排错见 <code>docs\新机部署.md</code>。</p>
       </div>
 
       <div class="card">
@@ -423,21 +429,38 @@
   <!-- 7 部署 -->
   <section id="deploy">
     <h2><span class="no">7</span>部署：一条命令交给 agent 做完</h2>
-    <p class="sub">换机／换人接手时，不用手把手教——把这条命令丢给 agent 就行。</p>
+    <p class="sub">换机／换人接手时，不用手把手教——<b>新机就双击仓库根的「一键安装.cmd」</b>，
+    它把下面这些事按顺序做完，最后把工作台弹出来；想手动就照下面的命令一条条跑。</p>
     <div class="card">
-      <p><code>python tools\部署.py check</code> —— <b>只体检</b>：Python / tkinter / pywebview / node / ffprobe /
-      exe / 图标 / 样本库根 / 四个 agent 通道，缺什么列什么、并给出修法。</p>
-      <p><code>python tools\部署.py agents</code> —— 接 agent 通道：探测 WorkBuddy / Codex / ZCode / DSH；
-      ZCode 若没登录会给出 <code>zcode login</code> 命令，登录后若默认 provider 没额度，会自动改走桌面端可用的通道
-      （改前先备份 <code>~/.zcode/cli/config.json</code>）。</p>
-      <p><code>python tools\部署.py install --yes</code> —— 装缺的依赖（pywebview 等）。
+      <p><b>克隆用 <code>git clone --depth 1</code></b>：仓库历史里有历代 18 MB 的 exe，
+      完整 clone 要下 70 MB+ 历史，浅克隆只要 20 MB 左右——<b>"装得很慢"一半在这里</b>。</p>
+      <p><code>python tools\deploy.py check</code> —— <b>只体检</b>：Python / tkinter / pywebview /
+      <b>WebView2 运行库</b> / node / ffprobe / exe / 图标 / 样本库根 / 四个 agent 通道，
+      缺什么列什么、并给出修法。（中文名的 <code>tools\部署.py</code> 与它同一条，
+      批处理里用 ASCII 别名 <code>deploy.py</code>。）</p>
+      <p><code>python tools\deploy.py agents --yes</code> —— 接 agent 通道：探测 WorkBuddy / Codex /
+      ZCode / DSH，<b>哪台电脑装了哪个就用哪个</b>；<b>没有 Node.js 也能接 WorkBuddy 与 ZCode</b>
+      （工作台借它们自带的 Electron 当 node 跑 CLI）。ZCode 没登录会给 <code>zcode login</code>；
+      登录后没额度就自动改走桌面端可用的 provider（改前备份 <code>~/.zcode/cli/config.json</code>）。
+      最后<b>真跑一句最小任务验证"确实通了"</b>（消耗一点点额度，<code>--no-ping</code> 可跳过）。</p>
+      <p><code>python tools\deploy.py install --yes</code> —— 装缺的<b>必需</b>依赖：
+      <b>优先用仓库自带的离线 wheel</b>（<code>tools\_vendor\wheels\</code>，约 4 MB，免联网、几秒装完）；
+      numpy / opencv / 转写 / 深度那几个大包<b>用到才装</b>，要一次装全加 <code>--extras</code>。
       <b>不加 --yes 只打印命令，不会偷偷装</b>。</p>
-      <p><code>python tools\部署.py shortcut --yes</code> —— 在桌面建/更新快捷方式，指向
-      <code>dist\score-tool.exe</code>，用 <code>tools\工作台.ico</code> 作图标。</p>
-      <p style="margin-bottom:0"><code>python tools\部署.py all</code> —— 上面四步走一遍。</p>
+      <p><code>python tools\deploy.py shortcut --yes</code> —— 在桌面建/更新快捷方式（有 exe 指向
+      <code>dist\score-tool.exe</code>；没打包则指向源码启动器 <code>tools\工作台.py</code>；
+      图标用 <code>tools\工作台.ico</code>）。</p>
+      <p><code>python tools\deploy.py start --yes</code> —— 起工作台。没装 exe 也能用：
+      <code>python tools\工作台.py</code> 直接跑源码版（可带 <code>--project / --port / --edge</code>）。</p>
+      <p style="margin-bottom:0"><code>python tools\deploy.py all --yes</code> —— 上面全走一遍（含起工作台）。
+      <b>窗口一片空白？</b>那是 WebView2 运行库坏了（注册表说有、目录里 <code>msedgewebview2.exe</code> 却没了）——
+      跑 <code>python tools\deploy.py wx --yes</code> 装官方运行库；工作台现在也会先自检、
+      不可用就自动改用 Edge 窗口，不会再晾你一个白窗。整条流程见 <code>docs\新机部署.md</code>（含排错速查）。</p>
     </div>
     <p class="note" style="margin-top:12px">图标由 <code>tools\图标.py</code> 生成（纯标准库，不依赖 Pillow）：
     蓝色圆角块 + 四根竖条＝四栏。改图标跑一下就重新生成。</p>
+    <p class="note">窗口起不来时看这两个日志：<code>%TEMP%\heronbo_webview2.txt</code>（WebView2 体检结论）与
+    <code>%TEMP%\heronbo_webview_error.log</code>（pywebview 的真实报错）。</p>
   </section>
 
 </main>
