@@ -28,6 +28,8 @@ __pycache__/
 
 # exe 打包中间产物（不进仓库）
 tools/build/
+# exe 换位暂存：工作台开着时 exe 被占用，先打到这里、等它关掉再换过去
+tools/_stage/
 tools/*.spec
 # 例外：dist 里的成品 exe 随仓库分发 —— 用户 clone/pull 即有可用工具，
 # 不必在每台机器上装 Python + PyInstaller 再打包。
