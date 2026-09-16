@@ -33,6 +33,7 @@ const ICON = {
   folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
   x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
   trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 4h4M9 7l.7 12a2 2 0 0 0 2 1.9h.6a2 2 0 0 0 2-1.9L15 7M10.5 10.5v6M13.5 10.5v6"/></svg>',
+  xbold: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
 };
 function paintIcons() {
   document.querySelectorAll("[data-icon]").forEach((b) => {
@@ -379,7 +380,7 @@ function renderSamples() {
        <span class="grip" title="拖动改名次（会自动切成「自定义」排序）">⋮⋮</span>
        <span class="tw"><span class="g">${esc(s.name)}</span>
          <span class="m">${esc(meta)}</span></span>
-       <button class="ibtn sm delbtn" data-delproj="1" data-icon="trash"
+       <button class="ibtn sm delbtn" data-delproj="1" data-icon="xbold"
          title="删除「${esc(s.name)}」——可选：扔进回收站（能还原）/ 永久删除"></button></div>`;
   }).join("")
     || '<div class="meta">样本库里还没项目。把素材拖进②栏就能建，或点上面的「＋ 新建项目」。</div>';
@@ -408,26 +409,38 @@ function renderAgent(agent) {
 
 function agentModal() {
   const a = S.agent || {};
-  const rows = (a.list || []).map((r) => {
+  /* **只列这台电脑上有的**（2026-09-16 用户："别人电脑上没有 Codex、没有 DeepSeek 还会显示肯定是不对的"）：
+     可用的直接列；没装/没就绪的收进「本机没装的（N）」折叠块——信息还在，但不占视线。 */
+  const mk = (r) => {
     const now = r.ok && r.key === a.picked;
     const cls = (r.ok ? "" : " no") + (now ? " on" : "");
     const why = r.ok ? (r.host ? "本 skill 就装在它名下" : "本机可用") : (r.why || "不可用");
-    const right = now ? "✓ 当前使用" : (r.ok ? "点这里切换" : "不可用");
+    const right = now ? "✓ 当前使用" : (r.ok ? "点这里切换" : "本机没有");
     return `<div class="arow${cls}" data-k="${esc(r.key)}" data-ok="${r.ok ? 1 : 0}" title="${esc(r.why || "")}">
         <i class="adot ${r.ok ? "g" : "r"}"></i>
         <span class="an">${esc(r.label)}</span>
         <span class="aw">${esc(why)}</span>
         <span class="ar">${right}</span>
       </div>`;
-  }).join("");
+  };
+  const all = a.list || [];
+  const rows = all.filter((r) => r.ok).map(mk).join("")
+    || '<div class="meta">这台电脑上还没发现可用的 agent。</div>';
+  const missing = all.filter((r) => !r.ok);
+  const missBlock = missing.length ? `
+    <details class="agentmiss">
+      <summary>本机没装的（${missing.length}）——点开看装法与原因</summary>
+      ${missing.map(mk).join("")}
+    </details>` : "";
   const m = document.createElement("div");
   m.className = "modal";
   const usable = (a.list || []).filter((r) => r.ok).length;
   // 一台电脑上装哪个 agent 就用哪个——全不可用时得说清"怎么办"，不然只有一句"不可用"
   const howto = usable ? "" : `
     <div class="note" style="margin-top:4px">
-      <b>四个都没接上？</b>这台电脑上装哪个用哪个，随便装一个就行（选一个装，装完回来点一下重试）：
+      <b>这台电脑上还没接上 agent。</b>装哪个用哪个，随便装一个就行（装完回来点一下重试）：
       <br>· <b>WorkBuddy</b> / <b>ZCode</b>：装它们的桌面端即可——工作台会拿它自带的 Electron 跑 CLI，<b>连 Node.js 都不用装</b>；
+      <br>· <b>Claude Code</b>：官方安装脚本，或 <code>npm i -g @anthropic-ai/claude-code</code>（需要 Node.js）；
       <br>· <b>Codex CLI</b>：<code>npm i -g @openai/codex</code>（需要 Node.js）；
       <br>· <b>DSH</b>：<code>npx @deepseek-ai/dsh</code> 跑过一次（需要 Node.js）。
       <br>装完在仓库根跑一次 <code>python tools\\deploy.py agents</code>，它会探一遍并做一次真实连通测试。
@@ -435,11 +448,11 @@ function agentModal() {
       丢素材、建框架、收片、打分这些照常。
     </div>`;
   m.innerHTML = `<div class="box"><h3>agent 通道</h3>
-    <p class="meta">选法（从上到下，先满足先用）：<b>①</b> 你在界面里点过哪个就用哪个（下面的「✓ 当前使用」）；
-      <b>②</b> 没点过 → <b>跟随你正开着的客户端</b>（WorkBuddy / ZCode…）；
-      <b>③</b> 都没开 → 用"把本技能装在自己名下且命令行可用"的那个。
-      <span style="color:var(--ok)">● 可用</span>　<span style="color:var(--bad)">● 不可用</span>　点一行即固定用它。</p>
-    <div class="amod">${rows}</div>${howto}
+    <p class="meta"><b>这里只列这台电脑上真正有的 agent</b>（别的机器上装了什么，这边不会凭空多出来）。
+      选法：<b>①</b> 你点过哪个就用哪个（「✓ 当前使用」）；
+      <b>②</b> 没点过 → <b>跟随你正开着的客户端</b>；
+      <b>③</b> 都没开 → 用"把本技能装在自己名下且命令行可用"的那个。点一行即固定用它。</p>
+    <div class="amod">${rows}</div>${missBlock}${howto}
     <div class="sessbox">
       <b>当前会话</b>
       ${a.session ? `<code>${esc((a.session || "").slice(0, 22))}…</code>

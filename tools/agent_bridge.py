@@ -496,6 +496,42 @@ def codex_exe():
     return _glob_first(pats)
 
 
+def claude_exe():
+    """找 Claude Code 的 CLI（`claude`）。
+
+    2026-09-16 用户要求："有 Claude Code 的用户难道还不给他显示 Claude Code 的接口吗？
+    （当然还会有很多不同的 agent，要根据环境而定）"——所以适配器表按"环境里有什么就认什么"。
+    三种装法都覆盖：npm 全局（`claude.cmd`）、官方 native 安装（`~/.local/bin/claude.exe`）、
+    本地版（`~/.claude/local/claude.exe`）。
+    ⚠️ 本机（作者机）**没装 Claude Code**，这条是照官方文档的 CLI 形状写的、**未实测**；
+    真跑通了/跑不通都请把回执贴回来，我按实测改。
+    """
+    cfg = _local_cfg().get("claude")
+    if cfg and os.path.isfile(cfg):
+        return cfg
+    hit = shutil.which("claude.cmd") or shutil.which("claude") or shutil.which("claude.exe")
+    if hit:
+        return hit
+    home = os.path.expanduser("~")
+    pats = [os.path.join(os.environ.get("APPDATA", ""), "npm", "claude.cmd"),
+            os.path.join(home, "AppData", "Roaming", "npm", "claude.cmd"),
+            os.path.join(home, ".local", "bin", "claude.exe"),
+            os.path.join(home, ".local", "bin", "claude"),
+            os.path.join(home, ".claude", "local", "claude.exe"),
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "claude", "claude.exe"),
+            os.path.join(os.environ.get("ProgramFiles", ""), "Claude", "claude.exe")]
+    return _glob_first(pats)
+
+
+def _probe_claude():
+    exe = claude_exe()
+    if not exe:
+        return False, "没找到 claude（装法：`npm i -g @anthropic-ai/claude-code`，或官方安装脚本；需要 Node.js）"
+    if exe.lower().endswith((".cmd", ".bat")) and not node_exe():
+        return False, "找到 %s，但它是 npm 脚本、本机没有 node 跑不了（装 Node.js 或用官方 native 安装）" % exe
+    return True, exe
+
+
 def dsh_pkg():
     """找 DSH（DeepSeek Harness）的启动脚本。
 
@@ -615,6 +651,10 @@ ADAPTERS = {
               "transcripts": [(".zcode", "cli", "rollout", "model-io-{sid}.jsonl")]},
     "dsh": {"label": "DSH（DeepSeek Harness）", "probe": _probe_dsh, "proc": [],
             "transcripts": []},
+    # Claude Code（2026-09-16 加）：`claude -p` 无头跑，会话正文在 ~/.claude/projects/<cwd>/<sid>.jsonl。
+    # **本机未实测**（作者机没装）；命令形状照官方文档：-p + --output-format stream-json --verbose。
+    "claude": {"label": "Claude Code", "probe": _probe_claude, "proc": ["claude.exe"],
+               "transcripts": [(".claude", "projects", "*", "{sid}.jsonl")]},
 }
 
 
@@ -783,8 +823,45 @@ def build_cmd_for(key, prompt, session_id=None, cwd=None, permission_mode=None,
             cmd += ["resume", session_id]
         cmd.append(prompt)
         return cmd, "codex-json"
+    if key == "claude":
+        exe = claude_exe()
+        if not exe:
+            raise RuntimeError("claude 不可用（没找到 Claude Code 的 CLI）")
+        # 无头打印模式：-p 跑完就退；stream-json 才有逐行事件可喂进度（--verbose 是它的前置要求）
+        cmd = [exe, "-p", prompt, "--output-format", "stream-json", "--verbose",
+               "--permission-mode", "bypassPermissions"]
+        if session_id:
+            cmd += ["--resume", session_id]
+        return cmd, "claude-json"
     return build_cmd(prompt, session_id=session_id, permission_mode=permission_mode or "acceptEdits",
                      tools=tools, output_format="stream-json", extra=extra), "workbuddy-json"
+
+
+def _extract_claude_line(line):
+    """Claude Code `--output-format stream-json` 的一行 → (可读文本, session_id, 最终答复, 报错)。
+
+    官方形状（照文档写的，**本机未实测**）：
+      {"type":"system","subtype":"init","session_id":"…"}
+      {"type":"assistant","message":{"content":[{"type":"text","text":"…"}]}}
+      {"type":"result","subtype":"success","result":"<最终答复>","session_id":"…","is_error":false}
+    与 WorkBuddy 那套很像，所以复用它那两个工具函数；差别：Claude 把最终答复放在 result 字段、
+    会话 id 每行都可能带，取最新那个。
+    """
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        return line.strip()[:400], None, None, None
+    if not isinstance(obj, dict):
+        return "", None, None, None
+    sid = obj.get("session_id") or obj.get("sessionId") or None
+    final, err = None, None
+    if obj.get("type") == "result":
+        r = obj.get("result")
+        if isinstance(r, str) and r.strip():
+            final = r.strip()
+        err = bool(obj.get("is_error")) or (obj.get("subtype") not in (None, "success"))
+    txt = _pick_text(obj)
+    return (txt or ""), sid, final, err
 
 
 def _extract_stream_line(line):
@@ -1046,6 +1123,16 @@ def ask(prompt, session_id=None, cwd=None, timeout=DEFAULT_TIMEOUT,
                 if final:
                     text_parts.append(final)
                 if on_line and txt:
+                    on_line(txt)
+            elif mode == "claude-json":
+                txt, sid_, fin_, err_ = _extract_claude_line(line)
+                if sid_:
+                    stream_sid = sid_
+                if fin_:
+                    stream_text = fin_
+                if err_ is not None:
+                    stream_err = err_
+                if txt and on_line:
                     on_line(txt)
             else:
                 txt, sid_, fin_, err_ = _extract_stream_line(line)
