@@ -441,3 +441,9 @@ body[data-theme="暖夜"]{
   rgba(255,255,255,0) 8px 16px);animation:stripe 1.1s linear infinite}
 @keyframes stripe{to{background-position:32px 0}}
 .prog .top #btnStop{margin-left:8px}
+
+/* agent 弹窗里的「当前会话」块 */
+.sessbox{border:1px solid var(--border);border-radius:10px;background:var(--surface2);
+  padding:9px 11px;margin:6px 0;font-size:12.5px;display:flex;flex-direction:column;gap:5px}
+.sessbox b{font-size:12.5px}
+.sessbox .btn{align-self:flex-start}

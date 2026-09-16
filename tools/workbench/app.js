@@ -399,6 +399,16 @@ function agentModal() {
       <b>③</b> 都没开 → 用"把本技能装在自己名下且命令行可用"的那个。
       <span style="color:var(--ok)">● 可用</span>　<span style="color:var(--bad)">● 不可用</span>　点一行即固定用它。</p>
     <div class="amod">${rows}</div>
+    <div class="sessbox">
+      <b>当前会话</b>
+      ${a.session ? `<code>${esc((a.session || "").slice(0, 22))}…</code>
+        ${a.sessionKB ? `<span class="meta">上下文约 ${a.sessionKB >= 1024
+            ? (a.sessionKB / 1024).toFixed(1) + " MB" : a.sessionKB + " KB"}</span>` : ""}
+        <button class="btn ghost sm" id="mnewsess"
+          title="清掉这个会话记录：下一轮会开新对话（技能要重读一次，但上下文干净）">开新会话</button>`
+      : '<span class="meta">还没有会话（下一轮会新建一个）</span>'}
+      <div class="meta">续同一个会话 = 技能与项目上下文留在上下文里、带着缓存，更快；太长了就点「开新会话」。</div>
+    </div>
     <p class="note" style="margin-top:4px">选择记在 <code>${esc(a.cfg || "—")}</code>（关掉工作台也在）。
       想直接写文件：<code>{"agent": "codex"}</code>；要接没适配的命令行：
       <code>{"cmd": ["命令", "{prompt}"], "cmd_mode": "text"}</code>。</p>
@@ -416,6 +426,15 @@ function agentModal() {
       toast("已切换为 " + (S.agent.label || ""));
     };
   });
+  const ns = m.querySelector("#mnewsess");
+  if (ns) ns.onclick = async () => {
+    const r = await api("/api/agent/session", {action: "new"});
+    if (!r.ok) return toast(r.error || "清不了");
+    M.close();
+    await loadState();
+    logLine("已清掉会话记录：" + (r.note || ""), "warn");
+    toast(r.note || "下一轮开新对话");
+  };
   const auto = m.querySelector("#mauto");
   if (auto) auto.onclick = async () => {
     const r = await api("/api/agent/set", {key: ""});

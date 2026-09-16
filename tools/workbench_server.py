@@ -905,6 +905,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": False, "error": "缺 agent_bridge.py"})
             ok, why = abridge.set_agent((b.get("key") or "").strip())
             return self._json({"ok": ok, "why": why, "agent": self.agent_ok()})
+        if path == "/api/agent/session":
+            b = self._body()
+            pdir = self._proj(b)
+            if not (pcore and pdir and os.path.isdir(pdir)):
+                return self._json({"ok": False, "error": "没有项目"})
+            if (b.get("action") or "") == "new":
+                try:
+                    pcore.write_state(pdir, agentSession="")
+                except Exception as e:                           # noqa: BLE001
+                    return self._json({"ok": False, "error": "清会话失败：%s" % e})
+                return self._json({"ok": True, "note": "下一轮开始新对话（技能要重读一次）"})
+            return self._json({"ok": False, "error": "不认识的动作：%s" % b.get("action")})
         if path == "/api/agent/stop":
             _STOPPED["flag"] = True
             ok = bool(abridge and abridge.stop_current())
@@ -1176,6 +1188,22 @@ class Handler(BaseHTTPRequestHandler):
         try:
             info = abridge.agent_info()
             info["ok"] = bool(info.get("picked"))
+            # 当前会话：id + 它那份会话正文的大小（用大小粗略感知"上下文多满了"，
+            # 好让用户决定什么时候"开新会话"——2026-09-16 用户就是这么问的）
+            pdir = self._proj()
+            sid = (_proj_state(pdir) or {}).get("agentSession") or "" if pdir else ""
+            info["session"] = sid
+            info["sessionKB"] = 0
+            info["sessionFile"] = ""
+            if sid and pdir:
+                try:
+                    key, _why = abridge.pick_agent()
+                    fp = abridge.transcript_path(key or "", pdir, sid)
+                    if fp and os.path.isfile(fp):
+                        info["sessionFile"] = fp
+                        info["sessionKB"] = round(os.path.getsize(fp) / 1024.0, 1)
+                except Exception:                                # noqa: BLE001
+                    pass
             return info
         except Exception as e:                                   # noqa: BLE001
             return {"ok": False, "why": str(e), "picked": None, "list": []}
