@@ -50,6 +50,46 @@ if not os.path.isdir(WEB_DIR):
     WEB_DIR = os.path.join(HERE, "workbench")
 
 
+def recycle_bin_delete(path):
+    """把整个目录扔进 **Windows 系统回收站**（ctypes 调 Shell API，不引第三方库）。
+
+    为什么用它：用户要的「回收站」就是资源管理器里那个——能在回收站界面还原、也能被
+    「清空回收站」真删掉，而且样本库目录里不留残渣。失败（非 Windows / 该盘没开回收站 /
+    API 返回错）时返回 False，调用方退回项目内的 `_已删除/`（同样可逆）。
+    系统确认框不带（我们自己的弹窗已经问过一遍了）；`FOF_ALLOWUNDO` 才是"进回收站"，
+    少了它就是永久删——这个标志是这一段代码的全部关键。
+    """
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class SHFILEOPSTRUCTW(ctypes.Structure):
+            _fields_ = [("hwnd", wintypes.HWND),
+                        ("wFunc", wintypes.UINT),
+                        ("pFrom", wintypes.LPCWSTR),
+                        ("pTo", wintypes.LPCWSTR),
+                        ("fFlags", ctypes.c_uint16),
+                        ("fAnyOperationsAborted", wintypes.BOOL),
+                        ("hNameMappings", ctypes.c_void_p),
+                        ("lpszProgressTitle", wintypes.LPCWSTR)]
+
+        FO_DELETE = 3
+        FOF_ALLOWUNDO = 0x40            # ← 进回收站而不是永久删
+        FOF_NOCONFIRMATION = 0x10
+        FOF_SILENT = 0x4
+        FOF_NOERRORUI = 0x400
+        op = SHFILEOPSTRUCTW()
+        op.wFunc = FO_DELETE
+        op.pFrom = os.path.abspath(path) + "\0\0"      # 双 \0 收尾：这个字段可以塞多条路径
+        op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI
+        rc = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+        return rc == 0 and not os.path.exists(path)
+    except Exception:                                        # noqa: BLE001
+        return False
+
+
 def _load_core(fname, modname):
     for d in (BASE, HERE):
         p = os.path.join(d, fname)
@@ -427,19 +467,42 @@ def proj_need(pdir):
     return (((sk or {}).get("project") or {}).get("need") or "").strip()
 
 
-# ── 本机界面偏好（项目列表排序等）：写在 gitignored 的 tools/workbench.local.json ────
-UI_CFG = os.path.join(HERE, "workbench.local.json")
+# ── 本机界面偏好（项目列表排序、主题、栏宽）：gitignored 的 workbench.local.json ────
+# ⚠️ **不能直接用 HERE（2026-09-16 实测踩到）**：onefile 打包后 `__file__` 落在 PyInstaller
+# 的临时解包目录 `%TEMP%\_MEIxxxx`，程序一关目录连文件一起删 → 用户改过的排序/主题每次重开
+# 都回到默认。证据与 agent 配置那次同源（见 agent_bridge._pick_cfg_dir 的注释）。
+# 修法：路径交给 agent_bridge.cfg_dir() —— 源码运行＝tools/，打包后＝exe 旁边。
 _UI_LOCK = threading.Lock()
+_UI_DIR = None
+
+
+def prefs_dir():
+    global _UI_DIR
+    if _UI_DIR is None:
+        d = ""
+        if abridge and hasattr(abridge, "cfg_dir"):
+            try:
+                d = abridge.cfg_dir() or ""
+            except Exception:                                    # noqa: BLE001
+                d = ""
+        _UI_DIR = d or HERE
+    return _UI_DIR
+
+
+def ui_cfg_path():
+    return os.path.join(prefs_dir(), "workbench.local.json")
 
 
 def read_ui():
     try:
-        with open(UI_CFG, encoding="utf-8-sig") as f:
+        with open(ui_cfg_path(), encoding="utf-8-sig") as f:
             d = json.load(f) or {}
     except (OSError, ValueError):
         d = {}
-    d.setdefault("projSort", "default")     # default | name | mats | videos | time | custom
+    d.setdefault("projSort", "default")     # default | name | mats | videos | time | mtime | custom
     d.setdefault("projOrder", [])           # custom 时用：项目目录列表
+    d.setdefault("theme", "")               # 主题也存这儿（空＝还没存过，前端退回 localStorage）：
+                                            # localStorage 的域带端口，端口一变整套偏好就"没了"
     return d
 
 
@@ -447,12 +510,15 @@ def write_ui(patch):
     with _UI_LOCK:
         cur = read_ui()
         cur.update(patch or {})
+        p = ui_cfg_path()
         try:
-            with open(UI_CFG, "w", encoding="utf-8") as f:
+            tmp = p + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(cur, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, p)              # 原子换：中途断电也不会留下半个文件
         except OSError as e:
-            return {"ok": False, "error": "写不进 %s：%s" % (UI_CFG, e)}
-    return {"ok": True, "ui": cur}
+            return {"ok": False, "error": "写不进 %s：%s" % (p, e)}
+    return {"ok": True, "ui": cur, "cfgPath": p}
 
 
 # ── agent 记录：工作台自己给每一轮落一份（跟哪个 agent 无关，翻起来最省事）─────
@@ -982,6 +1048,7 @@ class Handler(BaseHTTPRequestHandler):
                   # 但服务端还留着（不然"建框架归类"会误判成"还没丢素材"，2026-09-16 实测踩到）
                   "pending": list(self.server.pending or []),
                   "ui": read_ui(),
+                  "uiCfg": ui_cfg_path(),       # 显示给用户看："排序/主题存在这儿"
                   "need": proj_need(pdir) if (pdir and os.path.isdir(pdir))
                           else (self.server.need or "")})
         d.update(self.root_issue(root))
@@ -989,12 +1056,18 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- ①栏「＋ 新建项目」/ ②栏「需求 · 素材增删排序」----------------------
     def delete_project(self, b):
-        """①栏项目的「删除」：**不真删**——整个项目目录移到 `<样本库根>/_已删除/<名字>-<时间戳>/`。
+        """①栏项目的「删除」，两种方式由用户当场选（2026-09-16 用户要求）：
 
-        为什么这么做：项目里有稿子、成片、评分，误删是灾难；移走可逆（资源管理器里搬回来就行），
-        而且 `_` 开头不会被列出来（`_samples()` 跳过下划线目录）。
+        - `mode="trash"`（默认）：扔进 **Windows 系统回收站**（能在回收站里还原）；回收站用不了
+          时退回项目内的 `<样本库根>/_已删除/<名字>-<时间戳>/`，同样可逆——而且在资源管理器里
+          搬回来就恢复，`_` 开头不会被列出来（`_samples()` 跳过下划线目录）。
+        - `mode="purge"`：**真删**（`shutil.rmtree`），删错了没得救，所以前端必须二次确认
+          （把件数和目录路径都摆出来）。
         """
         d = (b.get("dir") or "").rstrip("\\/")
+        mode = (b.get("mode") or "trash").strip().lower()
+        if mode not in ("trash", "purge"):
+            return {"ok": False, "error": "不认识的删除方式：%s" % mode}
         if not (d and os.path.isdir(d)):
             return {"ok": False, "error": "目录不存在：%s" % d}
         root = os.path.dirname(d)
@@ -1003,6 +1076,14 @@ class Handler(BaseHTTPRequestHandler):
             return {"ok": False, "error": "这个目录不是项目（下划线开头）：%s" % name}
         if os.path.normcase(d) == os.path.normcase(read_proj() or ""):
             self._set_proj("")                       # 删的正是当前项目 → 清掉指针
+        if mode == "purge":
+            try:
+                shutil.rmtree(d, ignore_errors=False)
+            except OSError as e:
+                return {"ok": False, "error": "永久删除失败：%s" % e}
+            return {"ok": True, "purged": d}
+        if mode == "trash" and recycle_bin_delete(d):
+            return {"ok": True, "recycled": d, "how": "recycle"}
         dest_root = os.path.join(root, "_已删除")
         dest = os.path.join(dest_root, "%s-%s" % (name, time.strftime("%Y%m%d-%H%M%S")))
         try:
@@ -1010,7 +1091,7 @@ class Handler(BaseHTTPRequestHandler):
             shutil.move(d, dest)
         except OSError as e:
             return {"ok": False, "error": "移走失败：%s" % e}
-        return {"ok": True, "movedTo": dest}
+        return {"ok": True, "movedTo": dest, "how": "trashdir"}
 
     def heal_skeleton(self, pdir):
         """打开一个**缺 框架.json** 的项目时把骨架补齐（返回 True 表示补了）。

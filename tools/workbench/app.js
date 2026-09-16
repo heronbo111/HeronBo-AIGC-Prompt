@@ -32,6 +32,7 @@ const ICON = {
   plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
   folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
   x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 4h4M9 7l.7 12a2 2 0 0 0 2 1.9h.6a2 2 0 0 0 2-1.9L15 7M10.5 10.5v6M13.5 10.5v6"/></svg>',
 };
 function paintIcons() {
   document.querySelectorAll("[data-icon]").forEach((b) => {
@@ -96,7 +97,8 @@ function logLine(text, cls) {
 
 /* ── 状态 ─────────────────────────────────────────────────────────── */
 const S = {state: null, pending: [], review: {}, dims: [], video: "", agentTimer: null,
-           rh: {}, agent: null, manualStep: null, prompts: [], uploads: [], prog: null};
+           rh: {}, agent: null, manualStep: null, prompts: [], uploads: [], prog: null,
+           theme: "原版", ui: {}, uiCfg: ""};
 
 const STEPS = [
   {n: "丢素材", who: "你", man: "把素材（文案/形象图/音频/原片）拖进②栏，然后点「建框架归类」"},
@@ -172,19 +174,29 @@ function stepBy(d) {                 // 上一步 / 下一步（手动切换，�
   renderFlow();
 }
 
-/* ── 主题：默认「原版」＝用户基准页那套；其余只换 CSS 变量 ───────────────── */
+/* ── 主题：默认「原版」＝用户基准页那套；其余只换 CSS 变量 ─────────────────
+   存两处：localStorage（首屏立刻上色，不等接口）+ 服务端 workbench.local.json
+   （**权威**）。为什么非得存服务端：localStorage 的域是 http://127.0.0.1:<端口>，
+   端口一变整套偏好就"没了"——用户看到的就是"每次打开都回到默认"。 */
 const THEMES = [
   ["原版", "#f4f6f9", "#2f6fed"], ["拾光", "#f6f4f1", "#e4622e"],
   ["深色", "#1b2028", "#5b8def"], ["莫兰迪", "#faf8f5", "#7d8f76"],
   ["护眼绿", "#f6faf4", "#2e7d32"], ["暗夜", "#15203a", "#4f8cff"],
   ["暖夜", "#241f1c", "#e0913f"],
 ];
-function applyTheme(name) {
+function applyTheme(name, save) {
   document.body.dataset.theme = (name === "原版") ? "" : name;
+  S.theme = name;
   try { localStorage.setItem("heronbo.theme", name); } catch (e) {}
   const b = $("btnTheme");
-  if (b) { b.textContent = "主题 · " + name; b.title = "换主题（默认原版）"; }
+  if (b) { b.textContent = "主题 · " + name; b.title = "换主题（当前：" + name + "，下次打开还是它）"; }
   syncBoard();               // 板子是独立文档，主题得喂给它（不然它自成一套配色）
+  if (save !== false) {      // 启动时按服务端恢复的那次不写回，免得来回打接口
+    api("/api/ui", {theme: name}).then((r) => {
+      if (r && r.ok) S.ui = r.ui;
+      else if (r && r.error) toast(r.error);
+    }).catch(() => {});
+  }
 }
 function themeModal() {
   const cur = (document.body.dataset.theme || "原版");
@@ -340,19 +352,20 @@ function renderSamples() {
   }
   const cur = st.project ? st.project.dir : "";
   const sort = (S.ui || {}).projSort || "default";
-  const shortTime = (v) => (v || "").replace(/^\d\d(\d\d)-(\d\d)-(\d\d) (\d\d:\d\d)$/, "$2-$3 $4");
+  // 时间只显到"月-日"：①栏窄，带时分的长文案会把项目名挤成 1 个字（2026-09-16 用户截图）
+  const shortTime = (v) => (v || "").replace(/^\d\d(\d\d)-(\d\d)-(\d\d)[ T](\d\d):(\d\d)$/, "$2-$3");
   $("sampleList").innerHTML = sortedSamples().map((s) => {
     // 按时间排时把时间显出来（不然用户看不出"到底排没排"）；其它排序显示素材/成片数
     const meta = (sort === "time" || sort === "mtime")
       ? `${shortTime(s.createdAt) || "—"} · 素材 ${s.materials}`
-      : `素材 ${s.materials} · 成片 ${s.videos}`;
-    return `<div class="row ${s.dir === cur ? "on" : ""}" data-dir="${esc(s.dir)}"
-        title="创建 ${esc(s.createdAt || "（未知）")} · 素材 ${s.materials} · 成片 ${s.videos}">
+      : `素材 ${s.materials} · 片 ${s.videos}`;
+    return `<div class="row proj ${s.dir === cur ? "on" : ""}" data-dir="${esc(s.dir)}"
+        title="${esc(s.name)}（创建 ${esc(s.createdAt || "未知")} · 素材 ${s.materials} · 成片 ${s.videos}）">
        <span class="grip" title="拖动改名次（会自动切成「自定义」排序）">⋮⋮</span>
-       <span class="g">${esc(s.name)}</span>
-       <span class="m">${meta}</span>
-       <button class="ibtn sm" data-delproj="1" data-icon="x"
-         title="删除这个项目（整个目录移到样本库根的 _已删除/，能搬回来）"></button></div>`;
+       <span class="tw"><span class="g">${esc(s.name)}</span>
+         <span class="m">${esc(meta)}</span></span>
+       <button class="ibtn sm delbtn" data-delproj="1" data-icon="trash"
+         title="删除「${esc(s.name)}」——可选：扔进回收站（能还原）/ 永久删除"></button></div>`;
   }).join("")
     || '<div class="meta">样本库里还没项目。把素材拖进②栏就能建，或点上面的「＋ 新建项目」。</div>';
   $("sampleList").querySelectorAll(".row").forEach((el) => {
@@ -687,6 +700,10 @@ async function loadState(scrollTop) {
   S.dims = st.dims || [];
   S.mats = st.materials || [];
   S.ui = st.ui || S.ui || {};
+  S.uiCfg = st.uiCfg || S.uiCfg || "";
+  // 主题：服务端存过就照它（权威）；没存过就保留首屏从 localStorage 上的那套
+  const th = (S.ui || {}).theme;
+  if (th && th !== (S.theme || document.body.dataset.theme || "原版")) applyTheme(th, false);
   S.pending = st.pending || [];        // 待投放以服务端为准（刷新页面后不会"丢"）
   const pr = await api("/api/prompts");
   S.prompts = pr.prompts || []; S.uploads = pr.uploads || []; S.wenan = pr.wenan || [];
@@ -723,12 +740,17 @@ async function openFolder(kind, sub) {
 }
 
 /* ── ①栏项目列表：排序 + 拖动 ────────────────────────────────────────
-   排序方式：默认（样本库扫描顺序）/ 名称 / 素材数 / 成片数 / 创建时间 / 自定义。
-   **拖动即切到"自定义"**并把名次存进本机偏好（tools/workbench.local.json，gitignored）。 */
-const SORTS = [["default", "默认（扫描顺序）"], ["time", "按创建时间（新→旧）"],
-               ["mtime", "按最近改动（新→旧）"],
-               ["mats", "按素材数（多→少）"], ["videos", "按成片数（多→少）"],
-               ["name", "按名称（A→Z）"]];
+   排序方式：默认（样本库扫描顺序）/ 创建时间 / 最近改动 / 素材数 / 成片数 / 名称 / 自定义。
+   **拖动即切到"自定义"**并把名次存进本机偏好（workbench.local.json，gitignored）。
+   标签分两栏：`短`（按钮上，①栏窄，长了会把列标题挤成两行）+ `长`（弹窗里的说明）。 */
+const SORTS = [
+  ["default", "默认", "样本库扫描出来的顺序"],
+  ["time", "创建时间", "新建的项目排前面"],
+  ["mtime", "最近改动", "最近动过的排前面"],
+  ["mats", "素材数", "素材多的排前面"],
+  ["videos", "成片数", "成片多的排前面"],
+  ["name", "名称", "按项目名 A→Z"],
+];
 
 function sortedSamples() {
   const list = (S.state.samples || []).slice();
@@ -751,32 +773,37 @@ function sortedSamples() {
   return list;
 }
 
+/* 排序按钮上的文案 = 短标签（存的是哪种就显哪种，重开也照它显） */
 function renderSampleSortBtn() {
   const ui = S.ui || {};
   const sort = ui.projSort || "default";
   const hit = SORTS.find((x) => x[0] === sort);
+  const short = sort === "custom" ? "自定义" : (hit ? hit[1] : "默认");
+  const full = sort === "custom" ? "自定义（按拖动排的名次）" : (hit ? hit[2] : "样本库扫描出来的顺序");
   const b = $("btnSort");
-  b.textContent = "排序 · " + (sort === "custom" ? "自定义" : (hit ? hit[1].replace(/（.*）/, "") : "默认"));
-  b.title = "项目列表排序；拖动项目行也会自动切成「自定义」";
+  (b.querySelector(".lab") || b).textContent = "排序 · " + short;
+  b.title = "当前排序：" + full + "\n点一下换；拖动项目行会自动切成「自定义」并把名次记下来";
 }
 
 function sortMenu() {
   const ui = S.ui || {};
   const cur = ui.projSort || "default";
-  const rows = SORTS.map(([k, label]) =>
+  const rows = SORTS.map(([k, short, full]) =>
     `<div class="arow ${k === cur ? "on" : ""}" data-s="${esc(k)}">
-       <span class="an">${esc(label)}</span>
-       <span class="aw">${k === "default" ? "样本库扫描出来的顺序" : ""}</span>
+       <span class="an">${esc(short)}</span>
+       <span class="aw">${esc(full)}</span>
        <span class="ar">${k === cur ? "✓ 当前" : "用它"}</span></div>`).join("")
     + `<div class="arow ${cur === "custom" ? "on" : ""}" data-s="custom">
-         <span class="an">自定义（拖动排的）</span>
-         <span class="aw">${(ui.projOrder || []).length} 个已排名次</span>
+         <span class="an">自定义</span>
+         <span class="aw">按拖动的名次（已记 ${(ui.projOrder || []).length} 个）</span>
          <span class="ar">${cur === "custom" ? "✓ 当前" : "用它"}</span></div>`;
   const m = document.createElement("div");
   m.className = "modal";
   m.innerHTML = `<div class="box"><h3>项目列表排序</h3>
-    <p class="meta">选一种排序，或者直接在列表里拖动项目行（拖动会自动切到「自定义」并记住名次）。</p>
+    <p class="meta">选一种排序，或者直接在列表里拖动项目行（拖动会自动切到「自定义」并记住名次）。
+      选过的排序、主题都存在本机偏好文件里，下次打开照上次来。</p>
     <div class="amod">${rows}</div>
+    <p class="meta" title="${esc(S.uiCfg || "")}">存在：<code>${esc(S.uiCfg || "（未知）")}</code></p>
     <div style="text-align:right;margin-top:12px"><button class="btn ghost" id="mclose">关掉</button></div>
     </div>`;
   const M = openModal(m, "项目列表排序", () => $("btnSort").classList.remove("on"));
@@ -1046,7 +1073,7 @@ async function recordsModal() {
   if (!r.ok) return toast(r.error || "读不到记录");
   const rows = (r.records || []).map((x) =>
     `<div class="arow" data-n="${esc(x.name)}">
-       <span class="an">${esc(x.name.replace(/\.jsonl$/, "").replace(/-/, " ").replace(/-/, "  "))}</span>
+       <span class="an wide">${esc(x.name.replace(/\.jsonl$/, "").replace(/-/, " ").replace(/-/, "  "))}</span>
        <span class="aw">${size(x.size)}</span>
        <span class="ar">点开看</span></div>`).join("")
     || '<div class="meta">这个项目还没跑过 agent（跑一轮就会出现在这里）</div>';
@@ -1096,31 +1123,58 @@ async function recordsModal() {
   });
 }
 
-/* 删除项目：**不真删**——整个目录移到 <样本库根>/_已删除/，确认弹窗把这点写清楚 */
+/* 删除项目：**两种方式由用户当场选**（2026-09-16 用户要求）——
+   ① 扔进回收站＝Windows 系统回收站（能在回收站里还原）；② 永久删除＝真删，回收站里也没有。
+   永久删除要**点两次**（第一次只是把按钮变成"再点一次＝永久删除"），免得手滑。 */
 function deleteProjectModal(dir) {
   const s = (S.state.samples || []).find((x) => x.dir === dir) || {};
   const name = s.name || dir.split(/[\/]/).pop();
-  const root = (S.state.root || "").replace(/[\/]+$/, "");
   const m = document.createElement("div");
   m.className = "modal";
   m.innerHTML = `<div class="box"><h3>删除项目</h3>
-    <p class="meta">把「<b>${esc(name)}</b>」从样本库里拿掉（里面：素材 ${s.materials || 0} ·
-      成片 ${s.videos || 0} · 评分 ${s.reviews || 0}）。</p>
-    <p class="note"><b>不是真删</b>：整个项目目录会被搬到
-      <code>${esc(root)}${root ? "\\" : ""}_已删除\${esc(name)}-时间戳\</code>，
-      在资源管理器里搬回来就恢复。</p>
+    <p class="meta">「<b>${esc(name)}</b>」里面有：素材 ${s.materials || 0} · 成片 ${s.videos || 0}
+      · 评分 ${s.reviews || 0}。选一种删法：</p>
+    <button class="delopt" id="dpTrash">
+      <b>扔进回收站</b>
+      <span>进 Windows 回收站，随时能在回收站里还原；样本库目录里就看不见它了。</span></button>
+    <button class="delopt bad" id="dpPurge">
+      <b>永久删除</b>
+      <span>直接抹掉，回收站里也没有——稿子、成片、评分一起没，不可恢复。</span></button>
+    <div class="note bad" id="dpWarn" hidden>
+      <b>永久删除要再点一次确认</b>：这会真删掉整个目录，删完找不回来。</div>
+    <p class="meta">目录：<code title="${esc(dir)}">${esc(dir)}</code></p>
     <div style="text-align:right;margin-top:12px">
-      <button class="btn ghost" id="dpCancel">取消</button>
-      <button class="btn danger" id="dpOk">移到 _已删除</button></div></div>`;
+      <button class="btn ghost" id="dpCancel">取消</button></div></div>`;
   const {close} = openModal(m, "删除项目");
-  m.querySelector("#dpCancel").onclick = close;
-  m.querySelector("#dpOk").onclick = async () => {
-    const r = await api("/api/project/delete", {dir});
+  let armed = false;
+  async function run(mode) {
+    const r = await api("/api/project/delete", {dir, mode});
     if (!r.ok) return toast(r.error || "删除失败");
-    logLine("已把项目移走：" + name + " → " + r.movedTo, "warn");
-    toast("已移到 _已删除/（能搬回来）");
+    if (r.recycled) {
+      logLine("已把「" + name + "」扔进回收站（回收站里能还原）", "warn");
+      toast("已扔进回收站（回收站里能还原）");
+    } else if (r.movedTo) {
+      logLine("回收站用不了，已把「" + name + "」移到 " + r.movedTo, "warn");
+      toast("已移到 _已删除/（能搬回来）");
+    } else {
+      logLine("已永久删除「" + name + "」：" + name, "bad");
+      toast("已永久删除「" + name + "」");
+    }
     close();
     await loadState();
+  }
+  m.querySelector("#dpCancel").onclick = close;
+  m.querySelector("#dpTrash").onclick = () => run("trash");
+  const purge = m.querySelector("#dpPurge");
+  purge.onclick = () => {
+    if (!armed) {                       // 第一次点：只把话说更狠，不动文件
+      armed = true;
+      purge.classList.add("armed");
+      purge.querySelector("b").textContent = "再点一次＝永久删除";
+      m.querySelector("#dpWarn").hidden = false;
+      return;
+    }
+    run("purge");
   };
 }
 
@@ -1496,6 +1550,7 @@ makeVResizable($("matBox"), "mat", 80, 700);             // ②栏 素材清单
 BOARD.wrap = $("boardWrap");
 BOARD.frame = $("boardFrame");
 paintIcons();
-try { applyTheme(localStorage.getItem("heronbo.theme") || "原版"); } catch (e) { applyTheme("原版"); }
+/* 首屏先按 localStorage 上色（不等接口）；save=false —— 别把"还没读到的偏好"当成用户的选择写回去 */
+try { applyTheme(localStorage.getItem("heronbo.theme") || "原版", false); } catch (e) { applyTheme("原版", false); }
 loadState();
 logLine("工作台已就绪");

@@ -74,11 +74,13 @@ header{display:flex;align-items:center;gap:10px;padding:9px 16px;background:var(
 .col:last-child{border-right:none}
 .colhead{height:44px;flex:0 0 44px;display:flex;align-items:center;gap:8px;padding:0 12px;
   background:linear-gradient(180deg,var(--surface2),var(--surface));border-bottom:1px solid var(--border)}
+/* 列标题：栏窄 + 右边按钮长时会换行（"项/目"竖着排）→ 标题只准一行、超出打省略号 */
 .colhead h2{margin:0;font-size:13px;font-weight:700;letter-spacing:.3px;display:flex;
-  align-items:center;gap:7px}
+  align-items:center;gap:7px;min-width:0;overflow:hidden;white-space:nowrap}
+.colhead h2 .cn{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .colhead .no{display:inline-flex;width:18px;height:18px;border-radius:6px;background:var(--accent-soft);
-  color:var(--accent);align-items:center;justify-content:center;font-size:11px;font-weight:700}
-.colhead .acts{margin-left:auto;display:flex;gap:6px;align-items:center}
+  color:var(--accent);align-items:center;justify-content:center;font-size:11px;font-weight:700;flex:0 0 auto}
+.colhead .acts{margin-left:auto;display:flex;gap:6px;align-items:center;min-width:0}
 .colbody{flex:1;min-height:0;overflow:auto;padding:11px 12px}
 .seclab{font-size:12px;font-weight:700;color:var(--muted);margin:12px 0 6px}
 .seclab:first-child{margin-top:0}
@@ -86,12 +88,14 @@ header{display:flex;align-items:center;gap:10px;padding:9px 16px;background:var(
 /* 列表 */
 .list{display:flex;flex-direction:column;gap:2px}
 .row{display:flex;align-items:center;gap:8px;padding:7px 9px;border:1px solid transparent;
-  border-radius:8px;cursor:pointer;font-size:13px}
+  border-radius:8px;cursor:pointer;font-size:13px;min-width:0}
 .row:hover{background:var(--surface2)}
 .row.on{background:var(--accent-soft);border-color:var(--accent);
   box-shadow:0 2px 4px rgba(47,111,237,.15)}
-.row .g{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.row .m{font-size:11px;color:var(--muted);flex:0 0 auto}
+.row .g{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 右边的元信息（件数/大小）也得能缩，否则它撑着不缩、把左边的名字挤成 1 个字 */
+.row .m{font-size:11px;color:var(--muted);flex:0 1 auto;min-width:0;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
 .row.plain{cursor:default}
 .card{border:1px solid var(--border);border-radius:10px;background:var(--surface2);padding:10px 11px;
   font-size:13px}
@@ -264,10 +268,13 @@ textarea{width:100%;resize:vertical}
 .arow .adot{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
 .arow .adot.g{background:var(--ok);box-shadow:0 0 0 3px rgba(18,161,80,.15)}
 .arow .adot.r{background:var(--bad);box-shadow:0 0 0 3px rgba(229,72,77,.13)}
-.arow .an{font-weight:600;flex:0 0 auto;min-width:104px}
-.arow .aw{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+/* 长文案一律缩着走：名称占固定的 34% 一栏（各行对齐），说明占剩下的、超了打省略号 */
+.arow .an{font-weight:600;flex:0 0 34%;min-width:0;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.arow .an.wide{flex:0 0 auto;max-width:66%}          /* 长会话名这类：该看全，别截断 */
+.arow .aw{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   font-size:12px;color:var(--muted)}
-.arow .ar{flex:0 0 auto;font-size:12px;color:var(--muted)}
+.arow .ar{flex:0 0 auto;font-size:12px;color:var(--muted);white-space:nowrap}
 .arow.on .ar{color:var(--accent);font-weight:600}
 
 /* ── 主题：默认「原版」＝上面 :root 的那套（用户基准页配色）─────────────────
@@ -329,12 +336,37 @@ body[data-theme="暖夜"]{
 
 /* ── ①栏项目列表：拖动名次 + 排序按钮 ─────────────────────────────────── */
 .iconbtn.sm{padding:3px 8px;font-size:12px;border-radius:7px}
+/* 排序按钮：标签单独包一层才好打省略号（按钮自己不能 text-overflow）
+   ①栏默认 236px，长标签（"排序 · 按创建时间（新→旧）"）会把列标题挤成两行（2026-09-16 截图） */
+#btnSort{min-width:0;max-width:150px;overflow:hidden}
+#btnSort .lab{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+/* 项目行：名字一行、元信息一行（窄栏里比"名字被挤成 1 个字"好读得多） */
+.row.proj{align-items:center;gap:6px}
+.row.proj .tw{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px;overflow:hidden}
+.row.proj .tw .g{flex:0 0 auto;width:100%}
+.row.proj .tw .m{width:100%}
 .row .grip{color:var(--dot-idle);font-size:12px;letter-spacing:-1px;cursor:grab;
   flex:0 0 auto;user-select:none;opacity:0;transition:opacity .12s}
 .row:hover .grip{opacity:1}
 .row.drag{opacity:.45}
 .row.over{outline:2px dashed var(--accent);outline-offset:-2px}
 .row.over-after{border-bottom:2px solid var(--accent)}
+/* 项目行的删除按钮：常显（原来只在悬停时隐约出现，用户说"看不出来能删"），
+   平时低调、悬停变红；图标是垃圾桶，不是那个容易被当成"关闭"的 × */
+.row .delbtn{flex:0 0 auto;opacity:.45;color:var(--muted)}
+.row:hover .delbtn{opacity:1}
+.row .delbtn:hover{opacity:1;color:#fff;background:var(--bad);border-color:var(--bad)}
+/* 删除弹窗里的两个选项：大块、看得清、永久删除那份是红的 */
+.delopt{display:flex;flex-direction:column;gap:3px;width:100%;text-align:left;margin-top:9px;
+  padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--surface);
+  cursor:pointer;transition:border-color .15s,background .15s}
+.delopt:hover{background:var(--surface2);border-color:var(--hover-border)}
+.delopt b{font-size:13px}
+.delopt span{font-size:11px;color:var(--muted);line-height:1.5}
+.delopt.bad b{color:var(--bad)}
+.delopt.bad:hover{border-color:var(--bad);background:var(--bad-soft)}
+.delopt.armed{color:#fff;background:var(--bad);border-color:var(--bad)}
+.delopt.armed b,.delopt.armed span{color:#fff}
 
 /* ── 对话记录弹窗里的时间线 ───────────────────────────────────────────── */
 .recbox{max-height:46vh;overflow:auto;border:1px solid var(--border);border-radius:10px;
@@ -429,10 +461,16 @@ body[data-theme="暖夜"]{
 .vbox{position:relative;display:flex;flex-direction:column;min-height:0}
 .vbox.sized > .prompt,.vbox.sized > .log{flex:1 1 auto;height:100%;max-height:none}
 
-/* 项目行上的删除按钮：悬停才显形，红色提示 */
-.row .ibtn.sm[data-delproj]{width:22px;height:22px;flex:0 0 auto;opacity:0;transition:opacity .12s}
+/* 项目行上的删除按钮：**常显**（2026-09-16 用户说"删除按钮明显一点"，
+   原来悬停才显形，等于藏起来了）；平时带虚线框低调、悬停变实、红底白图标 */
+.row .ibtn.sm[data-delproj]{width:24px;height:24px;flex:0 0 auto;opacity:.62;
+  color:var(--muted);border-style:dashed;
+  transition:opacity .12s,color .12s,background .12s,border-color .12s}
+.row .ibtn.sm[data-delproj] svg{width:13px;height:13px}
 .row:hover .ibtn.sm[data-delproj]{opacity:1}
-.row .ibtn.sm[data-delproj]:hover{color:var(--bad);background:var(--bad-soft)}
+.row .ibtn.sm[data-delproj]:hover{opacity:1;color:#fff;background:var(--bad);
+  border-color:var(--bad);border-style:solid}
+.row .ibtn.sm[data-delproj]:hover svg{transform:none}
 /* 进度条旁边那句"这条通道不吐过程输出" */
 .prog .top .quiet{color:var(--muted);font-weight:400;font-size:11px;margin-left:6px}
 
