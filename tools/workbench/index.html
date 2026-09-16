@@ -26,7 +26,7 @@
   <button class="btn ghost" id="btnClassic" title="旧 Tk 界面（排查问题时用）">经典界面</button>
 </div>
 
-<div class="work">
+<div class="work" id="work">
 
   <section class="col">
     <div class="colhead"><h2><span class="no">1</span>项目</h2>
@@ -45,6 +45,8 @@
       <div id="projCard" class="card"></div>
     </div>
   </section>
+
+  <div class="split" data-col="1" title="拖动改这一栏的宽窄（双击恢复默认）"></div>
 
   <section class="col">
     <div class="colhead"><h2><span class="no">2</span>文案/素材识别</h2>
@@ -69,10 +71,14 @@
         <div class="needfoot"><span class="meta" id="needHint">改完点「存」</span>
           <button class="btn ghost sm" id="btnSaveNeed">存</button></div>
       </div>
-      <div id="pendList" class="list"></div>
-      <div id="matList" class="list"></div>
+      <div class="matbox" id="matBox">
+        <div id="pendList" class="list"></div>
+        <div id="matList" class="list"></div>
+      </div>
     </div>
   </section>
+
+  <div class="split" data-col="2" title="拖动改这一栏的宽窄（双击恢复默认）"></div>
 
   <section class="col">
     <div class="colhead"><h2><span class="no">3</span>分镜 / 提示词</h2>
@@ -88,9 +94,9 @@
         <div class="stages" id="pstages"></div>
       </div>
       <div class="seclab">提示词正文 <span class="meta" id="stageLab"></span></div>
-      <div class="prompt" id="promptBox">（还没有提示词正文）</div>
+      <div class="vbox" id="promptWrap"><div class="prompt" id="promptBox">（还没有提示词正文）</div></div>
       <div class="seclab">即梦上传清单</div>
-      <div id="upList" class="list"></div>
+      <div class="upbox" id="upBox"><div id="upList" class="list"></div></div>
       <div class="seclab">成片 / 废片</div>
       <div class="rowline">
         <button class="btn ghost" id="btnGood">收成片</button>
@@ -107,9 +113,11 @@
         <button class="btn ghost sm" id="btnRecords" style="float:right"
                 title="看 agent 每一轮到底干了什么（工作台每轮自己记一份）">对话记录</button>
       </div>
-      <div class="log" id="log"></div>
+      <div class="vbox" id="logWrap"><div class="log" id="log"></div></div>
     </div>
   </section>
+
+  <div class="split" data-col="4" title="拖动改这一栏的宽窄（双击恢复默认）"></div>
 
   <section class="col">
     <div class="colhead"><h2><span class="no">4</span>评分</h2>

@@ -639,10 +639,8 @@ function fillReview(rev) {
 
 /* ── 动作 ─────────────────────────────────────────────────────────── */
 async function loadState(scrollTop) {
-  const br = $("btnRefresh");
-  if (br) br.classList.add("spinning");           // 刷新时图标转起来（动效：让人知道在扫）
+  spinRefresh(600);                  // 点一次刷新，两个箭头转起来（至少 600ms 才看得见）
   const st = await api("/api/state");
-  if (br) br.classList.remove("spinning");
   S.state = st;
   S.dims = st.dims || [];
   S.mats = st.materials || [];
@@ -788,6 +786,141 @@ function bindSampleDrag() {
       toast("名次已存（排序切成「自定义」）");
     });
   });
+}
+
+/* ── 面板调宽窄 + 框调高矮（2026-09-16 用户要求："这些面板调节大小还有面板里面的对话框"）
+   面板＝四栏：三条分隔条各自控制左边那一栏的宽度（第三条控制④栏，方向相反）。
+   框＝面板里的内容框（提示词正文 / 即梦上传 / 素材清单 / 执行记录）：底部抓手拖高矮。
+   尺寸都存 localStorage（本机偏好），双击抓手＝恢复默认。 */
+const COL_MIN = {1: 170, 2: 200, 4: 240};      // 各栏最小宽度
+const MID_MIN = 320;                            // ③栏是弹性列，给它留够
+
+function applyCols(v) {
+  const r = document.documentElement.style;
+  if (v && v.length === 3) {
+    r.setProperty("--col1", v[0] + "px");
+    r.setProperty("--col2", v[1] + "px");
+    r.setProperty("--col4", v[2] + "px");
+  }
+}
+
+function colsNow() {
+  const cs = getComputedStyle(document.documentElement);
+  return [1, 2, 4].map((i) => Math.round(parseFloat(cs.getPropertyValue("--col" + i)) || 0));
+}
+
+function saveCols(v) {
+  try { localStorage.setItem("heronbo.cols", JSON.stringify(v)); } catch (e) {}
+}
+
+function makeColumnsResizable() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("heronbo.cols") || "null");
+    if (saved && saved.length === 3) applyCols(saved);
+  } catch (e) {}
+  document.querySelectorAll(".split").forEach((sp) => {
+    const which = +sp.dataset.col;               // 1 / 2 / 4
+    let dragging = false, sx = 0, v0 = [];
+    sp.addEventListener("pointerdown", (e) => {
+      dragging = true; sp.classList.add("on");
+      sx = e.clientX; v0 = colsNow();
+      document.body.style.cursor = "col-resize";
+      try { sp.setPointerCapture(e.pointerId); } catch (err) {}
+      e.preventDefault();
+    });
+    sp.addEventListener("pointermove", (e) => {
+      if (!dragging) return;
+      const dx = e.clientX - sx;
+      const v = v0.slice();
+      if (which === 1) v[0] = v0[0] + dx;
+      if (which === 2) v[1] = v0[1] + dx;
+      if (which === 4) v[2] = v0[2] - dx;         // ③栏右侧那条：往左拖＝④栏变宽
+      v[0] = Math.max(COL_MIN[1], v[0]);
+      v[1] = Math.max(COL_MIN[2], v[1]);
+      v[2] = Math.max(COL_MIN[4], v[2]);
+      // 别把③栏（弹性列）挤没了
+      const work = document.getElementById("work");
+      const avail = (work ? work.clientWidth : innerWidth) - 15;
+      const over = v[0] + v[1] + v[2] - (avail - MID_MIN);
+      if (over > 0) {                             // 超了就压缩正在拖的那一栏
+        if (which === 1) v[0] -= over;
+        else if (which === 2) v[1] -= over;
+        else v[2] -= over;
+        if (which === 1) v[0] = Math.max(COL_MIN[1], v[0]);
+        if (which === 2) v[1] = Math.max(COL_MIN[2], v[1]);
+        if (which === 4) v[2] = Math.max(COL_MIN[4], v[2]);
+      }
+      applyCols(v);
+    });
+    const stop = () => {
+      if (!dragging) return;
+      dragging = false; sp.classList.remove("on"); document.body.style.cursor = "";
+      saveCols(colsNow());
+      Object.values(S.rh || {}).forEach((r) => r && r.paint && r.paint());   // 滑块要跟着重算
+    };
+    sp.addEventListener("pointerup", stop);
+    sp.addEventListener("pointercancel", stop);
+    sp.addEventListener("dblclick", () => {
+      document.documentElement.style.removeProperty("--col1");
+      document.documentElement.style.removeProperty("--col2");
+      document.documentElement.style.removeProperty("--col4");
+      try { localStorage.removeItem("heronbo.cols"); } catch (e) {}
+      toast("栏宽已恢复默认");
+      Object.values(S.rh || {}).forEach((r) => r && r.paint && r.paint());
+    });
+  });
+}
+
+/* 面板里的框：底部抓手拖高矮 */
+function makeVResizable(el, key, minH, maxH) {
+  if (!el) return;
+  const k = "heronbo.vh." + key;
+  const defH = el.getBoundingClientRect().height;
+  const setH = (h) => { el.style.height = h + "px"; el.classList.add("sized"); };
+  try {
+    const h = parseFloat(localStorage.getItem(k) || "0");
+    if (h) setH(h);            // 拖过才把内层填满（没拖过保持内层自己的 max-height）
+  } catch (e) {}
+  const bar = document.createElement("span");
+  bar.className = "vrz";
+  bar.title = "拖动改高度（双击恢复默认）";
+  el.appendChild(bar);
+  let dragging = false, sy = 0, h0 = 0;
+  bar.addEventListener("pointerdown", (e) => {
+    dragging = true; bar.classList.add("on");
+    h0 = el.getBoundingClientRect().height; sy = e.clientY;
+    el.style.maxHeight = "none"; el.classList.add("sized");
+    try { bar.setPointerCapture(e.pointerId); } catch (err) {}
+    e.preventDefault(); e.stopPropagation();
+  });
+  bar.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    const h = Math.max(minH || 60, Math.min(maxH || innerHeight - 200, h0 + e.clientY - sy));
+    el.style.height = h + "px";
+  });
+  const stop = () => {
+    if (!dragging) return;
+    dragging = false; bar.classList.remove("on");
+    try { localStorage.setItem(k, String(Math.round(el.getBoundingClientRect().height))); } catch (e) {}
+  };
+  bar.addEventListener("pointerup", stop);
+  bar.addEventListener("pointercancel", stop);
+  bar.addEventListener("dblclick", (e) => {
+    e.stopPropagation();
+    el.style.height = ""; el.style.maxHeight = ""; el.classList.remove("sized");
+    try { localStorage.removeItem(k); } catch (err) {}
+    void defH;
+    toast("这个框恢复了默认高度");
+  });
+}
+
+/* 刷新按钮：**指上去不变**（用户要求），点一下才让两个箭头转起来（至少转 600ms 看得见） */
+function spinRefresh(ms) {
+  const b = $("btnRefresh");
+  if (!b) return;
+  b.classList.add("spinning");
+  clearTimeout(spinRefresh._t);
+  spinRefresh._t = setTimeout(() => b.classList.remove("spinning"), ms || 600);
 }
 
 /* ── 弹窗通用：可调大小 + 位置记住 ────────────────────────────────────
@@ -1249,6 +1382,11 @@ $("btnClassic").onclick = async () => {
 $("note").oninput = () => { S.review.备注 = $("note").value; };
 
 bindDrop();
+makeColumnsResizable();
+makeVResizable($("promptWrap"), "prompt", 120, 760);     // ③栏 提示词正文（抓手挂外层，重画不冲掉）
+makeVResizable($("logWrap"), "log", 80, 520);            // ③栏 执行记录
+makeVResizable($("upBox"), "up", 50, 400);               // ③栏 即梦上传清单
+makeVResizable($("matBox"), "mat", 80, 700);             // ②栏 素材清单
 BOARD.wrap = $("boardWrap");
 BOARD.frame = $("boardFrame");
 paintIcons();

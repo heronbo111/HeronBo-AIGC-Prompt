@@ -396,3 +396,35 @@ body[data-theme="暖夜"]{
 /* 8) toast 上浮一点 */
 .toast{transform:translateX(-50%) translateY(6px);transition:opacity .25s,transform .25s}
 .toast.on{transform:translateX(-50%) translateY(0)}
+
+/* ── 面板可调宽窄 + 面板里的框可调高矮（2026-09-16 用户要求）───────────────
+   四栏 = 面板：栏与栏之间有三条 .split，拖动改左右两栏的宽度；
+   面板里的「提示词正文 / 即梦上传清单 / 素材清单 / 执行记录」= 可调高矮的框（.vrz 抓手）。 */
+.work{grid-template-columns:var(--col1) 5px var(--col2) 5px minmax(0,1fr) 5px var(--col4)}
+.split{position:relative;cursor:col-resize;background:transparent;z-index:2}
+.split::after{content:"";position:absolute;top:0;bottom:0;left:2px;width:1px;
+  background:transparent;transition:background .12s ease}
+.split:hover::after{background:var(--accent-border)}
+.split.on::after{background:var(--accent);box-shadow:0 0 0 1px var(--accent-border)}
+.split.on{background:rgba(47,111,237,.05)}
+/* 框的高矮抓手：贴在框底（框要 position:relative） */
+.prompt,.log,.matbox,.upbox{position:relative}
+.matbox,.upbox{overflow:auto}
+.vrz{position:absolute;left:0;right:0;bottom:0;height:7px;cursor:row-resize;
+  z-index:3;display:block}
+.vrz::after{content:"";position:absolute;left:50%;bottom:2px;width:34px;height:3px;
+  margin-left:-17px;border-radius:2px;background:var(--dot-idle);opacity:0;
+  transition:opacity .14s ease,background .14s ease}
+.prompt:hover .vrz::after,.log:hover .vrz::after,.matbox:hover .vrz::after,
+.upbox:hover .vrz::after,.vrz:hover::after,.vrz.on::after{opacity:.65}
+.vrz.on::after{opacity:1;background:var(--accent)}
+
+/* 刷新按钮：指上去**不做变化**（用户要求），只有点击时才转 */
+#btnRefresh:hover{background:transparent;border-color:transparent;color:var(--muted)}
+#btnRefresh.spinning svg{animation:spin .9s linear infinite}
+#btnRefresh:hover svg{transform:none}          /* 指上去连图标也别转 */
+
+/* 外包一层 .vbox 的框：**只有用户拖过（.sized）才填满外层**。
+   否则内层原来的 max-height（提示词 340px）会被干掉 → 长提示词把整栏撑到几千像素。 */
+.vbox{position:relative;display:flex;flex-direction:column;min-height:0}
+.vbox.sized > .prompt,.vbox.sized > .log{flex:1 1 auto;height:100%;max-height:none}
