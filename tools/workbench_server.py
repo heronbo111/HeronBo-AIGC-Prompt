@@ -620,7 +620,16 @@ def start_agent(pdir, what, feedback=""):
     _append_record(rec, {"kind": "start", "at": time.strftime("%Y-%m-%d %H:%M:%S"),
                          "what": what or "prompt", "agent": agent_label,
                          "session": sid or "", "project": pdir})
-    head = ("先读技能说明 %s 再动手（本机已装，直接读文件即可）。\n\n" % skill_md)
+    if sid:
+        # 续同一个会话时**别再整篇重读技能**（"读技能"是每次跑最花时间的一段）。
+        # 2026-09-16 用户问"是不是每次新开对话重读 skill"——ZCode 之前确实每次新开（会话 id 没存下来，
+        # 已在 agent_bridge 修好），这里再把"续跑该怎么做"写进指令，配合上下文缓存提速。
+        head = ("这个项目**接着上一次的会话继续**（同一个对话，你的上下文里已经有技能与这个项目的情况）：\n"
+                "先看 %s\\_会话\\回执.jsonl（上一轮你自己报过什么）与 框架.json 的现状；"
+                "技能文档**只在需要确认细节时按需查对应章节，别整篇重读**。\n\n" % pdir)
+    else:
+        head = ("先读技能说明 %s 再动手（本机已装，直接读文件即可；"
+                "读你需要的章节即可，不必逐字通读全部文档）。\n\n" % skill_md)
     if need:
         # 用户填的「简单需求」是这次任务的硬约束，放在最前面
         head += "用户需求（**必须按它来**，与技能默认口径冲突时先满足它并在回执里说清）：\n%s\n\n" % need

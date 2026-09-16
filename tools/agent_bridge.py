@@ -18,6 +18,7 @@ r"""程序 ↔ agent 的通道：把 headless CLI 包成几个函数，让 exe �
 """
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -33,6 +34,50 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_TIMEOUT = 600
 
 _CURRENT = {"proc": None}          # 正在跑的子进程（给"停止"用）
+
+
+def zcode_rollout_dir():
+    """ZCode CLI 的会话正文目录（`~/.zcode/cli/rollout/model-io-<sess_xxx>.jsonl`）。"""
+    return os.path.join(os.path.expanduser("~"), ".zcode", "cli", "rollout")
+
+
+def zcode_sessions():
+    """{会话文件名: mtime}——跑之前拍一张，跑完对比就知道新会话是哪个。"""
+    d = zcode_rollout_dir()
+    out = {}
+    try:
+        for fn in os.listdir(d):
+            if fn.endswith(".jsonl"):
+                try:
+                    out[fn] = os.path.getmtime(os.path.join(d, fn))
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return out
+
+
+def zcode_session_from_snapshot(before, since):
+    """跑完之后：找出这次新开/更新的会话文件，取出 `sess_xxx` 当会话 id。
+
+    为什么这么绕：ZCode CLI 的 `--prompt` 只把结果打在 stdout，**不回会话 id**
+    （`--resume` 要 sess_ 开头那个 id，但它没有"指定 id"的参数）。而它每次都会把自己的
+    会话正文写进 `~/.zcode/cli/rollout/model-io-<sess>。jsonl`——对比跑前跑后的文件就能认出来。
+    2026-09-16 用户问"是不是每次新开对话重读 skill"，查出来正是：text 模式只回显输入 id，
+    第一次没有、返回来也没有 → 项目里永远存不到会话 → 每次都新开。
+    """
+    after = zcode_sessions()
+    fresh = [fn for fn, mt in after.items()
+             if mt >= since - 2 and (fn not in before or after[fn] > before.get(fn, 0))]
+    if not fresh:
+        fresh = [fn for fn, _mt in sorted(after.items(), key=lambda kv: -kv[1])[:1]]
+    sid = ""
+    for fn in sorted(fresh, key=lambda f: -after.get(f, 0)):
+        m = re.search(r"model-io-(sess_[A-Za-z0-9\-]+)\.jsonl", fn)
+        if m:
+            sid = m.group(1)
+            break
+    return sid
 
 
 def stop_current():
@@ -833,6 +878,8 @@ def ask(prompt, session_id=None, cwd=None, timeout=DEFAULT_TIMEOUT,
         os.close(fd)
         cmd = cmd[:-1] + ["-o", out_file, cmd[-1]]
     env = child_env()
+    snap_before = zcode_sessions() if key == "zcode" else {}
+    snap_t0 = time.time()
     text_parts, tail = [], []            # tail 只留给"最后兜底当答复"，别当解析用的全文
     stream_sid, stream_text, stream_err = None, "", None
     try:
@@ -907,11 +954,15 @@ def ask(prompt, session_id=None, cwd=None, timeout=DEFAULT_TIMEOUT,
         err = chr(10).join(err_lines)
     rc = p.returncode
     raw = chr(10).join(tail)
-    if mode == "text":                     # DSH：stdout 就是最终答复
+    if mode == "text":                     # DSH/ZCode：stdout 就是最终答复
         text = raw.strip()
         ok = (rc == 0) and bool(text)
+        sid_out = session_id
+        if key == "zcode":
+            # 认一下这次的会话（续跑时不变；新开时就是新 id）→ 下次 --resume 回到同一对话，省一次重读
+            sid_out = session_id or zcode_session_from_snapshot(snap_before, snap_t0)
         return {"ok": ok, "agent": key, "agent_label": ADAPTERS[key]["label"],
-                "session_id": session_id, "text": text, "cmd": cmd, "returncode": rc,
+                "session_id": sid_out, "text": text, "cmd": cmd, "returncode": rc,
                 "stderr": err[-2000:],
                 "error": "" if ok else ("超时 %ds 已终止" % timeout if killed["timeout"]
                                         else (text or ("CLI 返回码 %s" % rc)))}
