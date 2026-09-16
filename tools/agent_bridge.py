@@ -58,25 +58,30 @@ def zcode_sessions():
 
 
 def zcode_session_from_snapshot(before, since):
-    """跑完之后：找出这次新开/更新的会话文件，取出 `sess_xxx` 当会话 id。
+    """跑完之后：认出**这次新建**的会话文件，取出 `sess_xxx` 当会话 id。
 
     为什么这么绕：ZCode CLI 的 `--prompt` 只把结果打在 stdout，**不回会话 id**
-    （`--resume` 要 sess_ 开头那个 id，但它没有"指定 id"的参数）。而它每次都会把自己的
-    会话正文写进 `~/.zcode/cli/rollout/model-io-<sess>。jsonl`——对比跑前跑后的文件就能认出来。
+    （`--resume` 要 sess_ 开头那个 id，但它没有"指定 id"的参数）。而它每次开新会话都会新建
+    `~/.zcode/cli/rollout/model-io-<sess_xxx>.jsonl`——"跑前快照里没有、跑完出现了"的那个就是本次会话。
     2026-09-16 用户问"是不是每次新开对话重读 skill"，查出来正是：text 模式只回显输入 id，
     第一次没有、返回来也没有 → 项目里永远存不到会话 → 每次都新开。
+
+    ⚠️ **只认"新出现的文件"，没有兜底**（2026-09-16 实测踩坑）：起初我按"最近被改写的那个"来认，
+    结果用户同时在用 ZCode（他别的会话文件也在被改写）→ **把他的会话误当成本次会话去 `--resume`**，
+    等于污染了他的对话。拿不准就返回空——宁可白开一轮，也不能串到别人的会话上。
     """
     after = zcode_sessions()
-    fresh = [fn for fn, mt in after.items()
-             if mt >= since - 2 and (fn not in before or after[fn] > before.get(fn, 0))]
+    fresh = [fn for fn in after if fn not in before]        # 只在"跑之前不存在"的文件里挑
     if not fresh:
-        fresh = [fn for fn, _mt in sorted(after.items(), key=lambda kv: -kv[1])[:1]]
+        return ""
     sid = ""
     for fn in sorted(fresh, key=lambda f: -after.get(f, 0)):
         m = re.search(r"model-io-(sess_[A-Za-z0-9\-]+)\.jsonl", fn)
         if m:
             sid = m.group(1)
             break
+    if not sid or after.get("model-io-%s.jsonl" % sid, 0) < since - 30:
+        return ""                                           # 再核一次写入时间（防时钟误差）
     return sid
 
 
