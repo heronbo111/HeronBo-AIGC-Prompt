@@ -73,6 +73,7 @@ python tools\部署.py all --yes
 |---|---|
 | 代码（clone 12 秒） | `git clone --depth 1 https://gitee.com/HeronBo/HeronBo-AIGC-Prompt.git` |
 | **安装全套**（Python 轮子 + ffmpeg + 深度模型 + 工作台 exe，约 305MB，一次就好） | `python tools/deploy.py vendor --fetch --yes` |
+| **更新工作台**（已有安装，想把 exe 换成最新版） | 关掉工作台 → 再跑一次 `python tools/deploy.py vendor --fetch --yes`（会跟 Release 比一下，有新版本才换；`--exe` 可强制重下）|
 | 只要核心（工作台 + 出提示词 + 评分） | 什么都不用做 |
 | 打包 exe 自己来 | `python -m PyInstaller --noconfirm score-tool.spec`（要 PyInstaller）|
 

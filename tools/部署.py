@@ -354,6 +354,96 @@ VENDOR_ASSETS = [("wheels-heavy.zip", "wheels-heavy", 116),
                  ("ffmpeg-win64-gpl-shared.zip", "ffmpeg", 82),
                  ("depth-model.zip", "models", 88),
                  ("score-tool.exe", "dist", 18)]
+# 工作台 exe 是**每次改代码都会变**的那一个：别只看"在不在"（老机器上它一直在，但它是旧版）
+# → 记一份版本戳（大小+下载时间）在 exe 旁边，下次 fetch 时跟远端 HEAD 比一比，变了就换（2026-09-17）。
+EXE_DST = os.path.join(HERE, "dist", "score-tool.exe")
+EXE_MARK = os.path.join(HERE, "dist", "score-tool.version.json")
+
+
+def _remote_head(url):
+    """远端附件的大小与 Last-Modified（匿名 HEAD 可读；GitHub 会 302 到对象存储）。"""
+    import urllib.request
+    req = urllib.request.Request(url, method="HEAD",
+                                 headers={"User-Agent": "heronbo-deploy",
+                                          "Accept": "application/octet-stream"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return (int(r.headers.get("Content-Length") or 0), r.headers.get("Last-Modified") or "")
+
+
+def exe_refresh_needed():
+    """工作台 exe 要不要更新：没装 / 没记录版本 / 远端换过（比大小，能比到时间再补一刀）。"""
+    if not os.path.isfile(EXE_DST):
+        return True, "还没装"
+    try:
+        with open(EXE_MARK, encoding="utf-8") as f:
+            mark = json.load(f)
+    except (OSError, ValueError):
+        return True, "没记录过版本（按最新的下一份）"
+    try:
+        size, lm = _remote_head(VENDOR_REL + "score-tool.exe")
+    except Exception as e:                                       # noqa: BLE001
+        return False, "问不到远端（%s），先不换" % str(e)[:70]
+    if not size:
+        return False, "远端没给大小，先不换"
+    if mark.get("size") != size:
+        return True, "远端有新版本（%.1f MB → %.1f MB）" % (
+            (mark.get("size") or 0) / 1048576.0, size / 1048576.0)
+    if mark.get("lm") and lm and mark["lm"] != lm:
+        return True, "远端那份更新过（时间变了）"
+    return False, "已是最新"
+
+
+def _workbench_running():
+    """工作台还开着吗——**换 exe 前必须确认**：运行中的实例被换掉文件可能崩（2026-09-16 踩过）。"""
+    try:
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq score-tool.exe", "/FO", "CSV", "/NH"],
+                             capture_output=True, text=True, errors="replace", timeout=20).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [l for l in out.splitlines() if l.strip().lower().startswith('"score-tool.exe"')]
+
+
+def refresh_exe(yes=False, force=False):
+    """把工作台 exe 换成远端最新那份（找不到新版本就什么都不做）。"""
+    if force:
+        need, why = True, "手动指定 --exe"
+    else:
+        need, why = exe_refresh_needed()
+    if not need:
+        ok("工作台 exe 已是最新", why)
+        return
+    if not yes:
+        todo("更新工作台程序（exe）：%s" % why,
+             "python tools/deploy.py vendor --fetch --yes   （约 19MB；装完就是最新版工作台）")
+        return
+    run = _workbench_running()
+    if run:
+        bad("换 exe 前先把工作台关掉", "现在有 %d 个 score-tool.exe 在跑——关掉它，或者双击两次让它显示出来再关，"
+            "然后重跑这条命令" % len(run))
+        return
+    tmp = EXE_DST + ".new"
+    log("  下 score-tool.exe（约 18MB）…")
+    try:
+        n = _download(VENDOR_REL + "score-tool.exe", tmp)
+    except Exception as e:                                       # noqa: BLE001
+        bad("下载 score-tool.exe", str(e)[:150], "网络不通就先跳过：工作台还是你原来那个，功能不受影响")
+        return
+    try:                                   # 记版本戳用远端的时间（拿不到就只记大小，下次照样能比）
+        _sz, _lm = _remote_head(VENDOR_REL + "score-tool.exe")
+    except Exception:                                            # noqa: BLE001
+        _lm = ""
+    try:
+        os.replace(tmp, EXE_DST)          # 原子换位；被占用会抛 PermissionError（上面已先拦过一道）
+    except OSError as e:
+        bad("换位 score-tool.exe", str(e)[:120], "再确认一次工作台真的关掉了")
+        return
+    try:
+        with open(EXE_MARK, "w", encoding="utf-8", newline="\n") as f:
+            json.dump({"size": os.path.getsize(EXE_DST), "lm": _lm,
+                       "at": time.strftime("%Y-%m-%d %H:%M:%S")}, f, ensure_ascii=False)
+    except OSError:
+        pass
+    ok("工作台 exe 已更新", "%.1f MB（%s）" % (n / 1048576.0, why))
 
 
 def vendor_missing():
@@ -411,45 +501,48 @@ def _flatten_dup(sub):
         pass
 
 
-def fetch_vendor(yes=False):
-    """把三个大件从 Release 拉下来并解开（约 290MB，**一次就好**，之后新机器可直接拷 _vendor/）。"""
-    miss = vendor_missing()
-    if not miss:
+def fetch_vendor(yes=False, force_exe=False):
+    """把三个大件从 Release 拉下来并解开（约 290MB，**一次就好**），顺带把工作台 exe 更新到最新。
+
+    2026-09-17 加：**exe 每次都会跟远端比一下**（老机器上它一直在，但可能是旧版——
+    工作台的界面/流程全在 exe 里，旧 exe = 旧功能）。换位前会拦"工作台还开着"。
+    """
+    miss = [m for m in vendor_missing() if m[0] != "score-tool.exe"]
+    if miss:
+        names = "、".join("%s（约 %dMB）" % (a[0], a[2]) for a in miss)
+        if not yes:
+            todo("下载离线大件：%s" % names,
+                 "python tools/deploy.py vendor --fetch --yes   （从 %s 拉；国内慢就直接用镜像在线装）" % VENDOR_REL)
+        else:
+            import zipfile
+            for fn, sub, mb in miss:
+                zip_dst = os.path.join(VENDOR, fn)
+                log("  下 %s（约 %dMB）…" % (fn, mb))
+                try:
+                    n = _download(VENDOR_REL + fn, zip_dst)
+                except Exception as e:                           # noqa: BLE001
+                    bad("下载 " + fn, str(e)[:160],
+                        "网络不通就先跳过：用镜像在线装（python tools/deploy.py install --yes）")
+                    continue
+                ok("下好了 " + fn, "%.1f MB" % (n / 1048576.0))
+                try:
+                    if fn.startswith("ffmpeg"):
+                        os.makedirs(FF_BIN, exist_ok=True)
+                        with zipfile.ZipFile(zip_dst) as z:
+                            for m in [x for x in z.namelist() if "/bin/" in x and not x.endswith("/")]:
+                                with z.open(m) as src, open(os.path.join(FF_BIN, os.path.basename(m)), "wb") as dst:
+                                    dst.write(src.read())
+                    else:
+                        with zipfile.ZipFile(zip_dst) as z:
+                            z.extractall(VENDOR)
+                        _flatten_dup(sub)          # 附件里若多套了一层（models/models/…）自动摊平
+                    ok("就位 " + fn)
+                except Exception as e:                           # noqa: BLE001
+                    bad("解开 " + fn, str(e)[:160])
+    else:
         ok("离线大件已齐", "wheels-heavy / ffmpeg / depth-model 都在")
-        return
-    names = "、".join("%s（约 %dMB）" % (a[0], a[2]) for a in miss)
-    if not yes:
-        todo("下载离线大件：%s" % names,
-             "python tools/deploy.py vendor --fetch --yes   （从 %s 拉；国内慢就直接用镜像在线装）" % VENDOR_REL)
-        return
-    import zipfile
-    for fn, sub, mb in miss:
-        zip_dst = os.path.join(VENDOR, fn)
-        log("  下 %s（约 %dMB）…" % (fn, mb))
-        try:
-            n = _download(VENDOR_REL + fn, zip_dst)
-        except Exception as e:                                   # noqa: BLE001
-            bad("下载 " + fn, str(e)[:160], "网络不通就先跳过：用镜像在线装（python tools/deploy.py install --yes）")
-            continue
-        ok("下好了 " + fn, "%.1f MB" % (n / 1048576))
-        try:
-            if fn.lower().endswith(".exe"):                 # 工作台主程序：直接落到 tools/dist/
-                dst = os.path.join(HERE, "dist", fn)
-                os.makedirs(os.path.dirname(dst), exist_ok=True)
-                shutil.move(zip_dst, dst)
-            elif fn.startswith("ffmpeg"):
-                os.makedirs(FF_BIN, exist_ok=True)
-                with zipfile.ZipFile(zip_dst) as z:
-                    for m in [x for x in z.namelist() if "/bin/" in x and not x.endswith("/")]:
-                        with z.open(m) as src, open(os.path.join(FF_BIN, os.path.basename(m)), "wb") as dst:
-                            dst.write(src.read())
-            else:
-                with zipfile.ZipFile(zip_dst) as z:
-                    z.extractall(VENDOR)
-                _flatten_dup(sub)          # 附件里若多套了一层（models/models/…）自动摊平
-            ok("就位 " + fn)
-        except Exception as e:                                   # noqa: BLE001
-            bad("解开 " + fn, str(e)[:160])
+    # 工作台 exe：单独走"比版本"的路（`--exe` 可强制重下）
+    refresh_exe(yes, force=bool(force_exe or os.environ.get("HERONBO_FORCE_EXE")))
 
 
 MODEL_DIR_MARK = True
@@ -632,6 +725,8 @@ def main():
     ap.add_argument("--yes", action="store_true", help="真动手（不加就只打印命令）")
     ap.add_argument("--root", help="设置样本库根目录")
     ap.add_argument("--fetch", action="store_true", help="vendor 时从 Release 下大件（约 290MB）")
+    ap.add_argument("--exe", action="store_true",
+                    help="vendor 时强制重下工作台 exe（默认只在远端有新版本时才换）")
     ap.add_argument("--extras", action="store_true",
                     help="install 时连「按需才装」的重包一起装（numpy/opencv/转写/深度视频）")
     ap.add_argument("--ping", dest="ping", action="store_true", default=None,
@@ -645,7 +740,7 @@ def main():
         check_root(a.root)
     if a.action == "vendor":
         if getattr(a, "fetch", False):
-            fetch_vendor(a.yes)
+            fetch_vendor(a.yes, force_exe=getattr(a, "exe", False))
         else:
             vendored_ffmpeg(a.yes)
             vendored_model()
