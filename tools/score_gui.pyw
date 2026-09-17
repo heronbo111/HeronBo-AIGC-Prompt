@@ -1496,6 +1496,12 @@ class App:
         root.minsize(1180, 700)
         root.configure(bg=self.theme["bg"])
         root.protocol("WM_DELETE_WINDOW", self.on_close)
+        # 回网页工作台（2026-09-17 用户要求）：经典界面与网页版会争「当前项目」，
+        # 所以这里的原则是：拉起网页版 → 本窗口走 on_close（有未保存的会先问）。
+        # 用热键而不是摆按钮：Tk 布局是另一个 agent 精调过的，插按钮风险大；
+        # 提示放在标题与启动提示里，够找得到。
+        root.bind("<Control-Shift-W>", self._back_to_web)
+        root.bind("<Control-Shift-w>", self._back_to_web)
 
         self.samples_root = self._detect_root()
         self.samples = core.scan(self.samples_root) if self.samples_root else []
@@ -3044,6 +3050,28 @@ class App:
         self.status.config(text="已保存 → %s" % fn)
         return True
 
+    def _back_to_web(self, event=None):
+        """从经典界面回网页工作台（Ctrl+Shift+W）：拉起网页版，再关掉本窗口。
+
+        拉起顺序：优先打包版 exe（desktop 快捷方式指向的同一个），没有就源码启动器
+        （pythonw 工作台.py，不弹控制台）。关窗走 on_close——有没保存的评分它会先问。
+        """
+        import subprocess as _sp
+        here = os.path.dirname(os.path.abspath(__file__))
+        exe = os.path.join(here, "dist", "score-tool.exe")
+        try:
+            if os.path.isfile(exe):
+                _sp.Popen([exe], cwd=os.path.dirname(exe))
+            else:
+                launcher = os.path.join(here, "工作台.py")
+                if os.path.isfile(launcher):
+                    pyw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+                    _sp.Popen([(pyw if os.path.isfile(pyw) else sys.executable), launcher],
+                              cwd=here)
+        except Exception:                                         # noqa: BLE001
+            pass
+        self.on_close()
+
     def on_close(self):
         if not self.dirty:
             self.root.destroy()
@@ -3249,8 +3277,12 @@ def main():
         app = App(root, opt.get("sample"))
         if opt.get("classic"):
             try:      # 经典界面与 HTML 工作台会同时存在过一会儿，标题里标出来便于分辨
-                root.title("HeronBo · AI 视频工作台（经典界面）")
+                root.title("HeronBo · AI 视频工作台（经典界面 · Ctrl+Shift+W 回网页工作台）")
             except tk.TclError:
+                pass
+            try:      # 再弹一条启动提示：光看标题容易漏
+                Toast(root, "经典界面：按 Ctrl+Shift+W 可回网页工作台", app.theme, ms=4600)
+            except Exception:                                     # noqa: BLE001
                 pass
         if (opt.get("material") or opt.get("add") or opt.get("name")
                 or opt.get("project")):          # --project 单独给也要落到那个项目上

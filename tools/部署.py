@@ -686,7 +686,11 @@ def do_shortcut(yes=False):
              "python tools\\部署.py shortcut --yes（指向%s，图标用 tools\\工作台.ico）" % what)
         return
     ps = ("$ws = New-Object -ComObject WScript.Shell; "
-          "$lnk = Join-Path $env:USERPROFILE 'Desktop\\HeronBo 视频工作台.lnk'; "
+          # ★ 桌面路径必须问系统（GetFolderPath），不能拼 USERPROFILE\Desktop——
+          #   OneDrive/企业漫游会把桌面重定向到别处，拼出来的 lnk 建在了一个
+          #   用户看不见的目录里（2026-09-17 用户反馈"别的电脑上没看见快捷方式"）。
+          "$desk = [Environment]::GetFolderPath('Desktop'); "
+          "$lnk = Join-Path $desk 'HeronBo 视频工作台.lnk'; "
           "$s = $ws.CreateShortcut($lnk); "
           "$s.TargetPath = '%s'; $s.Arguments = '%s'; $s.WorkingDirectory = '%s'; "
           "$s.IconLocation = '%s,0'; $s.Description = 'HeronBo 视频工作台'; $s.Save(); "
