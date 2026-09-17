@@ -191,10 +191,25 @@ def save(root, sample, video, dims, forb, star, concl, note):
     }
     with open(fn, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
-    print("\n✅ 已写入：%s" % fn)
+    print("\n[OK] 已写入：%s" % fn)
     print("   评分 %s/5 ｜ 结论 %s" % (star, concl))
     return fn
 
+
+
+# ── 控制台安全（2026-09-17）：exe 从 cmd 启动时 stdout 是 GBK 控制台，
+# print("[OK] …") 会抛 UnicodeEncodeError（'gbk' codec can't encode '[OK]'），
+# 而这条异常会被上层当成"操作失败"弹给用户。这里在导入时就把输出流切成 UTF-8。
+def _fix_console():
+    import sys as _sys
+    for _s in (_sys.stdout, _sys.stderr):
+        try:
+            _s.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:                                        # noqa: BLE001
+            pass
+
+
+_fix_console()
 
 def main():
     ap = argparse.ArgumentParser(description="成片六维评分（命令行版，与网页版同一口径）")

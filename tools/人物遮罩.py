@@ -142,7 +142,7 @@ def do_check(media, ref, tmp):
             print(line + "误检（模糊块）✓ 身份已模糊：清晰度 %.1f vs 原片 %.1f" % (va, vb))
             ok += 1
         else:
-            print(line + "⚠️ 脸仍清晰：%.1f vs 原片 %.1f —— 掩膜没盖住" % (va, vb))
+            print(line + "[注意] 脸仍清晰：%.1f vs 原片 %.1f —— 掩膜没盖住" % (va, vb))
             faced += 1
     print("结论：%d/%d 个时间点身份已去除（其余 %d 个仍清晰）" % (ok, len(times), faced))
 

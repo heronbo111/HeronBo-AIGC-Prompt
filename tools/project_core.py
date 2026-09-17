@@ -356,6 +356,21 @@ def meta_of(path):
 
 
 # ── 框架 ───────────────────────────────────────────────────────────────────
+
+# ── 控制台安全（2026-09-17）：exe 从 cmd 启动时 stdout 是 GBK 控制台，
+# print("[OK] …") 会抛 UnicodeEncodeError（'gbk' codec can't encode '[OK]'），
+# 而这条异常会被上层当成"操作失败"弹给用户。这里在导入时就把输出流切成 UTF-8。
+def _fix_console():
+    import sys as _sys
+    for _s in (_sys.stdout, _sys.stderr):
+        try:
+            _s.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:                                        # noqa: BLE001
+            pass
+
+
+_fix_console()
+
 def ensure_root(root):
     root = os.path.normpath(root)
     os.makedirs(root, exist_ok=True)
