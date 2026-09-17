@@ -390,6 +390,23 @@ def _download(url, dst):
     return got
 
 
+def _flatten_dup(sub):
+    """解开后若出现 `_vendor/<sub>/<sub>/…` 这种多套一层，摊平它（2026-09-17 打模型包时踩到过）。"""
+    inner = os.path.join(VENDOR, sub, sub)
+    if not os.path.isdir(inner):
+        return
+    for name in os.listdir(inner):
+        src = os.path.join(inner, name)
+        dst = os.path.join(VENDOR, sub, name)
+        if not os.path.exists(dst):
+            shutil.move(src, dst)
+    try:
+        os.rmdir(inner)
+        log("  （附件里多套了一层 %s/%s/，已自动摊平）" % (sub, sub))
+    except OSError:
+        pass
+
+
 def fetch_vendor(yes=False):
     """把三个大件从 Release 拉下来并解开（约 290MB，**一次就好**，之后新机器可直接拷 _vendor/）。"""
     miss = vendor_missing()
@@ -421,6 +438,7 @@ def fetch_vendor(yes=False):
             else:
                 with zipfile.ZipFile(zip_dst) as z:
                     z.extractall(VENDOR)
+                _flatten_dup(sub)          # 附件里若多套了一层（models/models/…）自动摊平
             ok("解开 " + fn)
         except Exception as e:                                   # noqa: BLE001
             bad("解开 " + fn, str(e)[:160])
