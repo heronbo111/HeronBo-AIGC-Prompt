@@ -215,14 +215,30 @@ def main():
 
     print("\n[6] 校验（只信 ls-remote）")
     local = git("rev-parse", "HEAD")
+    unverified = []
     for r in remotes:
-        remote = git("ls-remote", r, "refs/heads/main").split()
-        sha = remote[0] if remote else "(空)"
-        flag = "OK" if sha == local else "!! 不一致"
-        print("    %-7s %s  %s" % (r, sha[:12], flag))
-        if sha != local:
+        sha = ""
+        for _try in range(3):                      # 本机到 GitHub 会抽风，重试三次
+            parts = git("ls-remote", r, "refs/heads/main").split()
+            if parts:
+                sha = parts[0]
+                break
+        if not sha:
+            # 网络没通 ≠ 推送失败：这里必须说清楚，否则会被读成"没推上去"
+            print("    %-7s 未校验（网络/代理问题，不代表推送失败）" % r)
+            unverified.append(r)
+            continue
+        if sha == local:
+            print("    %-7s %s  OK" % (r, sha[:12]))
+        else:
+            print("    %-7s %s  !! 与本地 %s 不一致（需要补推）" % (r, sha[:12], local[:12]))
             ok_all = False
-    print("\n%s" % ("发布完成。" if ok_all else "有环节没成功，按上面提示处理。"))
+    for r in unverified:
+        print("    稍后自查：git ls-remote %s refs/heads/main   # 应为 %s" % (r, local[:12]))
+    if unverified and ok_all:
+        print("\n推送已完成；%s 只是没校验上（网络），稍后照上面命令自查即可。" % "/".join(unverified))
+    else:
+        print("\n%s" % ("发布完成。" if ok_all else "有环节没成功，按上面提示处理。"))
     return 0 if ok_all else 6
 
 
