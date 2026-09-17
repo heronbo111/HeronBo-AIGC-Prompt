@@ -247,6 +247,47 @@ def check(path, text, pdir=""):
     if miss_o:
         say("WARN", "负面清单·声音类", "建议点名：" + "、".join(miss_o) + "（有台词的条也该禁 BGM/音效/旁白）")
 
+    # ⑧.5 细节密度（2026-09-17 加，用户："怎么感觉少了点细节刻画，例如表情什么的"）
+    #   背景：骨架只规定了"外形"（小节名/顺序），**从来没规定密度**，于是把一条提示词写薄了没人拦。
+    #   阈值按**库内实测**标定（2026-09-17 扫全库 23 个项目），只抓"明显写薄"，不误伤既有好稿：
+    #     · 无台词类（素材/替换/空镜）：库内 33.8–41.6 → **<32 不合格、<40 注意**
+    #     · 有台词类（口播带货）：库内 50.8–90.7（用户认可的那条 56.7）→ **<35 不合格、<45 注意**
+    #     · 神态/微表情词：**有台词却一处都没有 = 不合格**（违反 rules 第27条的情绪七项）；
+    #       无台词片不强制（素材转绘里人偶没五官，写表情反而是错的）
+    has_talk = bool(re.search(r"台词[:：]", head)) and ("无台词" not in head)
+    # 只量**描述性内容**：把【负面】与【画面纪律】这两节（禁止清单，列举越短越清楚）剔掉，
+    # 否则"禁项写得紧凑"会被误判成"细节薄"（2026-09-17 口径）。
+    desc = re.sub(r"【(?:负面|画面纪律)】[\s\S]*?(?=" + "\n" + r"【|\Z)", "", text)
+    sents_all = [s.strip() for s in re.split(r"[。；;]", desc) if len(s.strip()) >= 6]
+    if len(sents_all) >= 6:
+        avg_len = sum(len(s) for s in sents_all) / len(sents_all)
+        bad, warn = (35, 45) if has_talk else (32, 40)
+        kind = "有台词类" if has_talk else "无台词类"
+        beats = [m.group(1) for m in re.finditer(r"^\s*\d+(?:\.\d+)?\s*[–—\-~至]\s*\d+(?:\.\d+)?\s*秒\s*(.*)$",
+                                                 text, re.M)]
+        extra = ("；每拍均 %d 字" % (sum(len(b) for b in beats) / len(beats))) if len(beats) >= 4 else ""
+        if avg_len < bad:
+            say("FAIL", "细节密度·每句均字", "%s 只有 %.1f 字/句（库内下界 %s）——写得太薄，"
+                "动作/神态/语气都要落到句子里%s" % (kind, avg_len, bad, extra))
+        elif avg_len < warn:
+            say("WARN", "细节密度·每句均字", "%s %.1f 字/句，偏薄（库内好稿 51–91）；"
+                "对照 rules 第27条：动机/眼神/呼吸/脸部/身体/声音/收尾%s" % (kind, avg_len, extra))
+        else:
+            say("PASS", "细节密度·每句均字", "%.1f 字/句%s" % (avg_len, extra))
+    expr_words = [w for w in ("眼神", "眼睑", "眉", "嘴角", "笑意", "神情", "表情", "下巴", "歪头",
+                              "点头", "摇头", "耸肩", "语气", "呼吸", "神色") if w in text]
+    if not expr_words:
+        if has_talk:
+            say("FAIL", "细节密度·神态与微表情", "有台词却一处神态/微表情都没有——按 rules 第27条，"
+                "每拍至少给「眼神/眼睑/眉/嘴角/笑意/下巴/语气」里的任一项")
+        else:
+            say("PASS", "细节密度·神态与微表情", "无台词片不强制（素材转绘里人偶没有五官，写表情反而是错的）")
+    else:
+        n_hit = sum(text.count(w) for w in expr_words)
+        per = len(text) / max(1, n_hit)
+        say("PASS" if per <= 300 else "WARN", "细节密度·神态与微表情",
+            "%d 类命中 %d 处（约每 %d 字 1 处）" % (len(expr_words), n_hit, int(per)))
+
     # ⑨ 重复句（同一条禁令写三遍 → 噪声，模型会忽略）。**按版本分段比**：
     #    多版本之间"主体锚定""时间轴"本来就该逐字复用，跨版本比会把对的判成错的。
     chunks, cur = [], []
