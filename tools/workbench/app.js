@@ -34,6 +34,10 @@ const ICON = {
   x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
   trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 4h4M9 7l.7 12a2 2 0 0 0 2 1.9h.6a2 2 0 0 0 2-1.9L15 7M10.5 10.5v6M13.5 10.5v6"/></svg>',
   xbold: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+  doc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5"/></svg>',
+  txt: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5M10 12h6M10 16h6"/></svg>',
+  round: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 12a8 8 0 0 1 13.7-5.7L20 8"/><path d="M20 3v5h-5"/><path d="M20 12a8 8 0 0 1-13.7 5.7L4 16"/><path d="M4 21v-5h5"/></svg>',
+  flag: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 21V4h11l-2 4 2 4H6"/></svg>',
 };
 function paintIcons() {
   document.querySelectorAll("[data-icon]").forEach((b) => {
@@ -662,10 +666,42 @@ function renderPrompts() {
   $("upList").querySelectorAll("[data-openup]").forEach((b) => {
     b.onclick = () => openFolder("uploads", b.dataset.openup);
   });
-  const st = S.state.project ? (S.state.project.state || {}) : {};
+  renderStageChips();
+}
+
+/* ③栏标题条：把原来那串文字（阶段/第几轮/待办/文案稿/当前文件）做成**图标胶囊**，像顶部流程条那样
+   一眼能看出进度（2026-09-16 用户要求"文字阶段化做成图标来体现进程"）。 */
+function renderStageChips() {
+  const box = $("stageChips");
+  if (!box) return;
+  const st = (S.state && S.state.project && S.state.project.state) || {};
   const wf = (S.wenan || []).length;
-  $("stageLab").textContent = `· 阶段 ${st.stage || "—"} · 第 ${st.round || 0} 轮 · 待办 ${st.pending || 0}`
-    + (wf ? ` · 文案稿 ${wf} 份（不在这一栏）` : "");
+  const cur = S.current || null;
+  const esc_ = (x) => esc(String(x == null ? "" : x));
+  const stageFull = st.stage || "还没出提示词";
+  const stageShort = String(stageFull).replace(/（[^）]*）/g, "").replace(/\([^)]*\)/g, "").trim();
+  const done = /已出提示词|已生成|定稿/.test(stageFull);
+  const chips = [];
+  chips.push(`<span class="chip ${done ? "ok" : "wait"}" title="阶段：${esc_(stageFull)}">`
+             + `<i class="dot"></i>${esc_(stageShort || "待出提示词")}</span>`);
+  chips.push(`<span class="chip" title="第 ${Number(st.round) || 0} 轮；每提交一次反馈算一轮">`
+             + `<i class="ci">${ICON.round}</i>${Number(st.round) || 0}</span>`);
+  const pend = Number(st.pending) || 0;
+  if (pend > 0) {
+    chips.push(`<span class="chip warn" title="agent 还有 ${pend} 条待办没做完">`
+               + `<i class="ci">${ICON.flag}</i>${pend}</span>`);
+  }
+  if (wf) {
+    chips.push(`<span class="chip" title="项目里有 ${wf} 份文案稿（输入用的，不显示在这一栏）">`
+               + `<i class="ci">${ICON.doc}</i>${wf}</span>`);
+  }
+  if (cur) {
+    chips.push(`<span class="chip ${cur.pure ? "ok" : ""}" title="当前显示：${esc_(cur.name)}`
+               + `（${size(cur.size)}${cur.pure ? "，纯正文" : "，含元信息与版本说明"}）`
+               + `；右上角那颗图标＝一键复制">`
+               + `<i class="ci">${ICON.txt}</i>${cur.pure ? "纯正文" : "含说明"}</span>`);
+  }
+  box.innerHTML = chips.join("");
 }
 
 function renderScoreForm() {

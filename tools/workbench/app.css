@@ -515,3 +515,26 @@ body[data-theme="暖夜"]{
 .upgroup .uphead{display:flex;align-items:center;gap:8px;font-size:12.5px;margin-bottom:3px}
 .upgroup .uphead b{flex:1}
 .upgroup .row.plain{padding:3px 2px}
+
+/* ── ③栏标题条上的"图标胶囊"（2026-09-16 用户："文字阶段化做成图标来体现进程"）────
+   和顶部流程条一个观感：小圆点/小图标 + 短词，鼠标停上去才展开完整说明。 */
+.chips{display:inline-flex;align-items:center;gap:5px;margin-left:6px;vertical-align:middle;
+  flex-wrap:nowrap;overflow:hidden}
+.chip{display:inline-flex;align-items:center;gap:4px;height:19px;padding:0 8px;border-radius:999px;
+  border:1px solid var(--border);background:var(--surface2);color:var(--muted);
+  font-size:11px;font-weight:600;white-space:nowrap}
+.chip .dot{width:6px;height:6px;border-radius:50%;background:var(--dot-idle);flex:0 0 auto}
+.chip.ok{border-color:var(--accent-border);background:var(--accent-soft);color:var(--accent)}
+.chip.ok .dot{background:var(--ok);box-shadow:0 0 0 2px rgba(18,161,80,.16)}
+.chip.wait{background:var(--surface)}
+.chip.warn{border-color:var(--warn);color:var(--warn);background:var(--warn-soft)}
+.chip .ci{display:inline-flex;width:11px;height:11px;flex:0 0 auto}
+.chip .ci svg{width:11px;height:11px;display:block}
+
+/* 复制按钮：**浮在提示词文本框右上角**（用户要求"放到文本框右上角明显一点"） */
+.copyfloat{position:absolute;top:8px;right:12px;z-index:3;width:32px;height:32px;
+  background:var(--accent-soft);border:1px solid var(--accent-border);color:var(--accent);
+  box-shadow:var(--sh-sm)}
+.copyfloat svg{width:16px;height:16px}
+.copyfloat:hover{opacity:1;color:#fff;background:var(--accent);border-color:var(--accent)}
+.copyfloat:hover svg{transform:none}
