@@ -20,7 +20,7 @@ const DOC = [
    acts: [{k: "pick", label: "选素材", main: 1}, {k: "pickdir", label: "选文件夹"},
           {k: "intake", label: "建框架归类", need: "pending"},
           {k: "intakeCheck", label: "核对归类", need: "mats"}]},
-  {what: ["点「出提示词」：agent 读技能与框架 → 写提示词 → 按引用编号把素材副本放进 <code>即梦上传/</code> → 写回执",
+  {what: ["点「出提示词」：agent 读技能与框架 → 写提示词 → 按引用编号把素材副本放进 <code>平台上传/</code> → 写回执",
           "本机有多个可用 agent 时，第一次会先问用哪个，选完记住（记在哪见右下角）",
           "用时按本项目历史中位数估，跑完自动记账"],
    acts: [{k: "ask", label: "出提示词", main: 1, need: "agent"},
@@ -122,7 +122,7 @@ function stepCard(i) {
     ? `<div class="sprog" hidden><div class="top"><span class="s"></span><span class="tm"></span>
          <button class="btn ghost sm danger" data-stop="1" title="卡住/跑飞了就停掉（结果不算数，可重跑）">停止</button></div>
          <div class="bar"><i></i></div>
-         <div class="stages">${["读技能 / 框架", "写提示词", "落即梦上传", "写回执"]
+         <div class="stages">${["读技能 / 框架", "写提示词", "落平台上传", "写回执"]
            .map((t, k) => `<span data-i="${k}">${t}</span>`).join("")}</div>
          <div class="lines"></div></div>`
     : "";

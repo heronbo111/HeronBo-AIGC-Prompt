@@ -13,7 +13,7 @@
     GET  /                  静态页面
     GET  /api/state         样本库 / 项目列表 / 当前项目 / 框架 / 状态 / 评分维度
     POST /api/project       选项目
-    GET  /api/prompts       读提示词与即梦上传清单
+    GET  /api/prompts       读提示词与平台上传清单
     POST /api/pick          弹系统文件/目录选择框（Tk，跑在专用线程里）
     POST /api/intake        投放素材（路径列表）→ 自动判角色
     POST /api/intake/go     建框架 + 归类
@@ -192,7 +192,11 @@ def _scan_project(pdir):
             os.stat(pdir).st_ctime).strftime("%m-%d %H:%M")
     except OSError:
         out["createdAt"] = ""
-    for name in ("素材", "文案", "成片", "废片", "评价", "备注", "即梦上传", "废片原因"):
+    # 上传夹两个名字都可能存在（老项目叫 即梦上传）→ 界面上只列**装着东西的那个**，
+    # 免得同一件事出现两行（2026-09-17 改名时统一）
+    up_name = os.path.basename(pcore.upload_dir(pdir)) if pcore else "平台上传"
+    names = ("素材", "文案", "成片", "废片", "评价", "备注", up_name, "废片原因")
+    for name in dict.fromkeys(names):                    # 去重、保序
         d = os.path.join(pdir, name)
         items = []
         if os.path.isdir(d):
@@ -321,7 +325,7 @@ def build_info():
 
 
 def prompts_payload(pdir):
-    """③栏读的东西：**只给提示词正文** + 即梦上传清单 + 状态里的阶段。
+    """③栏读的东西：**只给提示词正文** + 平台上传清单 + 状态里的阶段。
 
     口径（2026-09-16 用户裁定后改）：`框架.json → project.prompts` 是提示词正文；`文案/` 下
     **只有文件名里带「提示词」的**才算（agent 有时写在 `文案/提示词.txt`）；其余 `文案/*.txt|md`
@@ -382,9 +386,9 @@ def prompts_payload(pdir):
                     sz = 0
                 out["wenan"].append({"name": fn, "size": sz,
                                      "text": body[:2000]})
-    # 即梦上传：**按版本分子目录**列（红白模替换那种一版几十个文件，平铺就看不清了）；
+    # 平台上传：**按版本分子目录**列（红白模替换那种一版几十个文件，平铺就看不清了）；
     # 根目录下的散件算"（未分版本）"。每组给个"打开这个文件夹"的入口。
-    up = os.path.join(pdir, "即梦上传")
+    up = pcore.upload_dir(pdir) if pcore else os.path.join(pdir, "平台上传")
     if os.path.isdir(up):
         for fn in sorted(os.listdir(up)):
             p = os.path.join(up, fn)
@@ -578,12 +582,12 @@ def _watch_project_files(pdir, rec, stop_evt):
 
     2026-09-16 用户实测：ZCode 那条通道 8 分钟零输出（它把过程都写进自己的会话文件，不进 stdout），
     界面上条不动、也不知道有没有在干活。可"它写了什么文件"是最诚实的进度信号：
-    文案/ → 框架.json → 即梦上传/ → _会话/回执.jsonl 就是出提示词的四步。
+    文案/ → 框架.json → 平台上传/ → _会话/回执.jsonl 就是出提示词的四步。
     变了就报一行（顺带让阶段前进），没变就每 45 秒报一句"还在跑"（**进程真活着才报**）。
     """
     def snap():
         out = {}
-        for pat in ("文案/*", "素材/*", "框架.json", "框架.md", "即梦上传/*",
+        for pat in ("文案/*", "素材/*", "框架.json", "框架.md", "平台上传/*", "即梦上传/*",
                     "_会话/回执.jsonl", "备注/*"):
             for f in glob.glob(os.path.join(pdir, pat)):
                 try:
@@ -620,7 +624,7 @@ def _append_record(path, obj):
 
 
 # ── agent 进度：把 stdout 实时转成阶段事件 ─────────────────────────────────
-STAGES = [("读技能 / 框架", 15), ("写提示词", 65), ("落即梦上传", 15), ("写回执", 5)]
+STAGES = [("读技能 / 框架", 15), ("写提示词", 65), ("落平台上传", 15), ("写回执", 5)]
 # `pdir`＝这一轮是**在哪个项目上**跑的（2026-09-16 用户反馈：跑着的时候切项目，
 # 提示词框里会显示成原项目的、还会卡住）——界面靠它判断"这一轮跟我现在看的项目是不是同一个"。
 _PROG = {"job": 0, "stage": 0, "pct": 0, "lines": [], "done": False, "ok": None,
@@ -703,7 +707,7 @@ def _stage_from_line(line, cur):
     low = line.lower()
     if "receipt" in low or "回执" in line:
         return 3
-    if "即梦上传" in line:
+    if ("平台上传" in line) or ("即梦上传" in line):      # 老项目的阶段行也认
         return max(cur, 2)
     if "框架.json" in line or "提示词" in line or "prompt" in low:
         return max(cur, 1)
@@ -776,7 +780,7 @@ def start_agent(pdir, what, feedback=""):
         todo = (head +
                 "用户在界面上给了第 %s 轮反馈：\n%s\n\n"
                 "请按反馈重出一版提示词：更新 %s\\文案\\ 下的稿子与 框架.json 的 prompts，"
-                "并把要上传的文件副本放进 即梦上传\\（含上传说明.txt；一版文件多就按 即梦上传\\<版本名>\\ 分子目录）；"
+                "并把要上传的文件副本放进 平台上传\\（含上传说明.txt；一版文件多就按 平台上传\\<版本名>\\ 分子目录）；"
                 "同时把当前版本的正文覆盖写到项目根 提示词.txt（只放能直接复制的提示词，历史版本留在 框架.json 的 prompts）。"
                 "**改动仍要守住统一骨架**（references\\prompt-templates.md 第 0 节的 11 个小节与顺序，"
                 "正文里不带 markdown 壳；表格与变更记录进 备注\\备注.txt），"
@@ -791,7 +795,7 @@ def start_agent(pdir, what, feedback=""):
                 "（形象参考 / 音色参考 / 参考视频 / 文案 / 道具 / 场景 …）："
                 "能读到内容的按内容判（图片看画面、音频看用途、文本看体裁），拿不准的**标成「待确认」"
                 "并在回执里说清为什么**，别硬猜。把修正后的 role 写回 框架.json，"
-                "并把要上传的文件副本按引用编号放进 即梦上传\\（含上传说明.txt）。"
+                "并把要上传的文件副本按引用编号放进 平台上传\\（含上传说明.txt）。"
                 "完成后跑 tools\\project_core.py --project \"%s\" "
                 "--receipt \"归类复核：改了哪几件、依据是什么\" --todo-done 写回执。"
                 % (pdir, pdir))
@@ -821,8 +825,8 @@ def start_agent(pdir, what, feedback=""):
                 "默认预算：看图+需求 1–3 分钟、出提示词 1–5 分钟。"
                 "请扫描 %s\\ 下的 框架.json 与 素材/、文案/，"
                 "按 skill 规则出一版提示词，写回 框架.json 的 prompts 与 文案/，"
-                "并把要上传的文件副本按引用编号放进 即梦上传\\（**一版文件多就按版本分子目录**："
-                "即梦上传\\v1 主推\\、即梦上传\\v2 换服装\\…，每版带自己的 上传说明.txt，旧版保留）；"
+                "并把要上传的文件副本按引用编号放进 平台上传\\（**一版文件多就按版本分子目录**："
+                "平台上传\\v1 主推\\、平台上传\\v2 换服装\\…，每版带自己的 上传说明.txt，旧版保留）；"
                 "**项目根再写两份**：`提示词.txt`＝当前版本、可直接复制的正文（元信息 3 行 + 版本 + 正文，"
                 "体检认这份）；`提示词正文.txt`＝**只有主版正文**（从【总纲】到【负面】，"
                 "不带元信息/上传行/版本说明）——工作台③栏与「复制提示词」显示的就是它；"
@@ -1227,8 +1231,9 @@ class Handler(BaseHTTPRequestHandler):
             pdir, _sk, _log = pcore.build_skeleton(root, name, register=False)
         except Exception as e:                                   # noqa: BLE001
             return {"ok": False, "error": "建项目失败：%s" % e}
-        try:                       # 规则第 270 条：交付提示词时必须同步建 即梦上传/
-            os.makedirs(os.path.join(pdir, "即梦上传"), exist_ok=True)
+        try:                       # 规则第 270 条：交付提示词时必须同步建 平台上传/
+            os.makedirs(pcore.upload_dir(pdir, create=True) if pcore
+                        else os.path.join(pdir, "平台上传"), exist_ok=True)
         except OSError:
             pass
         self._set_proj(pdir)
@@ -1266,7 +1271,7 @@ class Handler(BaseHTTPRequestHandler):
 
         - 还没归类的（待投放）→ 直接从待投放里拿掉；
         - 已归类的 → 从 框架.json 的 materials 里删掉，文件**移到项目里的 `_已移除/`**
-          （不真删：素材是用户辛苦攒的，误删要能捞回来），`即梦上传/` 下的同名副本一并挪走。
+          （不真删：素材是用户辛苦攒的，误删要能捞回来），`平台上传/` 下的同名副本一并挪走。
         """
         f = (b.get("file") or "").strip().replace("\\", "/")
         name = (b.get("name") or "").strip()
@@ -1296,10 +1301,11 @@ class Handler(BaseHTTPRequestHandler):
                     if os.path.isfile(src):
                         shutil.move(src, os.path.join(dest, os.path.basename(src)))
                         moved.append(rel)
-                    up = os.path.join(pdir, "即梦上传", os.path.basename(rel))
+                    up = os.path.join(pcore.upload_dir(pdir) if pcore else os.path.join(pdir, "平台上传"),
+                                      os.path.basename(rel))
                     if os.path.isfile(up):
                         shutil.move(up, os.path.join(dest, os.path.basename(up)))
-                        moved.append("即梦上传/" + os.path.basename(rel))
+                        moved.append("平台上传/" + os.path.basename(rel))
                 except OSError as e:
                     return {"ok": False, "error": "移动失败：%s" % e}
                 continue
@@ -1314,18 +1320,23 @@ class Handler(BaseHTTPRequestHandler):
     def open_path(self, b):
         """在资源管理器里打开一个项目相关的目录/文件（用户点的动作）。
 
-        kind: uploads（即梦上传）/ project（项目根）/ materials（素材）/ code（文案）/
+        kind: uploads（平台上传）/ project（项目根）/ materials（素材）/ code（文案）/
               finals（成片）/ rejects（废片）/ reviews（评价）/ records（对话记录）
-        sub: 打开某个子目录（比如即梦上传的某个版本）
+        sub: 打开某个子目录（比如平台上传的某个版本）
         """
         pdir = self._proj(b)
         if not (pdir and os.path.isdir(pdir)):
             return {"ok": False, "error": "还没有项目"}
         kind = (b.get("kind") or "project").strip()
         sub = (b.get("sub") or "").strip()
-        rel = {"uploads": "即梦上传", "project": "", "materials": "素材", "code": "文案",
-               "finals": "成片", "rejects": "废片", "reviews": "评价",
-               "records": os.path.join("_会话", "agent记录")}.get(kind)
+        # 上传夹走 upload_dir()：老项目里叫「即梦上传」也能正确打开（不会凭空建一个空的新夹）
+        if kind == "uploads":
+            base = pcore.upload_dir(pdir, create=True) if pcore else os.path.join(pdir, "平台上传")
+            rel = os.path.relpath(base, pdir)
+        else:
+            rel = {"project": "", "materials": "素材", "code": "文案",
+                   "finals": "成片", "rejects": "废片", "reviews": "评价",
+                   "records": os.path.join("_会话", "agent记录")}.get(kind)
         if rel is None:
             return {"ok": False, "error": "不认识的 kind：%s" % kind}
         target = os.path.normpath(os.path.join(pdir, rel, sub)) if sub else             os.path.normpath(os.path.join(pdir, rel))

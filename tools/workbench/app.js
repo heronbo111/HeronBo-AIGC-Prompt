@@ -256,7 +256,7 @@ function boardFacts() {
   const names = ups.slice(0, 2).map((u) => u.name).join("、");
   return [
     `待归类 ${S.pending.length} 项 · 已归类：素材 ${cnt("素材")} · 文案 ${cnt("文案")}`,
-    ps.length ? `提示词 ${ps.length} 条（最新 ${esc(ps[ps.length - 1].ver || "v")}） · 即梦上传 ${ups.length} 件`
+    ps.length ? `提示词 ${ps.length} 条（最新 ${esc(ps[ps.length - 1].ver || "v")}） · 平台上传 ${ups.length} 件`
               : "还没有提示词",
     ups.length ? `上传清单 ${ups.length} 件：${esc(names)}${ups.length > 2 ? " 等" : ""}`
                : "上传清单还是空的（agent 出提示词时会按引用编号放进来）",
@@ -968,7 +968,7 @@ function bindSampleDrag() {
 
 /* ── 面板调宽窄 + 框调高矮（2026-09-16 用户要求："这些面板调节大小还有面板里面的对话框"）
    面板＝四栏：三条分隔条各自控制左边那一栏的宽度（第三条控制④栏，方向相反）。
-   框＝面板里的内容框（提示词正文 / 即梦上传 / 素材清单 / 执行记录）：底部抓手拖高矮。
+   框＝面板里的内容框（提示词正文 / 平台上传 / 素材清单 / 执行记录）：底部抓手拖高矮。
    尺寸都存 localStorage（本机偏好），双击抓手＝恢复默认。 */
 const COL_MIN = {1: 170, 2: 200, 4: 240};      // 各栏最小宽度
 const MID_MIN = 320;                            // ③栏是弹性列，给它留够
@@ -1455,7 +1455,7 @@ function askAgent(what, feedback) {
 function watchAgent() {
   if (S.agentTimer) return;
   const pst = $("pstages");
-  pst.innerHTML = ["读技能 / 框架", "写提示词", "落即梦上传", "写回执"]
+  pst.innerHTML = ["读技能 / 框架", "写提示词", "落平台上传", "写回执"]
     .map((s, i) => `<span data-i="${i}">${s}</span>`).join("");
   const es = new EventSource("/api/progress");
   S.agentTimer = es;
@@ -1705,7 +1705,7 @@ bindDrop();
 makeColumnsResizable();
 makeVResizable($("promptWrap"), "prompt", 120, 760);     // ③栏 提示词正文（抓手挂外层，重画不冲掉）
 makeVResizable($("logWrap"), "log", 80, 520);            // ③栏 执行记录
-makeVResizable($("upBox"), "up", 50, 400);               // ③栏 即梦上传清单
+makeVResizable($("upBox"), "up", 50, 400);               // ③栏 平台上传清单
 makeVResizable($("matBox"), "mat", 80, 700);             // ②栏 素材清单
 BOARD.wrap = $("boardWrap");
 BOARD.frame = $("boardFrame");
