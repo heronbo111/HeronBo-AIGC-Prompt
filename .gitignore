@@ -4,6 +4,8 @@
 *.wav
 *.png
 *.jpg
+# 例外：工作台界面左上角要用的图标（不放行的话同事 clone 下来 logo 就裂了）
+!tools/workbench/logo.png
 素材/
 成片/
 废片/
