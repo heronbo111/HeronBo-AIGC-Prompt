@@ -48,3 +48,4 @@ tools/dist/*.exe.new
 tools/_vendor/wheels-heavy/
 tools/_vendor/ffmpeg/
 tools/_vendor/models/
+_stage/
