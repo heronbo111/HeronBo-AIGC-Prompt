@@ -33,7 +33,14 @@ tools/_vendor/ffmpeg/bin/
 # exe 换位暂存：工作台开着时 exe 被占用，先打到这里、等它关掉再换过去
 tools/_stage/
 tools/*.spec
-# 例外：dist 里的成品 exe 随仓库分发 —— 用户 clone/pull 即有可用工具，
-# 不必在每台机器上装 Python + PyInstaller 再打包。
-!tools/dist/
-!tools/dist/score-tool.exe
+# exe **也不进 git**（2026-09-17：历史里 47 个版本共 762MB，把 Gitee 的 1GB 配额撑爆了）。
+# 分发走 GitHub Release 附件：`python tools/deploy.py vendor --fetch --yes` 会把它和离线大件一起拉下来；
+# 想自己打包：python -m PyInstaller --noconfirm score-tool.spec
+tools/dist/score-tool.exe
+tools/dist/score-tool_*.exe
+
+# 离线大件也不进 git（2026-09-17：历史里这几样共 294MB + exe 762MB，把 Gitee 1GB 配额撑爆）。
+# 分发走 GitHub Release 附件：python tools/deploy.py vendor --fetch --yes
+tools/_vendor/wheels-heavy/
+tools/_vendor/ffmpeg/
+tools/_vendor/models/
