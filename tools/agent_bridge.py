@@ -85,20 +85,146 @@ def zcode_session_from_snapshot(before, since):
     return sid
 
 
+def proc_children():
+    """当前 agent 进程**自己拉起来的子进程**（含孙进程）：[(pid, 名字)]。
+
+    为什么要它（2026-09-17 用户要求"进程可视化 + 能刹住"）：agent 干活时会自己起
+    ffmpeg / python 深度视频.py 这类长任务；只看界面的阶段是看不见的，用户也没法判断
+    "它现在是不是在做我不想要的那件事"。
+    实现用 Windows 的 Toolhelp32 快照（纯 ctypes，毫秒级，不依赖 wmic/PowerShell）。
+    """
+    root = (_CURRENT.get("proc").pid if _CURRENT.get("proc") else 0)
+    if not root or os.name != "nt":
+        return []
+    import ctypes
+    from ctypes import wintypes
+
+    TH32CS_SNAPPROCESS = 0x00000002
+    MAX_PATH = 260
+
+    class PROCESSENTRY32(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+                    ("th32ProcessID", wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+                    ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                    ("th32ParentProcessID", wintypes.DWORD),
+                    ("pcPriClassBase", ctypes.c_long), ("dwFlags", wintypes.DWORD),
+                    ("szExeFile", ctypes.c_char * MAX_PATH)]
+
+    try:
+        k32 = ctypes.windll.kernel32
+        snap = k32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if snap == -1:
+            return []
+        rows, ents = {}, {}
+        e = PROCESSENTRY32()
+        e.dwSize = ctypes.sizeof(PROCESSENTRY32)
+        more = k32.Process32First(snap, ctypes.byref(e))
+        while more:
+            pid, ppid = int(e.th32ProcessID), int(e.th32ParentProcessID)
+            name = e.szExeFile.decode("mbcs", "replace")
+            rows[pid] = (ppid, name)
+            ents[pid] = e
+            more = k32.Process32Next(snap, ctypes.byref(e))
+        k32.CloseHandle(snap)
+    except Exception:                                            # noqa: BLE001
+        return []
+    # 从 root 出发把整棵树收下来（含孙进程）
+    out, frontier, seen = [], [root], set()
+    while frontier:
+        cur = frontier.pop()
+        for pid, (ppid, name) in rows.items():
+            if ppid == cur and pid not in seen:
+                seen.add(pid)
+                out.append((pid, name))
+                frontier.append(pid)
+    return out
+
+
+def heavy_children():
+    """子进程里"看得懂的那几个长任务"→ [{pid, name, label, what}]（给界面显示"现在在做 X"）。
+
+    只挑我们认得的：ffmpeg/ffprobe（转码、合成、抽帧）、python（深度视频/转写/遮罩那几个脚本）、
+    node（另一个 CLI）等；认不出来的一律不报，别拿噪声糊界面。
+    """
+    KNOWN = {
+        "ffmpeg.exe": ("转码 / 合成 / 抽帧", True),
+        "ffprobe.exe": ("读时长（很快）", False),
+        "python.exe": ("跑脚本（深度视频 / 转写 / 遮罩…）", True),
+        "pythonw.exe": ("跑脚本（深度视频 / 转写 / 遮罩…）", True),
+        "node.exe": ("另一个 CLI 在干活", True),
+        "msedgewebview2.exe": ("浏览器内核", False),
+        "msedge.exe": ("浏览器", False),
+    }
+    out = []
+    for pid, name in proc_children():
+        low = name.lower()
+        if low not in KNOWN:
+            continue
+        label, heavy = KNOWN[low]
+        out.append({"pid": pid, "name": name, "label": label, "heavy": heavy,
+                    "seconds": _proc_seconds(pid)})
+    return out
+
+
+def _proc_seconds(pid):
+    """这个进程跑了多少秒（拿不到就 0）。"""
+    if os.name != "nt":
+        return 0
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.windll.kernel32
+        h = k32.OpenProcess(0x1000, False, int(pid))       # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return 0
+        try:
+            creation, exit_, kern, user = (wintypes.FILETIME(), wintypes.FILETIME(),
+                                           wintypes.FILETIME(), wintypes.FILETIME())
+            if not k32.GetProcessTimes(h, ctypes.byref(creation), ctypes.byref(exit_),
+                                       ctypes.byref(kern), ctypes.byref(user)):
+                return 0
+            ticks = (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+            secs = ticks / 10000000.0 - 11644473600         # FILETIME → Unix 秒
+            return max(0, int(time.time() - secs))
+        finally:
+            k32.CloseHandle(h)
+    except Exception:                                            # noqa: BLE001
+        return 0
+
+
 def stop_current():
-    """把正在跑的 agent 任务杀掉（界面上的「停止」按钮）。
+    """把正在跑的 agent 任务杀掉（界面上的「暂停」按钮）。
 
     为什么需要：agent 一跑就是几分钟，ZCode 这条通道还不吐过程输出；万一它卡住/跑飞了，
     用户只能等超时（30 分钟）——这不合理。
+
+    ⚠️ **必须连它拉起来的子进程一起杀**（2026-09-17 用户实测教训：让 agent 别做深度片，
+    点了停止却发现它还在算）：CLI 是 node/Electron，ffmpeg 和"深度视频.py"是**它的孩子**，
+    只 kill 父进程在 Windows 上不会带走孙子 → 这里用 `taskkill /T`（整棵树）。
     """
     p = _CURRENT.get("proc")
     if not p:
         return False
-    try:
-        p.kill()
-        return True
-    except OSError:
-        return False
+    kids = proc_children()
+    ok = False
+    if os.name == "nt":
+        try:
+            r = subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"],
+                               capture_output=True, text=True, errors="replace",
+                               timeout=20, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            ok = r.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            ok = False
+    if not ok:
+        try:
+            p.kill()
+            ok = True
+        except OSError:
+            ok = False
+    if ok:
+        _CURRENT["stopped_kids"] = len(kids)
+    return ok
 
 
 def current_alive():
