@@ -1,0 +1,13 @@
+# 发布归档（GitHub 的 zipball / tarball、`git archive`）里**排除**这些大件。
+#
+# 为什么：SkillHub 这类平台是"下载 GitHub 归档"来导入的，而 `tools/_vendor/` 里躺着约 300MB 的
+# 安装资产（Python 轮子 / ffmpeg 压缩包 / 深度模型），归档生成 + 跨网下载很容易超时
+# —— 2026-09-17 用户在 SkillHub 发布时报"下载 GitHub 归档失败"就是这个。
+# `export-ignore` 只影响**归档**，不影响 `git clone`：直接 clone 的人照样拿得到全套离线包；
+# 从归档装的人则走在线依赖（`tools/deploy.py install` 会自动改走 PyPI/官方源）。
+#
+# 保留在归档里的：全部代码 / 文档 / SKILL.md / tools/_vendor/wheels（3.9MB 必需依赖）/
+# tools/dist/score-tool.exe（双击即用的工作台）。
+tools/_vendor/wheels-heavy/  export-ignore
+tools/_vendor/ffmpeg/        export-ignore
+tools/_vendor/models/        export-ignore
