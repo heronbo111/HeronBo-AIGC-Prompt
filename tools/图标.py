@@ -84,8 +84,56 @@ def png_bytes(size):
             + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
 
 
+def _pngs_from_image(src, sizes, keep_bg=False, white_similarity=0.12):
+    """用 ffmpeg 把一张图片转成多档 PNG（居中裁方 + 可选抠白底）。返回 [(size, bytes)]。"""
+    import subprocess
+    import tempfile
+    out = []
+    tmp = tempfile.mkdtemp(prefix="icon_")
+    for s in sizes:
+        fp = os.path.join(tmp, "%d.png" % s)
+        vf = ("crop='min(iw,ih)':'min(iw,ih)'"          # 居中裁成正方形
+              ",scale=%d:%d:flags=lanczos" % (s, s))
+        if not keep_bg:
+            vf += ",colorkey=0xFFFFFF:%.3f:0.02" % white_similarity   # 白底抠成透明
+        fmt = "rgba" if not keep_bg else "rgb24"
+        r = subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", src, "-vf", vf,
+                            "-pix_fmt", fmt, fp], capture_output=True, text=True)
+        if r.returncode != 0 or not os.path.isfile(fp):
+            raise SystemExit("ffmpeg 转图失败：%s" % (r.stderr or "")[-300:])
+        out.append((s, open(fp, "rb").read()))
+    return out
+
+
+def _write_ico(blobs):
+    out = io.BytesIO()
+    out.write(struct.pack("<HHH", 0, 1, len(blobs)))            # ICONDIR
+    offset = 6 + 16 * len(blobs)
+    for s, data in blobs:
+        out.write(struct.pack("<BBBBHHII", s if s < 256 else 0, s if s < 256 else 0,
+                              0, 0, 1, 32, len(data), offset))
+        offset += len(data)
+    for _s, data in blobs:
+        out.write(data)
+    io.open(ICO, "wb").write(out.getvalue())
+    io.open(PNG, "wb").write(dict(blobs)[max(dict(blobs))])
+    print("已生成：%s（%d 尺寸，%d 字节）" % (ICO, len(blobs), os.path.getsize(ICO)))
+    print("已生成：%s" % PNG)
+
+
 def main():
+    import argparse
+    ap = argparse.ArgumentParser(description="生成工作台图标")
+    ap.add_argument("--from", dest="src", default="", help="用现成图片做图标（jpg/png 都行）")
+    ap.add_argument("--keep-bg", action="store_true", help="保留原图背景（默认把纯白背景抠成透明）")
+    a = ap.parse_args()
     sizes = [16, 24, 32, 48, 64, 128, 256]
+    if a.src:
+        if not os.path.isfile(a.src):
+            raise SystemExit("找不到图片：%s" % a.src)
+        _write_ico(_pngs_from_image(a.src, sizes, keep_bg=a.keep_bg))
+        return
+    blobs = [(s, png_bytes(s)) for s in sizes]
     blobs = [(s, png_bytes(s)) for s in sizes]
     io.open(PNG, "wb").write(dict(blobs)[256])
     out = io.BytesIO()
