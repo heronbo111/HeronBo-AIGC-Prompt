@@ -91,8 +91,12 @@ def check_env():
     ff = shutil.which("ffprobe")
     if ff:
         ok("ffprobe", ff)
+    elif os.path.isfile(os.path.join(FF_BIN, "ffprobe.exe")):
+        ok("ffprobe", os.path.join(FF_BIN, "ffprobe.exe") + "（仓库自带）")
     else:
-        bad("ffprobe", "不在 PATH", "winget install --id Gyan.FFmpeg -e（读素材宽高时长要用）")
+        bad("ffprobe", "不在 PATH、仓库自带的也没解开",
+            "python tools/deploy.py install（解开仓库自带那份）；或 winget install --id Gyan.FFmpeg -e")
+    vendored_model()
     if os.path.isfile(EXE):
         ok("score-tool.exe", EXE)
     else:
@@ -335,6 +339,53 @@ def check_agents(yes=False, ping=None):
             "看上面各通道的状态行；通了之后工作台里点「出提示词」就能用")
 
 
+# ── 仓库自带的"离线资产"（2026-09-17 用户要求：下一台机器 = 装完就有全部环境）──────
+VENDOR = os.path.join(HERE, "_vendor")
+FF_ZIP = os.path.join(VENDOR, "ffmpeg", "ffmpeg-win64-gpl-shared.zip")
+FF_BIN = os.path.join(VENDOR, "ffmpeg", "bin")
+HEAVY_WHEELS = os.path.join(VENDOR, "wheels-heavy")
+CORE_WHEELS = os.path.join(VENDOR, "wheels")
+MODEL_DIR = os.path.join(VENDOR, "models", "depth-anything-v2-small")
+
+
+def vendored_ffmpeg(yes=False):
+    """解开仓库自带的 ffmpeg（ffmpeg.exe + ffprobe.exe + 依赖 dll）。已解开就跳过。"""
+    if os.path.isfile(os.path.join(FF_BIN, "ffmpeg.exe")):
+        ok("仓库自带 ffmpeg", FF_BIN)
+        return
+    if not os.path.isfile(FF_ZIP):
+        bad("仓库自带 ffmpeg", "没有 %s" % FF_ZIP)
+        return
+    if not yes:
+        todo("解开仓库自带的 ffmpeg（免装、免联网）",
+             "python tools/deploy.py install --yes  （会解到 %s）" % FF_BIN)
+        return
+    log("  正在解开 %s …" % os.path.basename(FF_ZIP))
+    try:
+        import zipfile
+        os.makedirs(FF_BIN, exist_ok=True)
+        with zipfile.ZipFile(FF_ZIP) as z:
+            for n in [x for x in z.namelist() if "/bin/" in x and not x.endswith("/")]:
+                with z.open(n) as src, open(os.path.join(FF_BIN, os.path.basename(n)), "wb") as dst:
+                    dst.write(src.read())
+    except Exception as e:                                       # noqa: BLE001
+        bad("解开仓库自带 ffmpeg", str(e))
+        return
+    if os.path.isfile(os.path.join(FF_BIN, "ffmpeg.exe")):
+        ok("仓库自带 ffmpeg 已解开", "%s（%d 个文件）" % (FF_BIN, len(os.listdir(FF_BIN))))
+    else:
+        bad("解开仓库自带 ffmpeg", "解完没看到 ffmpeg.exe")
+
+
+def vendored_model():
+    """仓库自带的 Depth 模型（深度视频要它，免下 HF、免代理）。"""
+    m = os.path.join(MODEL_DIR, "model.onnx")
+    if os.path.isfile(m) and os.path.getsize(m) > 90 * 1024 * 1024:
+        ok("仓库自带 Depth 模型", "%.0f MB（深度视频免下载）" % (os.path.getsize(m) / 1048576))
+    else:
+        bad("仓库自带 Depth 模型", "没有或太小：" + m)
+
+
 def do_install(yes=False, extras=False):
     """装依赖。**分两档**，别让新机一上来就下几百 MB：
 
@@ -344,6 +395,7 @@ def do_install(yes=False, extras=False):
       onnxruntime（深度视频）→ 用到哪个功能再装哪个，加 `--extras` 一次装全。
     """
     log("== 依赖 ==")
+    vendored_ffmpeg(yes)
     need = []
     for mod, pkg in (("webview", "pywebview"), ("clr_loader", "clr_loader"), ("pythonnet", "pythonnet")):
         try:
@@ -388,14 +440,23 @@ def do_install(yes=False, extras=False):
     what = {"numpy": "成片对比、竖版画布", "opencv-python-headless": "人物遮罩、拆解抽帧",
             "faster-whisper": "拆解转写", "onnxruntime": "深度视频（L4 复刻动作）"}
     lines = "、".join("%s（%s）" % (m, what.get(m, "")) for m in miss)
+    if not extras and os.path.isdir(HEAVY_WHEELS):
+        # 仓库自带离线包 → 默认一起装上（不联网、不花流量）：用户要的是"下一个机器=装完即有全部环境"
+        log("  [离线包] 仓库自带 wheels-heavy，按需依赖也一并装上：%s" % lines)
+        extras = True
     if not extras:
         log("  [按需] 还没装：%s" % lines)
         log("         ↳ 用到哪个功能再装：python tools\\环境检查.py --install --yes %s"
             % ("--extras" if len(miss) > 1 else ""))
         return
-    cmd = [PY, "-m", "pip", "install", "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"] + miss
+    if os.path.isdir(HEAVY_WHEELS):
+        cmd = [PY, "-m", "pip", "install", "--no-index", "--find-links", HEAVY_WHEELS] + miss
+        src = "仓库自带（免联网）"
+    else:
+        cmd = [PY, "-m", "pip", "install", "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"] + miss
+        src = "在线"
     if not yes:
-        todo("装按需依赖：%s" % ", ".join(miss), '"%s"   （加 --yes）' % '" "'.join(cmd))
+        todo("装按需依赖：%s（%s）" % (", ".join(miss), src), '"%s"   （加 --yes）' % '" "'.join(cmd))
         return
     log("  正在装（这几个包比较大，耐心等）：%s" % ", ".join(miss))
     r = run(cmd, timeout=1800)
@@ -460,7 +521,7 @@ def launch(yes=False, backend=None):
 def main():
     ap = argparse.ArgumentParser(description="工作台部署（自检 + 接 agent + 依赖 + 快捷方式）")
     ap.add_argument("action", nargs="?", default="check",
-                    choices=["check", "install", "agents", "shortcut", "start", "wx", "all"])
+                    choices=["check", "install", "agents", "shortcut", "start", "wx", "vendor", "all"])
     ap.add_argument("--yes", action="store_true", help="真动手（不加就只打印命令）")
     ap.add_argument("--root", help="设置样本库根目录")
     ap.add_argument("--extras", action="store_true",
@@ -474,6 +535,9 @@ def main():
     if a.action in ("check", "all"):
         check_env()
         check_root(a.root)
+    if a.action == "vendor":
+        vendored_ffmpeg(a.yes)
+        vendored_model()
     if a.action in ("agents", "all"):
         check_agents(a.yes, ping=a.ping)
     if a.action in ("install", "all"):

@@ -36,10 +36,15 @@ except Exception:
 
 def need(tool):
     p = shutil.which(tool)
+    if not p:      # 仓库自带的那份（装机时 python tools/deploy.py install 会解到 tools/_vendor/ffmpeg/bin）
+        _c = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "_vendor", "ffmpeg", "bin", tool + ".exe")
+        p = _c if os.path.isfile(_c) else None
     if not p:
-        sys.exit("[错误] 找不到 %s，请先装 ffmpeg 并加入 PATH。" % tool)
+        sys.exit("[错误] 找不到 %s：系统 PATH 里没有，仓库自带的 tools/_vendor/ffmpeg/bin 里也没有。" % tool
+                 + "\n        跑一次 python tools/deploy.py install 会自动解开仓库自带的那份，"
+                 + "或者自己装 ffmpeg 并加入 PATH。")
     return p
-
 
 def get(url, referer="https://www.bilibili.com/"):
     req = urllib.request.Request(url, headers={"User-Agent": UA, "Referer": referer})

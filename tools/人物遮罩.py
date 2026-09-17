@@ -41,12 +41,27 @@ except Exception:
     pass
 
 
+def _ff(tool):
+    """找 ffmpeg/ffprobe：系统 PATH → 仓库自带的 tools/_vendor/ffmpeg/bin（装机时自动解开）。"""
+    import shutil as _sh
+    p = _sh.which(tool)
+    if p:
+        return p
+    import os as _os
+    c = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "_vendor", "ffmpeg", "bin", tool + ".exe")
+    return c if _os.path.isfile(c) else tool
+
 def need(tool):
     p = shutil.which(tool)
+    if not p:      # 仓库自带的那份（装机时 python tools/deploy.py install 会解到 tools/_vendor/ffmpeg/bin）
+        _c = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "_vendor", "ffmpeg", "bin", tool + ".exe")
+        p = _c if os.path.isfile(_c) else None
     if not p:
-        sys.exit("[错误] 找不到 %s，请先装 ffmpeg 并加入 PATH。" % tool)
+        sys.exit("[错误] 找不到 %s：系统 PATH 里没有，仓库自带的 tools/_vendor/ffmpeg/bin 里也没有。" % tool
+                 + "\n        跑一次 python tools/deploy.py install 会自动解开仓库自带的那份，"
+                 + "或者自己装 ffmpeg 并加入 PATH。")
     return p
-
 
 def probe(path):
     ffprobe = need("ffprobe")
@@ -68,7 +83,7 @@ def probe(path):
 
 def grab(video, t, tmp):
     p = os.path.join(tmp, "grab.png")
-    subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", str(t), "-i", video,
+    subprocess.run([_ff("ffmpeg"), "-y", "-v", "error", "-ss", str(t), "-i", video,
                     "-frames:v", "1", p], check=True)
     import cv2
     return cv2.imread(p)

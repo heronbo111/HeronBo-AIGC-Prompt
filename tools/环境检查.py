@@ -38,6 +38,8 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 YUNET = os.path.join(HERE, "识别工具", "face_detection_yunet_2023mar.onnx")
 DEPTH_DIR = os.path.join(os.path.expanduser("~"), ".cache", "depth-models", "depth-anything-v2-small")
+# 仓库自带的那份（随 skill 分发，装机即用）
+DEPTH_BUNDLED = os.path.join(HERE, "_vendor", "models", "depth-anything-v2-small")
 DEPTH_FILES = ["onnx/model.onnx", "preprocessor_config.json", "config.json"]
 HF_BASE = "https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main"
 PIP_PKGS = {
