@@ -531,10 +531,10 @@ body[data-theme="暖夜"]{
 .chip .ci{display:inline-flex;width:11px;height:11px;flex:0 0 auto}
 .chip .ci svg{width:11px;height:11px;display:block}
 
-/* 复制按钮：**浮在提示词文本框右上角**（用户要求"放到文本框右上角明显一点"） */
-.copyfloat{position:absolute;top:8px;right:12px;z-index:3;width:32px;height:32px;
-  background:var(--accent-soft);border:1px solid var(--accent-border);color:var(--accent);
-  box-shadow:var(--sh-sm)}
-.copyfloat svg{width:16px;height:16px}
-.copyfloat:hover{opacity:1;color:#fff;background:var(--accent);border-color:var(--accent)}
-.copyfloat:hover svg{transform:none}
+/* 复制按钮：**在文本框外面**、靠标题条最右（正对着文本框右上角；2026-09-17 用户："这个放到文本框外面去"
+   ——浮在框里会压住滚动条）。醒目样式保留：浅蓝底 + 蓝边 + 蓝图标，悬停实心。 */
+.copybtn{float:right;width:26px;height:26px;margin:-2px 0 0 6px;
+  background:var(--accent-soft);border:1px solid var(--accent-border);color:var(--accent)}
+.copybtn svg{width:15px;height:15px}
+.copybtn:hover{color:#fff;background:var(--accent);border-color:var(--accent)}
+.copybtn:hover svg{transform:none}
