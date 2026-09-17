@@ -27,6 +27,16 @@ import project_core as pc                                     # noqa: E402
 _ok, _fail = [], []
 
 
+def _ff(tool):
+    """找 ffmpeg/ffprobe：系统 PATH → 仓库自带的 tools/_vendor/ffmpeg/bin（装机时自动解开）。"""
+    import shutil as _sh
+    p = _sh.which(tool)
+    if p:
+        return p
+    import os as _os
+    c = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "_vendor", "ffmpeg", "bin", tool + ".exe")
+    return c if _os.path.isfile(c) else tool
+
 def check(name, cond, detail=""):
     (_ok if cond else _fail).append(name)
     mark = "PASS" if cond else "FAIL"
@@ -55,7 +65,7 @@ def _png(path, color=b"\x00\x00\x00"):
 
 def _mp4(path):
     """用 ffmpeg 造一个 0.3 秒的小视频（成片/废片要用真文件）。"""
-    cmd = ["ffmpeg", "-y", "-v", "error", "-f", "lavfi",
+    cmd = [_ff("ffmpeg"), "-y", "-v", "error", "-f", "lavfi",
            "-i", "color=c=black:s=64x64:d=0.3", "-pix_fmt", "yuv420p", path]
     p = subprocess.run(cmd, capture_output=True)
     return p.returncode == 0 and os.path.isfile(path)

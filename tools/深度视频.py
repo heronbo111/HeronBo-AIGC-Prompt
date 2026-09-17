@@ -41,6 +41,19 @@ PATHS_LOCAL = os.path.join(SKILL_ROOT, "references", "paths.local.md")
 DEFAULT_MODEL = os.path.join(
     os.path.expanduser("~"), ".cache", "depth-models", "depth-anything-v2-small", "model.onnx"
 )
+# 仓库自带的那份模型（装机时随 skill 一起走，省掉"HF 下模型还要代理"这一步）
+BUNDLED_MODEL = os.path.join(HERE, "_vendor", "models", "depth-anything-v2-small", "model.onnx")
+
+
+def pick_model(explicit=""):
+    """挑模型文件：显式给的 > ~/.cache（用户自己下的）> 仓库自带的。"""
+    if explicit:
+        return explicit
+    if os.path.isfile(DEFAULT_MODEL):
+        return DEFAULT_MODEL
+    if os.path.isfile(BUNDLED_MODEL):
+        return BUNDLED_MODEL
+    return DEFAULT_MODEL
 MEAN = (0.485, 0.456, 0.406)
 STD = (0.229, 0.224, 0.225)
 
@@ -53,10 +66,15 @@ except Exception:
 
 def need(tool):
     p = shutil.which(tool)
+    if not p:      # 仓库自带的那份（装机时 python tools/deploy.py install 会解到 tools/_vendor/ffmpeg/bin）
+        _c = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "_vendor", "ffmpeg", "bin", tool + ".exe")
+        p = _c if os.path.isfile(_c) else None
     if not p:
-        sys.exit("[错误] 找不到 %s，请先装 ffmpeg 并加入 PATH。" % tool)
+        sys.exit("[错误] 找不到 %s：系统 PATH 里没有，仓库自带的 tools/_vendor/ffmpeg/bin 里也没有。" % tool
+                 + "\n        跑一次 python tools/deploy.py install 会自动解开仓库自带的那份，"
+                 + "或者自己装 ffmpeg 并加入 PATH。")
     return p
-
 
 def probe(path):
     """读视频信息：宽/高/时长/帧率/有无音轨。"""
@@ -95,11 +113,11 @@ def resolve_model(explicit=None):
         if os.path.isfile(PATHS_LOCAL):
             text = open(PATHS_LOCAL, encoding="utf-8").read()
             m = re.search(r"^\s*DEPTH_MODEL\s*[=:]\s*(\S+)\s*$", text, re.M)
-            if m:
+            if m and os.path.isfile(m.group(1)):
                 return m.group(1)
     except Exception:
         pass
-    return DEFAULT_MODEL
+    return pick_model()          # ~/.cache 优先，其次仓库自带的 tools/_vendor/models/…
 
 
 def load_session(model_path, size):

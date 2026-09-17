@@ -208,6 +208,10 @@ def ffprobe_exe():
         return _FFPROBE or None
     import glob
     cand = shutil.which("ffprobe")
+    if not cand:                       # 仓库自带的那份（装机时 tools\deploy.py install 会解开）
+        _v = os.path.join(HERE, "_vendor", "ffmpeg", "bin", "ffprobe.exe")
+        if os.path.isfile(_v):
+            cand = _v
     if not cand:
         pats = [
             os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "WinGet",

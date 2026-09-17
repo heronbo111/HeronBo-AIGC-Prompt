@@ -28,6 +28,8 @@ __pycache__/
 
 # exe 打包中间产物（不进仓库）
 tools/build/
+# 仓库自带的 ffmpeg：**只提交压缩包**，解压出来的 bin/ 是本机派生物，不进仓库
+tools/_vendor/ffmpeg/bin/
 # exe 换位暂存：工作台开着时 exe 被占用，先打到这里、等它关掉再换过去
 tools/_stage/
 tools/*.spec

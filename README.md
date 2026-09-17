@@ -66,9 +66,10 @@ python tools\部署.py all --yes
 要自己一步步来：`check`（体检）· `install`（依赖）· `agents`（agent 通道）· `shortcut`（快捷方式）·
 `start`（起工作台）· `wx`（修 WebView2）。**没打包 exe 也能用**——`python tools\工作台.py` 直接跑源码版工作台。
 
-**依赖分两档，新机别一次装全**：必需＝pywebview / pythonnet / clr_loader（走仓库里的离线包）；
-按需＝numpy / opencv / faster-whisper / onnxruntime（成片对比、人物遮罩、拆解转写、深度视频**用到才装**，
-几百 MB）。要一次装全：`python tools\环境检查.py --install --extras --yes`。
+**依赖现已全部打包进仓库**（2026-09-17）：`tools\_vendor\` 里带着 Python 轮子（必需 + 按需）、
+**ffmpeg/ffprobe**（压缩包，装机自动解开，带 libx264/libass）与 **Depth 深度模型**。
+所以"装一次 = 环境全齐"，装的过程**不联网、不花流量**；仓库因此约 300 MB，clone 记得 `--depth 1`。
+想瘦身：删掉 `tools/_vendor/wheels-heavy/`、`tools/_vendor/ffmpeg/*.zip`、`tools/_vendor/models/` 就退回「核心离线 + 其余按需联网」。
 
 **工作台窗口一片空白？** 那是 WebView2 运行库坏了（注册表写着装了、目录里 `msedgewebview2.exe` 却没了）——
 `python tools\部署.py check` 会报出来，`python tools\部署.py wx --yes` 一条命令修好；工作台现在还会
@@ -77,7 +78,7 @@ python tools\部署.py all --yes
 ### 换机四件套（必做，约 5 分钟）
 
 0. **环境检查（第一件事）**：`python tools\环境检查.py` —— 逐项自检 python≥3.9 / ffmpeg / ffprobe / WebView2 / pywebview，以及**按需**的 numpy / opencv / faster-whisper（拆解转写）/ onnxruntime（深度视频）/ Yunet 人脸模型 / 系统 OCR / Depth 模型，缺什么就打印该装什么。
-   装缺项：**先问用户**，同意后 `python tools\环境检查.py --install --yes`（**默认只装必需项**；要连大包一起装加 `--extras`；ffmpeg 走 `winget install Gyan.FFmpeg`）；模型另跑 `--models`（Depth，约 99MB，HF 需代理）与 `--warm-asr`（预下转写模型）。**装软件必须用户同意，不许静默安装。**
+   装缺项：**先问用户**，同意后 `python tools\环境检查.py --install --yes`（**仓库自带离线包时默认一次装全**；ffmpeg 与深度模型都在 `tools/_vendor/` 里，装完即用）；模型另跑 `--models`（Depth，约 99MB，HF 需代理）与 `--warm-asr`（预下转写模型）。**装软件必须用户同意，不许静默安装。**
 1. **问项目位置**：agent 问「请问您要把项目建在哪里？您提供好素材后，我会自动将其进行归类」→ `python tools\首次配置.py --project "<项目目录>"` 建框架（`文案/素材/成片/废片/评价/备注`）+ 自动归类素材 + 写入 `references/paths.local.md`（已 gitignore，不进仓库）。
 2. **问平台（可选装 CLI）**：agent 问「你主要用哪个平台做 AI 视频？即梦 / 小云雀 / updream」→ 按 `references/platforms.md` 检测：
    - 即梦 = `dreamina`（官方脚本 `curl -fsSL https://jimeng.jianying.com/cli | bash`；Windows 用 Git Bash 或按官方指引）；

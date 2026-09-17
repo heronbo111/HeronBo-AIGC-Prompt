@@ -84,6 +84,16 @@ def png_bytes(size):
             + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
 
 
+def _ff(tool):
+    """找 ffmpeg/ffprobe：系统 PATH → 仓库自带的 tools/_vendor/ffmpeg/bin（装机时自动解开）。"""
+    import shutil as _sh
+    p = _sh.which(tool)
+    if p:
+        return p
+    import os as _os
+    c = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "_vendor", "ffmpeg", "bin", tool + ".exe")
+    return c if _os.path.isfile(c) else tool
+
 def _pngs_from_image(src, sizes, keep_bg=False, white_similarity=0.12):
     """用 ffmpeg 把一张图片转成多档 PNG（居中裁方 + 可选抠白底）。返回 [(size, bytes)]。"""
     import subprocess
@@ -97,7 +107,7 @@ def _pngs_from_image(src, sizes, keep_bg=False, white_similarity=0.12):
         if not keep_bg:
             vf += ",colorkey=0xFFFFFF:%.3f:0.02" % white_similarity   # 白底抠成透明
         fmt = "rgba" if not keep_bg else "rgb24"
-        r = subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", src, "-vf", vf,
+        r = subprocess.run([_ff("ffmpeg"), "-y", "-v", "error", "-i", src, "-vf", vf,
                             "-pix_fmt", fmt, fp], capture_output=True, text=True)
         if r.returncode != 0 or not os.path.isfile(fp):
             raise SystemExit("ffmpeg 转图失败：%s" % (r.stderr or "")[-300:])
