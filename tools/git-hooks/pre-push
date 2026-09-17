@@ -1,0 +1,64 @@
+#!/bin/sh
+# 公开发布防护钩子（ZCode 于 2026-09-09 添加；2026-09-17 扩到双远程并抽离词表）
+#
+# 作用：向**公开**仓库（Gitee 与 GitHub，两个都公开）推送时，若待推送的提交里含
+#       真实品牌/书名/人名/本机信息，直接拦下。不修改任何文件内容。
+#
+# ★ 为什么词表不在这个文件里 ★
+#   本文件是**版本化**的（仓库 tools/git-hooks/pre-push），而词表里全是敏感词本身——
+#   写进来的话，这个文件自己就会被扫描命中，永远推不上去（第一版就这么翻车过）。
+#   所以词表放在**本机文件** `.git/hooks/敏感词.local.txt`（.git 内的文件天然不进仓库），
+#   一行一个词，# 开头为注释。装/更新：python tools\推送.py --install-hook
+#
+# 注意：这是「防手滑」的网，不是安全控制（SEEDANCE_SKIP_GUARD=1 可绕过）。
+# 日常发布走 tools\推送.py（提交前就扫，比钩子更早、更好改）。
+# 临时跳过：SEEDANCE_SKIP_GUARD=1 git push ...
+# 彻底移除：删除本文件（或改名 pre-push.disabled）。
+
+remote_name="$1"
+remote_url="$2"
+
+[ -n "$SEEDANCE_SKIP_GUARD" ] && exit 0
+case "$remote_url" in
+  *gitee.com*|*github.com*) ;;          # 两个库都公开 -> 都扫
+  *) exit 0 ;;
+esac
+
+# 词表：本机文件，一行一个词；没有就明确告警并放行（由推送脚本扫描兜底）
+words_file="$(git rev-parse --git-dir)/hooks/敏感词.local.txt"
+if [ ! -f "$words_file" ]; then
+  echo "⚠️  没找到本机词表，本次不扫词。装/更新：python tools\\推送.py --install-hook"
+  exit 0
+fi
+args=""
+while IFS= read -r w; do
+  case "$w" in ''|\#*) continue ;; esac
+  args="$args -e $w"
+done < "$words_file"
+[ -z "$args" ] && exit 0
+
+zero=0000000000000000000000000000000000000000
+blocked=0
+
+while read local_ref local_sha remote_ref remote_sha; do
+  [ "$local_sha" = "$zero" ] && continue
+  if [ "$remote_sha" = "$zero" ]; then
+    commits=$(git rev-list "$local_sha" 2>/dev/null)
+  else
+    commits=$(git rev-list "$remote_sha..$local_sha" 2>/dev/null)
+  fi
+  [ -z "$commits" ] && continue
+  hits=$(git grep -I -F $args $commits -- 2>/dev/null | head -20)
+  if [ -n "$hits" ]; then
+    echo ""
+    echo "❌ 推送已拦下：待推送内容含真实品牌/书名/本机信息，公开仓库不能发布。"
+    echo "$hits"
+    echo ""
+    echo "→ 先脱敏（把命中处改成中性说法再提交）；词表在 $words_file"
+    echo "→ 确认可以公开、要强行推送：SEEDANCE_SKIP_GUARD=1 git push ..."
+    blocked=1
+  fi
+done
+
+[ "$blocked" = "1" ] && exit 1
+exit 0

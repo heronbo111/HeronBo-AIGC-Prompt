@@ -22,6 +22,7 @@ r"""一键发布：扫 → 提交 → 推 gitee + GitHub → 校验。
 6. push gitee → push github → 用 `ls-remote` 逐个校验远程 sha == 本地 HEAD
 """
 import argparse
+import io
 import os
 import re
 import subprocess
@@ -45,24 +46,21 @@ def git(*a, **kw):
 
 
 def blocked_words():
-    """敏感词表：**只从 pre-push 钩子读**，脚本里不留词表副本。
+    """敏感词表：**只从本机文件读**，任何进仓库的文件里都不留词表副本。
 
-    为什么不内置兜底词表：词表里全是敏感词本身，写进脚本 = 脚本自己就会命中扫描，
-    推送时也会被钩子拦下（本脚本第一版就这么翻车过）。钩子是唯一真相源，
-    它不在（换了机器/被删）就明确告警并跳过，让推送时的钩子去兜底。
+    为什么：词表里全是敏感词本身，写进版本化文件 = 那个文件自己就会被扫描命中、
+    永远推不上去（本脚本第一版、以及把钩子纳入仓库那次，都这么翻车过）。
+    所以词表放 `.git/hooks/敏感词.local.txt`（.git 内的文件天生不进仓库）。
     """
-    hook = os.path.join(ROOT, ".git", "hooks", "pre-push")
-    try:
-        txt = open(hook, encoding="utf-8", errors="replace").read()
-    except OSError:
-        return [], "!! 找不到 .git/hooks/pre-push，取不到词表（本次不扫词）"
-    words = re.findall(r"-e\s+'([^']+)'", txt)
-    seen, out = set(), []
-    for w in words:
-        if w not in seen:
-            seen.add(w)
-            out.append(w)
-    return out, "来自 .git/hooks/pre-push（唯一真相源）"
+    path = os.path.join(ROOT, ".git", "hooks", "敏感词.local.txt")
+    if os.path.isfile(path):
+        out = []
+        for line in io.open(path, encoding="utf-8", errors="replace"):
+            w = line.strip()
+            if w and not w.startswith("#") and w not in out:
+                out.append(w)
+        return out, "来自 .git/hooks/敏感词.local.txt（本机私有）"
+    return [], "!! 没有本机词表（--install-hook 可生成），本次不扫词"
 
 
 def changed_tracked():
@@ -104,10 +102,42 @@ def main():
     ap.add_argument("--dry", action="store_true", help="只体检，不提交不推送")
     ap.add_argument("--no-github", action="store_true", help="只推 gitee")
     ap.add_argument("--note", default="", help="提交正文末尾的来源/说明")
+    ap.add_argument("--install-hook", action="store_true",
+                    help="把仓库里的 tools/git-hooks/pre-push 装到 .git/hooks/")
     a = ap.parse_args()
 
     os.chdir(ROOT)
     print("仓库：%s" % ROOT)
+
+    # 防护钩子：仓库里有一份版本化的，本机 .git/hooks 里的可能没有/是旧的
+    src_hook = os.path.join(ROOT, "tools", "git-hooks", "pre-push")
+    dst_hook = os.path.join(ROOT, ".git", "hooks", "pre-push")
+    same = False
+    if os.path.isfile(src_hook) and os.path.isfile(dst_hook):
+        try:
+            same = open(src_hook, "rb").read() == open(dst_hook, "rb").read()
+        except OSError:
+            same = False
+    if a.install_hook:
+        if os.path.isfile(src_hook):
+            import shutil as _sh
+            _sh.copy2(src_hook, dst_hook)
+            try:
+                os.chmod(dst_hook, 0o755)
+            except OSError:
+                pass
+            words_path = os.path.join(ROOT, ".git", "hooks", "敏感词.local.txt")
+            if not os.path.isfile(words_path):
+                io.open(words_path, "w", encoding="utf-8", newline="\n").write(
+                    "# 公开发布敏感词表（本机私有：.git 内的文件不进仓库）\n"
+                    "# 一行一个词，# 开头为注释。把你要防的品牌/书名/人名/本机路径逐行写上。\n\n")
+                print("已建空的词表：.git/hooks/敏感词.local.txt（请把敏感词逐行填进去）")
+            print("已装/更新防护钩子：.git/hooks/pre-push")
+            same = True
+    elif not os.path.isfile(dst_hook):
+        print("提醒：本机没装防护钩子（本仓库两个远程都公开）。装：--install-hook")
+    elif not same:
+        print("提醒：防护钩子与本机版本不一致（仓库里有新版）。更新：--install-hook")
     br = git("rev-parse", "--abbrev-ref", "HEAD")
     if br != "main":
         print("!! 当前分支是 %s（本仓库约定在 main 上发布）" % br)
