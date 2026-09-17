@@ -346,6 +346,87 @@ FF_BIN = os.path.join(VENDOR, "ffmpeg", "bin")
 HEAVY_WHEELS = os.path.join(VENDOR, "wheels-heavy")
 CORE_WHEELS = os.path.join(VENDOR, "wheels")
 MODEL_DIR = os.path.join(VENDOR, "models", "depth-anything-v2-small")
+# 大件**不进仓库归档**（归档只放代码，约 24MB，SkillHub 之类平台才导得进来）→ 想要离线全套时
+# 从 GitHub Release 拉这三个包（2026-09-17 上传）。国内拉 GitHub 慢的话，直接用镜像在线装也一样。
+VENDOR_REL = os.environ.get("HERONBO_VENDOR_REL") or     "https://github.com/heronbo111/HeronBo-AIGC-Prompt/releases/download/vendor-2026-09-17/"
+VENDOR_ASSETS = [("wheels-heavy.zip", "wheels-heavy", 116),      # (附件名, 解开到 _vendor/ 下的子目录, MB)
+                 ("ffmpeg-win64-gpl-shared.zip", "ffmpeg", 82),
+                 ("depth-model.zip", "models", 88)]
+
+
+def vendor_missing():
+    """还缺哪些大件（归档安装的正常现象：仓库里没带）。"""
+    miss = []
+    if not os.path.isdir(HEAVY_WHEELS):
+        miss.append(VENDOR_ASSETS[0])
+    if not os.path.isfile(os.path.join(FF_BIN, "ffmpeg.exe")):
+        miss.append(VENDOR_ASSETS[1])
+    if not os.path.isfile(os.path.join(MODEL_DIR, "model.onnx")):
+        miss.append(VENDOR_ASSETS[2])
+    return miss
+
+
+def _download(url, dst):
+    """下文件，边下边报进度（大件 80–120MB，没进度条会以为卡死）。"""
+    import urllib.request
+    t0 = time.time()
+    with urllib.request.urlopen(url, timeout=120) as r, open(dst, "wb") as f:
+        total = int(r.headers.get("Content-Length") or 0)
+        got = 0
+        last = 0
+        while True:
+            b = r.read(262144)
+            if not b:
+                break
+            f.write(b)
+            got += len(b)
+            if time.time() - last > 3:
+                last = time.time()
+                if total:
+                    log("    %5.1f%%  %.1f/%.1f MB  %.1f MB/s" % (got * 100.0 / total, got / 1048576,
+                        total / 1048576, got / 1048576 / max(0.1, time.time() - t0)))
+                else:
+                    log("    已下 %.1f MB  %.1f MB/s" % (got / 1048576, got / 1048576 / max(0.1, time.time() - t0)))
+    return got
+
+
+def fetch_vendor(yes=False):
+    """把三个大件从 Release 拉下来并解开（约 290MB，**一次就好**，之后新机器可直接拷 _vendor/）。"""
+    miss = vendor_missing()
+    if not miss:
+        ok("离线大件已齐", "wheels-heavy / ffmpeg / depth-model 都在")
+        return
+    names = "、".join("%s（约 %dMB）" % (a[0], a[2]) for a in miss)
+    if not yes:
+        todo("下载离线大件：%s" % names,
+             "python tools/deploy.py vendor --fetch --yes   （从 %s 拉；国内慢就直接用镜像在线装）" % VENDOR_REL)
+        return
+    import zipfile
+    for fn, sub, mb in miss:
+        zip_dst = os.path.join(VENDOR, fn)
+        log("  下 %s（约 %dMB）…" % (fn, mb))
+        try:
+            n = _download(VENDOR_REL + fn, zip_dst)
+        except Exception as e:                                   # noqa: BLE001
+            bad("下载 " + fn, str(e)[:160], "网络不通就先跳过：用镜像在线装（python tools/deploy.py install --yes）")
+            continue
+        ok("下好了 " + fn, "%.1f MB" % (n / 1048576))
+        try:
+            if fn.startswith("ffmpeg"):
+                os.makedirs(FF_BIN, exist_ok=True)
+                with zipfile.ZipFile(zip_dst) as z:
+                    for m in [x for x in z.namelist() if "/bin/" in x and not x.endswith("/")]:
+                        with z.open(m) as src, open(os.path.join(FF_BIN, os.path.basename(m)), "wb") as dst:
+                            dst.write(src.read())
+            else:
+                with zipfile.ZipFile(zip_dst) as z:
+                    z.extractall(VENDOR)
+            ok("解开 " + fn)
+        except Exception as e:                                   # noqa: BLE001
+            bad("解开 " + fn, str(e)[:160])
+
+
+MODEL_DIR_MARK = True
 
 
 def vendored_ffmpeg(yes=False):
@@ -524,6 +605,7 @@ def main():
                     choices=["check", "install", "agents", "shortcut", "start", "wx", "vendor", "all"])
     ap.add_argument("--yes", action="store_true", help="真动手（不加就只打印命令）")
     ap.add_argument("--root", help="设置样本库根目录")
+    ap.add_argument("--fetch", action="store_true", help="vendor 时从 Release 下大件（约 290MB）")
     ap.add_argument("--extras", action="store_true",
                     help="install 时连「按需才装」的重包一起装（numpy/opencv/转写/深度视频）")
     ap.add_argument("--ping", dest="ping", action="store_true", default=None,
@@ -536,8 +618,14 @@ def main():
         check_env()
         check_root(a.root)
     if a.action == "vendor":
-        vendored_ffmpeg(a.yes)
-        vendored_model()
+        if getattr(a, "fetch", False):
+            fetch_vendor(a.yes)
+        else:
+            vendored_ffmpeg(a.yes)
+            vendored_model()
+            if vendor_missing():
+                log("  [提示] 还缺大件（归档/SkillHub 安装的正常现象）："
+                    "python tools/deploy.py vendor --fetch --yes 可以一次拉齐（约 290MB）")
     if a.action in ("agents", "all"):
         check_agents(a.yes, ping=a.ping)
     if a.action in ("install", "all"):

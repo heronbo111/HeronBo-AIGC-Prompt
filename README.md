@@ -71,6 +71,8 @@ python tools\部署.py all --yes
 所以"装一次 = 环境全齐"，装的过程**不联网、不花流量**；仓库因此约 300 MB，clone 记得 `--depth 1`。
 想瘦身：删掉 `tools/_vendor/wheels-heavy/`、`tools/_vendor/ffmpeg/*.zip`、`tools/_vendor/models/` 就退回「核心离线 + 其余按需联网」。
 
+**从归档/SkillHub 装的话**（归档里不带这三个大件，只有 24MB，平台才导得进）：跑 `python tools/deploy.py vendor --fetch --yes` 一条命令从 Release 拉齐；不想拉就照旧在线装（镜像 1–3 分钟）。
+
 **工作台窗口一片空白？** 那是 WebView2 运行库坏了（注册表写着装了、目录里 `msedgewebview2.exe` 却没了）——
 `python tools\部署.py check` 会报出来，`python tools\部署.py wx --yes` 一条命令修好；工作台现在还会
 **自动退到 Edge 窗口**，不会再晾你一个白窗。整条新机流程见 `docs/新机部署.md`。
