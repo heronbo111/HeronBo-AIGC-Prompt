@@ -398,7 +398,39 @@ def ensure_project(project_dir, dirs=None):
 #   ├── 回执.jsonl     agent 写：我做了什么、产出了哪些文件（程序读来显示）
 #   └── 轮次/001-反馈.txt  每轮用户反馈原文留档（agent 复盘用）
 SESSION_DIR = "_会话"
-UPLOAD_DIR = "即梦上传"
+UPLOAD_DIR = "平台上传"          # 2026-09-17 用户要求：skill 已支持多平台，不再叫"即梦上传"
+UPLOAD_DIR_OLD = "即梦上传"      # 老项目里仍是这个名字 → **读的时候两个都认**，不必强迁
+
+
+def _dir_file_count(d):
+    """目录里的文件数（含子目录）——用来判断"哪份上传夹是装着东西的那份"。"""
+    n = 0
+    for _root, _dirs, files in os.walk(d):
+        n += len(files)
+    return n
+
+
+def upload_dir(pdir, create=False):
+    """项目的"上传夹"路径（放要上传到平台的素材副本 + 上传说明.txt）。
+
+    规则（2026-09-17 由「即梦上传」改名时定的）：
+      · 只有 `平台上传/` → 用它；只有 `即梦上传/` → 用它（老项目不必强迁）；
+      · **两个都在 → 谁有文件用谁**（空的新夹不能遮住装着东西的旧夹——实测踩到过：
+        重命名失败的项目里，旧夹 122 个文件、新夹空着，界面就显示成"没有上传件"）；
+      · 都没有 → `create=True` 时按新名建。
+    """
+    new = os.path.join(pdir, UPLOAD_DIR)
+    old = os.path.join(pdir, UPLOAD_DIR_OLD)
+    has_new, has_old = os.path.isdir(new), os.path.isdir(old)
+    if has_new and has_old:
+        return old if _dir_file_count(old) > _dir_file_count(new) else new
+    if has_new:
+        return new
+    if has_old:
+        return old
+    if create:
+        os.makedirs(new, exist_ok=True)
+    return new
 STATE_JSON = "状态.json"
 TODO_JSONL = "待办.jsonl"
 RECEIPT_JSONL = "回执.jsonl"
@@ -860,7 +892,7 @@ def auto_plan(paths, root=None, name=None):
 
 
 def auto_build(paths, root=None, name=None, platform="", register=True, on_log=None):
-    """一键：自动定根/定名 → 建框架（含 即梦上传/）→ 按角色归类 → 写清单。
+    """一键：自动定根/定名 → 建框架（含 平台上传/）→ 按角色归类 → 写清单。
 
     这就是"软件自行生成框架"：用户只管把素材丢进来，其余全自动；
     任何一步的判断结果都落在日志与框架里，可回溯、可手改。
@@ -882,9 +914,9 @@ def auto_build(paths, root=None, name=None, platform="", register=True, on_log=N
                                   platform=platform or None, register=register)
     for m in l2:
         emit(m)
-    # 即梦上传夹（rules.md 第270 条：交付提示词时必须同步建）
-    os.makedirs(os.path.join(pdir, "即梦上传"), exist_ok=True)
-    emit("已建 即梦上传/（规则第270条）")
+    # 上传夹（rules.md 第270 条：交付提示词时必须同步建；名字 2026-09-17 由「即梦上传」改为「平台上传」）
+    os.makedirs(upload_dir(pdir, create=True), exist_ok=True)
+    emit("已建 %s/（规则第270条）" % UPLOAD_DIR)
 
     # 按角色分批落户
     buckets = {}
