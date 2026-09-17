@@ -63,6 +63,36 @@ def blocked_words():
     return [], "!! 没有本机词表（--install-hook 可生成），本次不扫词"
 
 
+def git_push_via_proxy(remote):
+    """直推失败后，改走本机 Clash 的 7897 再试一次（只对 github 用）。
+
+    为什么要它：这台机器的环境变量里挂着别的代理（实测 127.0.0.1:9378），
+    github 走它必失败（schannel: server closed abruptly / CONNECT tunnel failed 502），
+    而显式指定 Clash 的 7897 就通。代理只在这一条命令里生效，不改全局配置。
+    """
+    if remote != "github":
+        return False
+    import socket
+    s = socket.socket()
+    s.settimeout(1.5)
+    try:
+        s.connect(("127.0.0.1", 7897))
+    except OSError:
+        return False
+    finally:
+        s.close()
+    env = dict(os.environ)
+    for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
+              "ALL_PROXY", "all_proxy"):
+        env.pop(k, None)                      # 先摘掉坏代理，再用 -c 指定好的
+    p = subprocess.run(["git", "-c", "http.proxy=http://127.0.0.1:7897",
+                        "-c", "https.proxy=http://127.0.0.1:7897",
+                        "push", remote, "main"],
+                       cwd=ROOT, env=env, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
+    return p.returncode == 0
+
+
 def changed_tracked():
     """已跟踪文件的改动（不含未跟踪的新文件——按 AGENTS.md 不碰别人的新文件）。"""
     out = set()
@@ -202,14 +232,24 @@ def main():
     remotes = ["gitee"] if a.no_github else ["gitee", "github"]
     ok_all = True
     for r in remotes:
-        p = subprocess.run(["git", "push", r, "main"], cwd=ROOT, capture_output=True,
-                           text=True, encoding="utf-8", errors="replace")
+        cmd = ["git", "push", r, "main"]
+        p = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
         tail = ((p.stdout or "") + (p.stderr or "")).strip().splitlines()
         if p.returncode != 0:
-            ok_all = False
-            print("    %s 推送失败：%s" % (r, tail[-1] if tail else "未知"))
-            if r == "gitee" and "防护" in (p.stderr or ""):
-                print("       （防护钩子拦下了 → 先按上面清单扫敏感词）")
+            # ★ 本机到 GitHub 会被「环境变量里挂着的其它代理」搞坏
+            # （实测 HTTP_PROXY=http://127.0.0.1:9378 下 github 必失败：
+            #  schannel: server closed abruptly / CONNECT tunnel failed 502；
+            #  显式改走 Clash 的 7897 就通）。所以失败后自动重试一次带代理的推送。
+            proxied = git_push_via_proxy(r)
+            if proxied:
+                print("    %s 已推（经本机 Clash 代理重试成功）" % r)
+            else:
+                ok_all = False
+                why = tail[-1] if tail else "未知"
+                print("    %s 推送失败：%s" % (r, why))
+                if "防护" in (p.stderr or ""):
+                    print("       （防护钩子拦下了 → 先按上面清单扫敏感词）")
         else:
             print("    %s 已推" % r)
 
