@@ -48,8 +48,8 @@ AI 视频提示词生成 + 成片六维评价工具。把「文案/台词 + 素�
 克隆（**建议带 `--depth 1`**：仓库历史里有历代 18 MB 的 exe，完整 clone 要下 70 MB+ 的历史，浅克隆只要 20 MB 上下——"装得很慢"一半是这里的钱）：
 
 ```bash
-git clone --depth 1 https://gitee.com/HeronBo/seedance-prompt.git      # 国内
-git clone --depth 1 https://github.com/heronbo111/seedance-prompt.git   # GitHub（已公开）
+git clone --depth 1 https://gitee.com/HeronBo/HeronBo-AIGC-Prompt.git      # 国内
+git clone --depth 1 https://github.com/heronbo111/HeronBo-AIGC-Prompt.git   # GitHub（已公开）
 ```
 
 ### 一键安装（新机最短路径）
