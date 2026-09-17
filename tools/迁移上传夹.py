@@ -5,7 +5,7 @@ r"""把老项目里的 `即梦上传/` 改成新名 `平台上传/`（2026-09-17
 **只做重命名**（`os.rename`），不改文件内容、不删东西——想退回把名字改回来即可。
 
 用法：
-    python tools\迁移上传夹.py --root "F:\AI创作\提示词skill生成尝试"      # 只看要改哪些（默认不改）
+    python tools\迁移上传夹.py --root "<样本库根>"            # 只看要改哪些（默认只预览）
     python tools\迁移上传夹.py --root "<样本库根>" --yes                  # 真改
     python tools\迁移上传夹.py --root "<样本库根>" --yes --dry-run        # 同 --dry-run 只预览
 """
