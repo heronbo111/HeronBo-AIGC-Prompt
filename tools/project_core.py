@@ -82,7 +82,7 @@ ASK_PLACE = "请问您要把项目建在哪里？您提供好素材后，我会�
 
 # ── paths.local.md（本机取值，已 gitignore）────────────────────────────────
 HEADER = "# 本机取值（不提交仓库；由首次使用时的用户回答写入）\n"
-ORDER = ["SAMPLES_ROOT", "AI_CREATE_ROOT", "PLATFORM", "CLI"]
+ORDER = ["SAMPLES_ROOT", "AI_CREATE_ROOT", "MATERIALS_ROOT", "PLATFORM", "CLI"]
 
 
 def read_local(local_md=None):
