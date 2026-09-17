@@ -36,6 +36,13 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# 控制台切 UTF-8（2026-09-17 修）：从 cmd 启动时 stdout 是 GBK，而本文件的 `--help` 里有 →/≤
+# 这类非 GBK 字符 → `--help` 直接抛 UnicodeEncodeError 崩掉（与 score_core 那个 ✅ 的 bug 同源）。
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:                                            # noqa: BLE001
+        pass
 SKILL_ROOT = os.path.dirname(HERE)
 PATHS_LOCAL = os.path.join(SKILL_ROOT, "references", "paths.local.md")
 DEFAULT_MODEL = os.path.join(
@@ -180,8 +187,8 @@ def main():
     ap.add_argument("--invert", action="store_true", help="反相：远处亮（默认近处亮）")
     ap.add_argument("--per-frame", action="store_true", help="逐帧归一化（默认全片统一，防闪）")
     ap.add_argument("--range-samples", type=int, default=24, help="全片分位抽样的帧数，默认 24")
-    ap.add_argument("--lo", type=float, default=2.0, help="下分位，默认 2（%）")
-    ap.add_argument("--hi", type=float, default=98.0, help="上分位，默认 98（%）")
+    ap.add_argument("--lo", type=float, default=2.0, help="下分位（百分位，默认 2）——⚠ argparse 的 help 里不能出现裸的百分号，会被当格式符")
+    ap.add_argument("--hi", type=float, default=98.0, help="上分位（百分位，默认 98）")
     ap.add_argument("--crf", type=int, default=18, help="x264 CRF，默认 18")
     ap.add_argument("--preset", default="veryfast", help="x264 preset，默认 veryfast")
     ap.add_argument("--fps", type=float, default=0, help="输出帧率（默认跟源）")
