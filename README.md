@@ -170,6 +170,33 @@ HeronBo-AIGC-Prompt/
 2. 本地优化写 `references/*.local.md`（gitignored），`git pull` 不会冲突；上游 `SKILL.md` 的 `version` 变大时按上文「更新与本地覆盖」复核本地规则。
 3. 大视频（成片/废片）不进仓库；真实口播稿/备注只存各机本机样本库，仓库 `samples/` 为脱敏示例，更新流程见 `samples/README.md`。
 
+### 作者侧：改完怎么发出去（一键推送）
+
+**工具更新一律走 `tools\推送.py`**，不要手敲 git 系列命令——漏推 GitHub 是最常见的翻车点（Gitee 通了就当推完了，而两个库现在都是公开的）。
+
+```bash
+# 1) 先体检（不提交不推送）：看会提交什么、有没有敏感词命中
+python tools\推送.py --dry --msg "说明" tools/workbench/app.js README.md
+
+# 2) 体检通过就真发
+python tools\推送.py --msg "工作台：②栏加拖入体积提示" tools/workbench/app.js README.md
+```
+
+它会按顺序做六件事，任一步不过就停：
+
+| 步 | 做什么 | 为什么 |
+|---|---|---|
+| 1 | 列工作树现状，标出「本次提交 / 不动」 | 共享工作树里常有**别人未提交的改动**（见 `AGENTS.md`），绝不能顺手带上 |
+| 2 | 敏感词扫描 | 词表**直接读 `pre-push` 钩子**（唯一真相源），脚本里不留副本——否则脚本自己就会被扫中 |
+| 3 | 体量检查 >5MB 拦下 | 大件走 Release 附件，不进 git（Gitee 有 1GB 配额，撑爆过一次） |
+| 4 | 提交 | 提交信息面向用户；要标来源写在正文末尾 |
+| 5 | push gitee → push github | 双远程 |
+| 6 | `ls-remote` 逐个校验远程 sha == 本地 HEAD | **只信 ls-remote**：本机 `git fetch` 更新不了 tracking ref，`status` 的 ahead/behind 会骗人 |
+
+其他开关：`--changed`（自动收**已跟踪**文件的改动）、`--no-github`（GitHub 网络不通时先只推 Gitee）、
+`--note "…"`（正文补充说明）。
+
+
 ## 五、特技（可直接抄的硬口径）
 
 - 规则优先级：用户实测 > 模板 > 推断；出现 ≥2 次且因果明确的才升为「已验证规律」。
