@@ -66,12 +66,18 @@ python tools\部署.py all --yes
 要自己一步步来：`check`（体检）· `install`（依赖）· `agents`（agent 通道）· `shortcut`（快捷方式）·
 `start`（起工作台）· `wx`（修 WebView2）。**没打包 exe 也能用**——`python tools\工作台.py` 直接跑源码版工作台。
 
-**依赖现已全部打包进仓库**（2026-09-17）：`tools\_vendor\` 里带着 Python 轮子（必需 + 按需）、
-**ffmpeg/ffprobe**（压缩包，装机自动解开，带 libx264/libass）与 **Depth 深度模型**。
-所以"装一次 = 环境全齐"，装的过程**不联网、不花流量**；仓库因此约 300 MB，clone 记得 `--depth 1`。
-想瘦身：删掉 `tools/_vendor/wheels-heavy/`、`tools/_vendor/ffmpeg/*.zip`、`tools/_vendor/models/` 就退回「核心离线 + 其余按需联网」。
+**仓库只放代码（约 13MB），大件走 Release 附件**（2026-09-17 起）——因为把 300MB 安装资产和
+历代 exe 放进 git，会把 Gitee 的 1GB 配额撑爆（实测 1047MB 被拒收）。
 
-**从归档/SkillHub 装的话**（归档里不带这三个大件，只有 24MB，平台才导得进）：跑 `python tools/deploy.py vendor --fetch --yes` 一条命令从 Release 拉齐；不想拉就照旧在线装（镜像 1–3 分钟）。
+| 你要什么 | 命令 |
+|---|---|
+| 代码（clone 12 秒） | `git clone --depth 1 https://gitee.com/HeronBo/HeronBo-AIGC-Prompt.git` |
+| **安装全套**（Python 轮子 + ffmpeg + 深度模型 + 工作台 exe，约 305MB，一次就好） | `python tools/deploy.py vendor --fetch --yes` |
+| 只要核心（工作台 + 出提示词 + 评分） | 什么都不用做 |
+| 打包 exe 自己来 | `python -m PyInstaller --noconfirm score-tool.spec`（要 PyInstaller）|
+
+附件地址：`https://github.com/heronbo111/HeronBo-AIGC-Prompt/releases/tag/vendor-2026-09-17`
+（下载慢的话用 `HERONBO_VENDOR_REL=<镜像前缀>` 换源）。`python tools/deploy.py all --yes` 会**自动**把缺的拉齐。
 
 **工作台窗口一片空白？** 那是 WebView2 运行库坏了（注册表写着装了、目录里 `msedgewebview2.exe` 却没了）——
 `python tools\部署.py check` 会报出来，`python tools\部署.py wx --yes` 一条命令修好；工作台现在还会

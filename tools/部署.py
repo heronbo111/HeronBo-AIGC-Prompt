@@ -349,9 +349,11 @@ MODEL_DIR = os.path.join(VENDOR, "models", "depth-anything-v2-small")
 # 大件**不进仓库归档**（归档只放代码，约 24MB，SkillHub 之类平台才导得进来）→ 想要离线全套时
 # 从 GitHub Release 拉这三个包（2026-09-17 上传）。国内拉 GitHub 慢的话，直接用镜像在线装也一样。
 VENDOR_REL = os.environ.get("HERONBO_VENDOR_REL") or     "https://github.com/heronbo111/HeronBo-AIGC-Prompt/releases/download/vendor-2026-09-17/"
-VENDOR_ASSETS = [("wheels-heavy.zip", "wheels-heavy", 116),      # (附件名, 解开到 _vendor/ 下的子目录, MB)
+# (附件名, 目标, MB)；目标是 _vendor 下的子目录名，或 "dist" 表示工作台 exe（落到 tools/dist/）
+VENDOR_ASSETS = [("wheels-heavy.zip", "wheels-heavy", 116),
                  ("ffmpeg-win64-gpl-shared.zip", "ffmpeg", 82),
-                 ("depth-model.zip", "models", 88)]
+                 ("depth-model.zip", "models", 88),
+                 ("score-tool.exe", "dist", 18)]
 
 
 def vendor_missing():
@@ -363,6 +365,8 @@ def vendor_missing():
         miss.append(VENDOR_ASSETS[1])
     if not os.path.isfile(os.path.join(MODEL_DIR, "model.onnx")):
         miss.append(VENDOR_ASSETS[2])
+    if not os.path.isfile(os.path.join(HERE, "dist", "score-tool.exe")):
+        miss.append(VENDOR_ASSETS[3])          # 工作台 exe（2026-09-17 起不进 git，改走附件）
     return miss
 
 
@@ -429,7 +433,11 @@ def fetch_vendor(yes=False):
             continue
         ok("下好了 " + fn, "%.1f MB" % (n / 1048576))
         try:
-            if fn.startswith("ffmpeg"):
+            if fn.lower().endswith(".exe"):                 # 工作台主程序：直接落到 tools/dist/
+                dst = os.path.join(HERE, "dist", fn)
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.move(zip_dst, dst)
+            elif fn.startswith("ffmpeg"):
                 os.makedirs(FF_BIN, exist_ok=True)
                 with zipfile.ZipFile(zip_dst) as z:
                     for m in [x for x in z.namelist() if "/bin/" in x and not x.endswith("/")]:
@@ -439,7 +447,7 @@ def fetch_vendor(yes=False):
                 with zipfile.ZipFile(zip_dst) as z:
                     z.extractall(VENDOR)
                 _flatten_dup(sub)          # 附件里若多套了一层（models/models/…）自动摊平
-            ok("解开 " + fn)
+            ok("就位 " + fn)
         except Exception as e:                                   # noqa: BLE001
             bad("解开 " + fn, str(e)[:160])
 
@@ -648,6 +656,8 @@ def main():
         check_agents(a.yes, ping=a.ping)
     if a.action in ("install", "all"):
         do_install(a.yes, a.extras)
+    if a.action == "all":                 # all = 真正"一遍到底"：大件与 exe 缺了就一起拉
+        fetch_vendor(a.yes)
     if a.action in ("shortcut", "all"):
         do_shortcut(a.yes)
     if a.action in ("start", "all"):
