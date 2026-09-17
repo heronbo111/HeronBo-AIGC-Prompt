@@ -38,8 +38,10 @@ tools/*.spec
 # 想自己打包：python -m PyInstaller --noconfirm score-tool.spec
 tools/dist/score-tool.exe
 tools/dist/score-tool_*.exe
-tools/dist/score-tool.version.json      # exe 的版本戳（比远端用），随机器不同，不进 git
-tools/dist/*.exe.new                    # 下载中的临时文件
+# exe 的版本戳（跟远端比对用）与下载中的临时文件：随机器不同，不进 git
+# ⚠️ 下面两行**不能写行尾注释**——gitignore 不支持行内注释，会把注释当成模式的一部分
+tools/dist/score-tool.version.json
+tools/dist/*.exe.new
 
 # 离线大件也不进 git（2026-09-17：历史里这几样共 294MB + exe 762MB，把 Gitee 1GB 配额撑爆）。
 # 分发走 GitHub Release 附件：python tools/deploy.py vendor --fetch --yes
