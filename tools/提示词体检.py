@@ -113,7 +113,15 @@ def check(path, text, pdir=""):
         say("PASS", "正文只用【】小节（不带 markdown 报告壳）")
 
     # ③ 小节：名字与顺序
+    #   **段落式**（2026-09-18 用户裁定）：正文是一整段、不带【】小节名——这是用户指定的默认形态
+    #   （参照他们一直在用的那条：括号包起来的一段，动作与台词逐句绑定）。此时跳过小节/拍点类检查，
+    #   只保留"内容覆盖"检查（台词逐字、负面四词、密度、@一致等）。
     secs = [(m.group(1), i) for i, ln in enumerate(lines) for m in [SEC_RE.search(ln)] if m]
+    para_mode = not secs
+    if para_mode:
+        say("PASS", "段落式正文（用户 2026-09-18 指定形态）",
+            "不带【】小节名；内容覆盖改用下面的检查项把关（口诀：人物形象 / 场景 / 镜头 / "
+            "口播与音色 / 动作与台词 / 禁令 六件事都要在段里点到）")
     seen = []
     for name, _i in secs:
         canon = name if name in dict((s[0], s) for s in SECTIONS) else ALIASES.get(name, "")
@@ -121,13 +129,17 @@ def check(path, text, pdir=""):
             seen.append(canon)
     required = [s[0] for s in SECTIONS if s[1] == "必"]
     miss = [s for s in required if s not in seen]
-    if miss:
+    if para_mode:
+        pass                      # 段落式：不按小节名判，改由"六件事覆盖"检查（见下）
+    elif miss:
         say("FAIL", "必备小节齐", "缺：" + "、".join("【%s】" % m for m in miss))
     else:
         say("PASS", "必备小节齐")
     order_map = {s[0]: n for n, s in enumerate(SECTIONS)}
     pos = [order_map[n] for n in seen if n in order_map]
-    if pos != sorted(pos):
+    if para_mode:
+        pass
+    elif pos != sorted(pos):
         say("FAIL", "小节顺序", "应为：" + " → ".join(s[0] for s in SECTIONS)
             + "；实际：" + " → ".join(seen))
     else:
@@ -143,7 +155,11 @@ def check(path, text, pdir=""):
 
     # ④ 时间轴（行首允许带 `> `：历史交付里整段正文包在引用块里）
     beats = [TIME_RE.match(ln) for ln in lines if TIME_RE.match(ln)]
-    if not beats:
+    if not beats and para_mode:
+        say("PASS", "动作与时间轴（段落式）",
+            "段落式把动作绑在台词句里、不设 `a–b秒` 拍点；**动作必须逐句写清楚**"
+            "（手部动作 + 眼神/眉/下巴 + 语气 + 收势），并由 @视频1 兜住节奏")
+    elif not beats:
         say("FAIL", "动作与时间轴有拍点", "至少一行 `0–2.5秒 …`（模型最吃这个结构）")
     else:
         say("PASS", "动作与时间轴有拍点", "%d 拍" % len(beats))
