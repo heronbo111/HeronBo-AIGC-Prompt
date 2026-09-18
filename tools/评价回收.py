@@ -19,7 +19,7 @@ SKILL_ROOT = os.path.normpath(os.path.join(HERE, ".."))
 LOCAL_MD = os.path.join(SKILL_ROOT, "references", "paths.local.md")
 PATHS_MD = os.path.join(SKILL_ROOT, "references", "paths.md")
 LEDGER = os.path.join(SKILL_ROOT, "references", "eval-absorbed.local.json")
-DIMS = ["口型同步", "动作跟随", "形象一致性", "语速", "节奏卡点"]
+DIMS = ["口型同步", "台词", "动作跟随", "形象一致性", "语速", "节奏卡点"]
 BANNED = ["字幕", "运镜", "AI畸变"]
 
 
