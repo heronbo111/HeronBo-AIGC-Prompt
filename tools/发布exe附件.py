@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 r"""把最新的工作台 exe 换到 GitHub Release 附件里（vendor-* 那个 Release）。
 
-为什么要它：仓库只放代码（exe 不进 git），同事靠 `python tools\deploy.py vendor --fetch`
-从 Release 附件拉 exe。所以**每打一次 exe，附件也得跟着换**，否则同事永远拿到旧界面。
+为什么要它：仓库只放代码（exe 不进 git），用户靠 `python tools\deploy.py vendor --fetch`
+从 Release 附件拉 exe。所以**每打一次 exe，附件也得跟着换**，否则用户永远拿到旧界面。
 
 怎么拿凭据：git push 能成说明本机已存 GitHub 凭据（Windows 凭据管理器 / GCM）。
 这里用 `git credential fill` 向 git 要一份——**token 只在这个进程的内存里，不落盘、不打印**。
@@ -129,7 +129,7 @@ def main():
     print("    上传成功：%s（%.2f MB）"
           % (body.get("browser_download_url"),
              (body.get("size") or 0) / 1048576.0))
-    print("\n完成。同事现在跑 python tools\\deploy.py vendor --fetch 就会拿到新 exe。")
+    print("\n完成。用户现在跑 python tools\\deploy.py vendor --fetch 就会拿到新 exe。")
     return 0
 
 
