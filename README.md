@@ -75,7 +75,7 @@ python tools\部署.py all --yes
 | **安装全套**（Python 轮子 + ffmpeg + 深度模型 + 工作台 exe，约 305MB，一次就好） | `python tools/deploy.py vendor --fetch --yes` |
 | **更新工作台**（已有安装，想把 exe 换成最新版） | 关掉工作台 → 再跑一次 `python tools/deploy.py vendor --fetch --yes`（会跟 Release 比一下，有新版本才换；`--exe` 可强制重下）|
 | 只要核心（工作台 + 出提示词 + 评分） | 什么都不用做 |
-| 打包 exe 自己来 | `python -m PyInstaller --noconfirm score-tool.spec`（要 PyInstaller）|
+| 打包 exe 自己来 | `tools\build_exe.cmd`（自动挑带 tkinter 的解释器；在新电脑上从零开始见 `docs/新机部署.md` 第 7 节「源码地图 + 打包 + 分发」）|
 
 附件地址：`https://github.com/heronbo111/HeronBo-AIGC-Prompt/releases/tag/vendor-2026-09-17`
 （下载慢的话用 `HERONBO_VENDOR_REL=<镜像前缀>` 换源）。`python tools/deploy.py all --yes` 会**自动**把缺的拉齐。
