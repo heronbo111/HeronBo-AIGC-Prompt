@@ -121,7 +121,9 @@ def check_webview2():
         ws = _iu.module_from_spec(spec)
         spec.loader.exec_module(ws)
     except Exception as e:                                       # noqa: BLE001
-        bad("WebView2 运行库", "查不了：%s" % e)
+        # 没有工作台源码的机器（公开用户只有 exe）跳过这项即可：
+        # 工作台启动时会自己检测 WebView2，坏了自动回退 Edge 窗口，不会白屏。
+        ok("WebView2 运行库", "跳过自检（本机没有工作台源码）：%s" % e)
         return
     okk, ver, why = ws.webview2_state()
     if okk:
@@ -674,7 +676,7 @@ def do_shortcut(yes=False):
         launcher = os.path.join(HERE, "工作台.py")
         if not os.path.isfile(launcher):
             bad("score-tool.exe / 工作台.py", "两个都没有",
-                "python -m PyInstaller --noconfirm score-tool.spec（或跑 git pull 补回 工作台.py）")
+                "python tools\\部署.py vendor --fetch --yes（从 Release 拿官方 exe）")
             return
         pyw = os.path.join(os.path.dirname(PY), "pythonw.exe")
         target = pyw if os.path.isfile(pyw) else PY

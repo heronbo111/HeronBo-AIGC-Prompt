@@ -51,3 +51,14 @@ tools/_vendor/wheels-heavy/
 tools/_vendor/ffmpeg/
 tools/_vendor/models/
 _stage/
+
+# ── 工作台源码：不进公开仓库（2026-09-19 用户裁定）──────────────────────────
+# 界面 / 本地服务 / 启动器 / 打包配置都在私有仓库（HeronBo-Workbench）；
+# 公开仓库只放技能本体（SKILL.md + references/ + 文档 + 其余工具链）。
+# 本机开发照旧在同一个目录里改，推私有仓库用 tools\同步私有源码.py。
+# 注：tools/工作台.ico 故意留公开——公开的部署.py 要用它做快捷方式图标。
+tools/workbench/
+tools/workbench_server.py
+tools/工作台.py
+tools/score-tool.spec
+tools/build_exe.cmd

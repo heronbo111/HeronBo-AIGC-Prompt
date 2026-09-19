@@ -22,7 +22,7 @@ if not defined PYW (
   echo [失败] 既没有 dist\score-tool.exe，也没找到「带 tkinter」的 Python。
   echo.
   echo   解决办法二选一：
-  echo     1) 在本目录跑 build_exe.cmd，打包出 dist\score-tool.exe（推荐，一劳永逸）；
+  echo     1) 跑 python tools\部署.py vendor --fetch --yes，把官方 exe 放进 dist\；
   echo     2) 安装 Python 3 时勾上 "tcl/tk and IDLE"。
   echo.
   pause

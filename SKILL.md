@@ -144,7 +144,7 @@ agent_created: true
 3. 多段时附拼接说明（切点/承接点/跳切微调）
 4. **硬性要求：交付完必须把评分工具弹出来**——这是交付动作的一部分，不是可选项；不许只留一句「记得打分」就算完。
    - 起法（agent 自己起，别让用户去找）：`tools\score_gui.cmd`（双击等价）；想打开就定位到某个项目 → `tools\dist\score-tool.exe --sample "<项目名关键词>"`。
-   - 没打包过 exe 的机器：`score_gui.cmd` 会自动改用 pythonw 起 `score_gui.pyw`；要 exe 就先跑一次 `tools\build_exe.cmd`（约 1 分钟，产物 `tools\dist\score-tool.exe`）。
+   - 没打包过 exe 的机器：`score_gui.cmd` 会自动改用 pythonw 起 `score_gui.pyw`；要 exe 就跑 `python tools\部署.py vendor --fetch --yes` 拿官方 exe（Release 附件）。
    - 窗口用法：选样本 → 选成片 → 六维/违禁项逐项点分 → 五星 + 结论 + 备注 → **保存评分**（也可 `Ctrl+S`）。
    - 可换主题（浅色 / 深色 / 莫兰迪 / 护眼绿 / 暗夜），选过的主题自动记住。
    - **没保存就关窗会被拦**：弹「还有没保存的评分」，给「返回继续 / 直接关闭 / 保存并关闭」三个选择。
@@ -218,11 +218,11 @@ WorkBuddy 的 headless CLI（`tools\agent_bridge.py` 封装，已自动避开端
 
 ## 工作台（HTML 界面）与部署
 
-- **界面**：主界面是 HTML 工作台（`tools/workbench/`＋`tools/workbench_server.py`，pywebview 独立窗口，
+- **界面**：主界面是 HTML 工作台（界面与本地服务，pywebview 独立窗口，
   内嵌 WebView2；不依赖用户的浏览器）。四栏＝①项目 ②素材 ③分镜/提示词 ④评分；顶部流程条五步可点、
   可上/下步、当前阶段那一栏会高亮；③栏 agent 徽章可看/切 agent（红绿点）；右上角 7 套主题（默认「原版」）、
   「经典界面」可切回旧 Tk 界面（`--classic`）。**关窗口＝退出**。
-- **流程指挥台**（右上「？流程指挥台」）：整条流程一张板子（`tools/workbench/flow.html`，**独立 HTML 页嵌进
+- **流程指挥台**（右上「？流程指挥台」）：整条流程一张板子（**独立 HTML 页嵌进
   工作台**，不是弹窗）——五步各一张卡，写明"谁在做 / 现在什么状态 / 这一步怎么做"，卡上的按钮**当场就能执行**
   （选素材 · 建框架归类 · 让 agent 核对归类 · 出提示词 · 复制提示词+清单 · 收成片 · 收废片 · 去打分 ·
   提交反馈 · 评价反哺 skill）。板子只画界面，动作仍由 `app.js` 的同一套函数执行（不留两份实现）。
@@ -309,9 +309,8 @@ WorkBuddy 的 headless CLI（`tools\agent_bridge.py` 封装，已自动避开端
   ZCode 的 CLI 找法按"根目录 + 1~3 层通配"搜（能认出 `F:\新建文件夹 (3)\ZCode\resources\glm\zcode.cjs`
   这种多套一层的情况）；跑之前还会查 `~/.zcode/cli/config.json` 有没有 provider/model，没有就直说
   「先跑一次 zcode login」，别让用户"选了才发现跑不了"。
-- **打包替换 exe**（2026-09-16 加）：`python -m PyInstaller --noconfirm --distpath _stage --workpath build
-  score-tool.spec`（在 `tools\` 下跑）→ `python tools\换exe.py` 换到 `tools\dist\score-tool.exe`
-  （自动留一份 `score-tool_旧_*.exe` 回滚）。**换位工具会拦"工作台还开着"**：exe 在跑的时候换，
+- **打包替换 exe**（2026-09-16 加）：`python tools\部署.py vendor --fetch --yes`（从 Release 拿官方 exe，换到 `tools\dist\score-tool.exe`，
+  自动留一份 `score-tool_旧_*.exe` 回滚）。**换位工具会拦"工作台还开着"**：exe 在跑的时候换，
   正在跑的实例会读到改过的文件、可能莫名崩（2026-09-16 用 `mv -f` 硬换踩到过）；真被拦下就关掉
   工作台再跑，实在要硬换加 `--force` 并**手工关掉重开**那个实例。
 - **clone 用 `--depth 1`**（2026-09-16）：仓库历史里有历代 18 MB 的 exe，完整 clone 要下 70 MB+ 历史，

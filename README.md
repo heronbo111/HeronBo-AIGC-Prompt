@@ -75,7 +75,7 @@ python tools\部署.py all --yes
 | **安装全套**（Python 轮子 + ffmpeg + 深度模型 + 工作台 exe，约 305MB，一次就好） | `python tools/deploy.py vendor --fetch --yes` |
 | **更新工作台**（已有安装，想把 exe 换成最新版） | 关掉工作台 → 再跑一次 `python tools/deploy.py vendor --fetch --yes`（会跟 Release 比一下，有新版本才换；`--exe` 可强制重下）|
 | 只要核心（工作台 + 出提示词 + 评分） | 什么都不用做 |
-| 打包 exe 自己来 | `tools\build_exe.cmd`（自动挑带 tkinter 的解释器；在新电脑上从零开始见 `docs/新机部署.md` 第 7 节「源码地图 + 打包 + 分发」）|
+| 想要最新 exe | 关掉工作台 → `python tools/deploy.py vendor --fetch --yes`（从 Release 拿官方 exe 并换上去）|
 
 附件地址：`https://github.com/heronbo111/HeronBo-AIGC-Prompt/releases/tag/vendor-2026-09-17`
 （下载慢的话用 `HERONBO_VENDOR_REL=<镜像前缀>` 换源）。`python tools/deploy.py all --yes` 会**自动**把缺的拉齐。
@@ -143,7 +143,6 @@ HeronBo-AIGC-Prompt/
 │   ├── score_gui.pyw              # 六维评分窗口（可换主题；未保存关窗会拦）
 │   ├── score_core.py              # 评分核心（窗口版与命令行版共用同一套 json）
 │   ├── score_gui.cmd              # 一键启动（优先 tools/dist/score-tool.exe）
-│   ├── build_exe.cmd              # 首次打包 exe（产物 tools/dist/score-tool.exe）
 │   ├── 环境检查.py                # 环境自检 / 装缺项 / 下模型
 │   ├── 首次配置.py                # 落位/平台登记（写 paths.local.md）
 │   ├── 评价回收.py                # 待吸收评价清单 + 记账
@@ -176,10 +175,10 @@ HeronBo-AIGC-Prompt/
 
 ```bash
 # 1) 先体检（不提交不推送）：看会提交什么、有没有敏感词命中
-python tools\推送.py --dry --msg "说明" tools/workbench/app.js README.md
+python tools\推送.py --dry --msg "说明" tools/score_core.py README.md
 
 # 2) 体检通过就真发
-python tools\推送.py --msg "工作台：②栏加拖入体积提示" tools/workbench/app.js README.md
+python tools\推送.py --msg "评分：口型同步判据补一条" tools/score_core.py README.md
 ```
 
 它会按顺序做六件事，任一步不过就停：
