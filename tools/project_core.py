@@ -544,6 +544,93 @@ def mark_todos_done(project_dir, upto=None):
     return todos
 
 
+def assemble_prompt(project_dir, form="", model="", duration="", ratio="", lines="", version=""):
+    """把 agent 写好的正文（提示词正文.txt）拼成 提示词.txt：元信息 3 行 + 上传行 + 正文。
+
+    为什么要有它（2026-09-21）：以前 agent 要把同一段正文写两遍——一遍 `提示词正文.txt`、
+    一遍带元信息与上传行的 `提示词.txt`；每轮白白多花 1–2k 输出 token，两份还常写不一致
+    （体检的「正文.txt 与 提示词.txt 一致」就会判不合格，再返工一次）。现在只写一遍。
+
+    ⚠️ 多版本项目会被拒（2026-09-21 实踩：试跑把两版的 提示词.txt 覆盖成了合并上传行）：
+    `平台上传/` 下有 ≥2 个版本子目录时**一个文件都不动**，那种项目要 agent 自己写，
+    或用 --version 指定其中一版。
+    """
+    if not project_dir or not os.path.isdir(project_dir):
+        return {"ok": False, "error": "需要 --project <项目目录>"}
+    pdir = os.path.normpath(project_dir)
+    bp = os.path.join(pdir, "提示词正文.txt")
+    if not os.path.isfile(bp):
+        return {"ok": False, "error": "没有 提示词正文.txt——先把正文落盘，再回来拼装"}
+    body = open(bp, encoding="utf-8").read().strip()
+    if not body:
+        return {"ok": False, "error": "提示词正文.txt 是空的"}
+    proj = {}
+    fp = os.path.join(pdir, "框架.json")
+    if os.path.isfile(fp):
+        try:
+            proj = (json.load(open(fp, encoding="utf-8-sig")) or {}).get("project") or {}
+        except Exception as e:                                   # noqa: BLE001
+            return {"ok": False, "error": "框架.json 读不了：%s" % e}
+
+    import glob as _glob
+    vdirs = []
+    for vk in ("平台上传", "即梦上传"):
+        vp = os.path.join(pdir, vk)
+        if os.path.isdir(vp):
+            vdirs += [d for d in sorted(os.listdir(vp)) if os.path.isdir(os.path.join(vp, d))]
+    if len(vdirs) >= 2 and not version:
+        return {"ok": False, "error": "平台上传 下有 %d 个版本子目录（%s）——多版本请自己写 提示词.txt，"
+                "或用 --version 加子目录名指定一版；本次没有改动任何文件"
+                % (len(vdirs), "、".join(vdirs[:4]))}
+    if version and not os.path.isdir(os.path.join(pdir, "平台上传", version)):
+        return {"ok": False, "error": "没有这个版本子目录：%s" % version}
+
+    ups = []
+    for pat in ("平台上传/**/*", "即梦上传/**/*"):
+        for f in sorted(_glob.glob(os.path.join(pdir, pat), recursive=True)):
+            if os.path.isfile(f):
+                ups.append(os.path.basename(f))
+    ups = [n for n in ups if re.match(r"^(图片|视频|音频)\d+[_-]", n)]
+    seen, upnames = set(), []
+    for n in ups:
+        key = re.match(r"^((?:图片|视频|音频)\d+)", n).group(1)
+        if key in seen:
+            continue
+        seen.add(key)
+        upnames.append((key, n))
+    upnames.sort(key=lambda kv: (kv[0][:2], int(re.search(r"(\d+)", kv[0]).group(1))))
+
+    parts, cnt = [], {}
+    for m in (proj.get("materials") or []):
+        kind = {"image": "图片", "video": "视频", "audio": "音频"}.get(m.get("type"))
+        if not kind:
+            continue
+        cnt[kind] = cnt.get(kind, 0) + 1
+        key = "%s%d" % (kind, cnt[kind])
+        nm = next((n for k, n in upnames if k == key), None) or m.get("name") or m.get("file")
+        role = m.get("role") or ""
+        parts.append("@%s=%s%s" % (key, nm, ("（%s）" % role) if role else ""))
+    upload = ("上传：" + " ｜ ".join(parts)) if parts else ""
+
+    name = proj.get("name") or os.path.basename(pdir)
+    head = ["提示词 · %s" % name,
+            "形态：%s｜平台：%s｜模型：%s｜时长：%ss｜画幅：提交时手选 %s"
+            % (form or "（待补）", proj.get("platform") or "即梦", model or "（待补）",
+               duration or "?", ratio or "9:16"),
+            "台词：%s" % (lines or "（待补）")]
+    text = "\n".join(head + ["", upload, "", body, ""])
+    wrote = []
+    open(os.path.join(pdir, "提示词.txt"), "w", encoding="utf-8").write(text)
+    wrote.append("提示词.txt")
+    for sub, content in (("文案/提示词.txt", text), ("文案/提示词正文.txt", body + "\n")):
+        p = os.path.join(pdir, *sub.split("/"))
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, "w", encoding="utf-8").write(content)
+        wrote.append(sub)
+    return {"ok": True, "wrote": wrote, "body_chars": len(body),
+            "mats": len(parts), "upload_line": upload}
+
+
 def push_receipt(project_dir, text, files=None, kind="完成"):
     """agent → 程序：我做了什么。"""
     d = session_dir(project_dir)
@@ -1160,7 +1247,30 @@ def _cli(argv):
     ap.add_argument("--plan", action="store_true",
                     help="只做规划不落地：打印推出来的根目录/项目名/每个素材的角色")
     ap.add_argument("--json", action="store_true", help="以 JSON 输出结果")
+    ap.add_argument("--assemble", action="store_true",
+                    help="按 提示词正文.txt 拼出 提示词.txt（元信息 3 行 + 上传行 + 正文）并同步 文案/ 副本")
+    ap.add_argument("--form", default="", help="--assemble 用：形态那行（如「参考视频替换生视频（人物替换 L4）」）")
+    ap.add_argument("--model", default="", help="--assemble 用：模型档位（如「seedance 2.0 fast（720p）」）")
+    ap.add_argument("--duration", default="", help="--assemble 用：时长秒数（如 3.8）")
+    ap.add_argument("--ratio", default="", help="--assemble 用：画幅建议（默认 9:16）")
+    ap.add_argument("--lines", default="", help="--assemble 用：台词那行（如「无台词（原片只有 BGM）」）")
+    ap.add_argument("--version", default="", help="--assemble 用：平台上传 下的版本子目录名（多版本时必须指定）")
     a = ap.parse_args(argv)
+
+    # 0') 拼装（纯文件操作）：agent 只写一遍正文，元信息与上传行由程序补
+    if a.assemble:
+        out = assemble_prompt(a.project, form=a.form, model=a.model,
+                              duration=a.duration, ratio=a.ratio, lines=a.lines,
+                              version=a.version)
+        if a.json:
+            print(json.dumps(out, ensure_ascii=False, indent=2))
+        elif out.get("ok"):
+            print("[拼装] 写好 %s（正文 %d 字；上传行点名 %d 件）"
+                  % ("、".join(out["wrote"]), out["body_chars"], out["mats"]))
+            print("[拼装] " + out["upload_line"])
+        else:
+            print("[拼装] 失败：%s" % out.get("error"))
+        return 0 if out.get("ok") else 1
 
     # 0) 全自动模式：软件自己定根/定名/判角色/建框架/归类
     if a.auto or a.plan:
