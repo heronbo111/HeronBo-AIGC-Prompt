@@ -13,7 +13,7 @@
 | 文件 | 归属 |
 |---|---|
 | `workbench_server.py`、`workbench/`、`工作台.py` | **不进公开仓库**（`.gitignore` 已挡）→ 改完必须 `python <私有仓库>\同步.py` |
-| `score-tool.spec`、`build_exe.cmd` | 同上 |
+| `score-tool.spec`、`build_exe.cmd`、`打包换位.py` | 同上（打包链路；**spec 是唯一真相源**，别自己拼 PyInstaller 参数） |
 | 其它 `*.py` / `*.cmd` / `*.bat` | 公开仓库跟踪，正常提交 |
 
 ## 常用命令（本目录里跑）
@@ -23,7 +23,9 @@ python 首次配置.py                       # 自检：已配置 exit 0；未�
 python 联调自检.py                       # 全流程自检（35 项）
 python 提示词体检.py --project "<项目>"    # 提示词体检（0 不合格才算交付）
 python 部署.py vendor --fetch --yes      # 拉 Release 附件里的大件与工作台 exe
-python 换exe.py                          # 换工作台 exe（实例在跑会拒绝——别用 --force 硬换）
+python 打包换位.py                        # 改了界面/本地服务后：一条命令 挑解释器 → 打 spec → 验包内关键文件 → 安全换位
+                                         #（工作台开着就只打包，关掉后 python 打包换位.py --swap-only）
+python 换exe.py                          # 只换位（打包换位.py 内部就是调它；实例在跑会拒绝——别用 --force 硬换）
 python 发布exe附件.py                     # 把大件/exe 发到 Release 附件
 python 打市场包.py                        # 打上架用的包
 ```
@@ -35,7 +37,10 @@ python 打市场包.py                        # 打上架用的包
 2. **改"按类型查表"的文案必须同时补表**：`workbench_server.py` 的 `STAGE_NAMES` 之类，
    表里缺一项会**静默**退回默认文案（用户看得见，报错看不见）。
 3. **交互期文案只面向用户**：界面/日志里不出现进程名、PID、命令行原文；原始细节收在「执行记录」可展开区。
-4. **`.cmd` 批处理必须纯 ASCII + CRLF**（中文一律交给 Python 打印）——cmd.exe 按当前代码页逐字节解析，UTF-8 中文会被切碎。
+4. **`.cmd` 批处理：CRLF 行尾 + 中文尽量交给 Python 打印**——cmd.exe 按当前代码页逐字节解析，
+   自己 `echo` 中文在没切到 65001 的控制台会乱码。**要引用中文脚本名**（如 `打包换位.py`）时，
+   开头先 `chcp 65001`，并设 `PYTHONIOENCODING=utf-8` 让被管道接管的输出也不乱码
+   （`build_exe.cmd` 是范例；双击时停留、带参数调用不 `pause`，免得自动化卡住）。
 5. **临时脚本别留在 `tools/`**：调试用完就删；`_vendor/`、`dist/`、`_stage/` 都是生成物，只搜不读。
 6. **`project_core.py` 是项目骨架的唯一入口**：回执/待办/清单/@编号都走它；
    出提示词那一轮用 `--assemble` 拼 `提示词.txt`（正文只写一遍），**多版本项目它会被拒**（要自己写）。
