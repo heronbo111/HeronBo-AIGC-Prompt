@@ -1,6 +1,43 @@
 # AGENTS.md —— 多 agent 协作约定（HeronBo-AIGC-Prompt 仓库）
 
-> 本仓库可能被多个 agent 同时操作（ZCode / Codex CLI / DeepSeek Harness）。三者读的是**同一份工作树**，所以「内容同步」不是问题，冲突来自**并发写入**和**未提交改动堆积**。动手前先读本节。
+> **谁读这份**：ZCode / Codex CLI / DeepSeek Harness / WorkBuddy（各自的入口目录里都指向**同一份工作树**，
+> 所以「内容同步」不是问题——冲突来自**并发写入**与**未提交改动堆积**）。动手前先读本节。
+> 最后更新：2026-09-21。
+
+## 新会话从这里开始（顺序照读，别整篇通读任何一份）
+
+1. **本文件**（协作纪律与红线）
+2. `README.md`（这个 skill 是什么、怎么装）
+3. `references/paths.md` → 本机取值在 `references/paths.local.md`（gitignore，**改它不进仓库**）
+4. `TODO.md`（手上还有什么没做）
+5. `SKILL.md`（工作流入口）——**按需查章节，不要整篇读**（见下面「上下文纪律」）
+
+## 目录地图与入口（找东西先看这里）
+
+| 位置 | 是什么 | 入口 / 主要文件 |
+|---|---|---|
+| `SKILL.md` | 技能入口：工作流、四大类、限额引用 | 新会话按需读章节 |
+| `references/` | 知识库：规则、模板、平台口径、样本库、拆解手册 | `rules.md`（上游规则，**先读顶部索引**）、`prompt-templates.md`（交付形态与句式）、`platforms.md`（模型与限额，**唯一数字源**）、`playbooks.md`、`samples-db.md`、`eval-cases.md` |
+| `references/*.local.md` | 本机个人层（gitignore，不进仓库） | `rules.local.md`（本地经验，**优先级高于上游 rules.md**）、`paths.local.md` |
+| `tools/` | 工具链（Python / .cmd，脚本名多为中文） | `首次配置.py`、`部署.py`、`换exe.py`、`提示词体检.py`、`联调自检.py`、`project_core.py`（项目骨架/回执/清单）、`workbench_server.py` + `workbench/`（**工作台源码，gitignore、不随仓库分发**） |
+| `tools/dist/` | 工作台 exe（Release 附件来的） | `score-tool.exe` |
+| `docs/` | 给人读的文档 | `新机部署.md`、`给用户-最快用上.md`、`上架市场.md` |
+| `samples/` | 示例项目（结构参考） | 每个子目录 = 一个项目 |
+| `_stage/` | 待换的 exe（换位用） | `score-tool.exe` |
+
+**样本库（不在本仓库、但你会被叫去干活）**：每个项目一个子文件夹，内含 `文案/ 素材/ 平台上传/ 成片/ 废片/ 评价/ 备注/ _会话/`。
+
+## 命令（都能直接跑；改完东西至少跑前两条）
+
+```bash
+python tools/首次配置.py                     # 自检：已配置 exit 0；未配置 exit 1 并打印要问用户的话
+python tools/联调自检.py                     # 全流程自检（35 项，改工具链后必跑）
+python tools/提示词体检.py --project "<项目目录>"   # 提示词外形与内容体检（0 不合格才算交付）
+python tools/部署.py vendor --fetch --yes    # 拉大件与工作台 exe（Release 附件，约 305MB）
+python tools/换exe.py                        # 换工作台 exe（要求当前没有实例在跑）
+tools/score_gui.cmd                          # 弹评分窗口（或直接跑 tools/dist/score-tool.exe）
+python tools/发布exe附件.py                   # 把大件/exe 发到 Release 附件
+```
 
 ## 铁律
 
@@ -10,7 +47,7 @@
 2. **认领再改**：在下方「当前认领」表加一行（agent / 文件范围 / 开始时间），改完提交后删除该行。
 3. **只提交自己改的文件**：`git add <明确文件名>`；禁止 `git add -A` / `git add .`。
 4. **提交信息面向用户**：用用户看得懂的话写清「改了什么、对使用有什么影响」；不要 `[ZCode]`/`[DSH]` 这类 agent 前缀（要标来源就写在提交正文末尾）。
-5. **改完立刻提交**，不要把未提交改动留在共享工作树里；跨机同步再 `git push gitee`（GitHub 私有库同推）。
+5. **改完立刻提交**，不要把未提交改动留在共享工作树里；跨机同步再 `git push gitee`（GitHub 同推）。
 6. **禁止**在共享克隆里执行 `git checkout .`、`git stash`、`git reset --hard`、`git clean -fd`——会清掉另一方的未提交改动；确需丢弃改动先问用户。
 7. **仓库历史在 2026-09-19 整理过一次**（工作台源码改为不随公开仓库分发，`main` 随之重写）。
    - **重写之前克隆过的副本**：历史和远程已不是同一棵树，`git pull` 会失败 →
@@ -19,7 +56,7 @@
    - **重写之后克隆的副本**：不受影响，照旧 `git pull --rebase`。
    - 工作台源码（界面 / 本地服务 / 启动器 / 打包配置）**不在本仓库**了；用户拿工作台走
      Release 附件（`python tools\部署.py vendor --fetch --yes`），不需要源码。
-7. **冲突裁决**：以「用户实测反馈 > 模板惯例 > 推断」为准；合并后必须自检：
+7.1 **冲突裁决**：以「用户实测反馈 > 模板惯例 > 推断」为准；合并后必须自检：
    - `python tools/首次配置.py` 无参运行：已配置 exit 0；未配置 exit 1 并打印「请问您要把项目建在哪里？您提供好素材后，我会自动将其进行归类」
    - `tools\score_gui.cmd` 能弹出评分窗口（或直接跑 `tools\dist\score-tool.exe`）
    - `SKILL.md` frontmatter 完整（`name` / `description` / `version`）、`references/paths.md` 保持模板（本机取值只在 `paths.local.md`）
@@ -27,6 +64,29 @@
 9. **本地优化只写 `references/*.local.md`（已 gitignore）**：`paths.local.md`（路径/平台）、`rules.local.md`（本地规则覆盖层，优先级高于上游 rules.md）、`eval-absorbed.local.json`（评价回收账本）。这样 `git pull` 永不冲突；上游改动保持向后兼容（`paths.md`/`platforms.md` 结构稳定，`SKILL.md` 的 `version` 递增）。
 10. **改 `references/rules.md` 前先读顶部规则索引**；只追加或修订自己的条目，不重排/改写别人的规则。跨机通用的写 `rules.md`，本机个人经验写 `rules.local.md`。
 11. **模型与限额只改一处**：模型或限额有变动时，只改 `references/platforms.md` 的「模型与限额」表；`rules.md` 与模板只引用，不写死数字。
+
+## ✅ 可以直接做 / ⚠️ 先问用户 / 🚫 绝对不做
+
+对照用；与上面铁律冲突时以铁律为准。
+
+- ✅ **可以直接做**：读/搜任何文件；写 `references/*.local.md`；改自己认领范围内的文件；
+  按 `prompt-templates.md` 的口径出提示词；在样本库项目里建 `文案/ 平台上传/ 备注/ _会话/` 产物；跑上面「命令」里那些自检。
+- ⚠️ **先问用户**：改 `references/rules.md` 等上游规则 / 模板口径；改 `SKILL.md` 流程与 `version`；
+  动别人项目或别人的未提交改动；删文件；改本机取值（`paths.local.md` 指向的路径）；
+  装任何软件/依赖；对素材做加工（静音/裁剪/转比例/深度片/转写/OCR/抽水印…）。
+- 🚫 **绝对不做**：**代用户在即梦（及一切生成平台）提交任何生成任务**（铁律见工作区 `AGENTS.md` 第 5 节；
+  用户明确同意后要带 `DREAMINA_CONFIRMED=1` 才放行，闸门在 `~/.zcode/cli/config.json` 的 PreToolUse 钩子里）；
+  读取/解密任何已有的剪映加密草稿（只能程序新建明文草稿）；把大视频或成片提交进仓库；
+  在共享工作树里跑 `git checkout .` / `stash` / `reset --hard` / `clean -fd`；
+  把用户的账号、路径、客户名写进公开仓库（往 rules/playbooks 写「依据」时项目名一律泛化）。
+
+## 上下文纪律（本仓库文档较多，按它省时间）
+
+- `SKILL.md`(35KB) + `references/`(~341KB) **不要整篇读**：先看本文件的目录地图，再按需 grep 定位、只读目标章节。
+- 大文件先搜后读：`grep -n` 定位行号 → 带 `offset/limit` 读区间；**同一段落别重复读**。
+- 工具输出只抓一次（`… 2>&1 | tee /tmp/x.log`），之后分析文件、别重跑。
+- 批量改动攒够再跑一次自检，不要改一处跑一次。
+- 生成物目录（`tools/_vendor/`、`tools/dist/`、`_stage/`）**只搜不读**。
 
 ## 维护纪律（2026-09-19 用户裁定：**所有改动都是为了让 skill 更好地帮 agent**）
 
@@ -52,4 +112,4 @@
 
 ## 安装/换机入口
 
-新会话先读：`README.md` → `references/paths.md` → `TODO.md` → `SKILL.md`。
+新会话先读：`AGENTS.md`（本文件）→ `README.md` → `references/paths.md` → `TODO.md` → `SKILL.md`。
