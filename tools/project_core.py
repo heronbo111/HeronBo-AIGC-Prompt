@@ -426,7 +426,10 @@ def _dir_file_count(d):
 
 
 def upload_dir(pdir, create=False):
-    """项目的"上传夹"路径（放要上传到平台的素材副本 + 上传说明.txt）。
+    """项目的"上传夹"路径（放要上传到平台的素材**副本**；文件名＝引用编号+角色+时长）。
+
+    注：2026-09-21 起**不再要求**写 `上传说明.txt`（用户裁定：没用，已废弃）——
+    上传顺序与文件↔@引用对照由提示词的「上传：」行 + 文件名本身表达。
 
     规则（2026-09-17 由「即梦上传」改名时定的）：
       · 只有 `平台上传/` → 用它；只有 `即梦上传/` → 用它（老项目不必强迁）；
@@ -777,6 +780,11 @@ def build_skeleton(root, name, platform="", project_dir=None, register=True):
                 "materials": [],
                 "generated": [],
                 "prompts": [],
+                # 版本（rules 71）：每版各一套素材/正文/上传夹，@引用编号在本版内独立算。
+                # `current` 是当前版名；`versions[]` 每项 {name, dir, materials, ...}。
+                # 缺省/为空 ⇒ 只有「默认版」：素材在 素材/ 根下、正文在 文案/（老项目零迁移）。
+                "current": "",
+                "versions": [],
                 "review": None,
             },
         }

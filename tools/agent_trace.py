@@ -321,18 +321,30 @@ def _first_line(s, n=110):
     return ""
 
 
+def _para(s, n=800):
+    """思考 / 说明用：**保留换行**（`_clip` 会把换行压成空格，段落结构就没了），超长才截断。
+
+    2026-09-21 用户要求"把 agent 返回的这些信息返回回来"——它界面上是带段落、
+    带分点的整段思考，压成一行就只剩个开头，看不出判断过程。前端 `white-space:pre-wrap`
+    照原样折行显示，超两行折起来、点一下展开。
+    """
+    t = "\n".join(ln.rstrip() for ln in str(s or "").splitlines() if ln.strip())
+    return t if len(t) <= n else t[:n - 1] + "…"
+
+
 def describe_tool(name, args):
     """一个工具调用 → (kind, 文本)。认不出来的就报个中性名，别糊界面。"""
     kind = TOOL_KIND.get(str(name or "").strip().lower(), "tool")
     a = args if isinstance(args, dict) else {}
     if kind == "term":
-        return kind, _first_line(a.get("command") or a.get("cmd") or "")
+        # 命令留全一些（220 字）：ZCode 界面里就是整条命令，只给一行开头看不出它在干嘛
+        return kind, _clip(a.get("command") or a.get("cmd") or "", 220)
     if kind == "read":
         off = a.get("offset")
-        return kind, (_clip(a.get("file_path") or a.get("path") or "")
+        return kind, (_clip(a.get("file_path") or a.get("path") or "", 160)
                       + ("（第 %s 行起）" % off if off else ""))
     if kind in ("write", "edit"):
-        return kind, _clip(a.get("file_path") or a.get("path") or "")
+        return kind, _clip(a.get("file_path") or a.get("path") or "", 160)
     if kind == "todo":
         todos = a.get("todos") or []
         done = sum(1 for t in todos if isinstance(t, dict) and t.get("status") == "completed")
@@ -391,7 +403,9 @@ def _parse_zcode(o, at=None):
     ms = int(o.get("durationMs") or 0)
     think = resp.get("reasoningText") or resp.get("reasoning") or ""
     if think:
-        out.append(_ev("think", _first_line(think, 120), ms=ms, at=hhmm))
+        # 思考**不再只取首行**（2026-09-21 用户截图：ZCode 界面里是整段思考，工作台只给一行
+        # 摘要 → 等于看不到它到底怎么判断的）。这里留 800 字，前端 CSS 折两行 + 点一下展开。
+        out.append(_ev("think", _para(think, 800), ms=ms, at=hhmm))
     for tc in (resp.get("toolCalls") or []):
         if not isinstance(tc, dict):
             continue
@@ -403,7 +417,7 @@ def _parse_zcode(o, at=None):
         out.append(_ev(k, txt, tool=name or "", at=hhmm))
     say = resp.get("text") or ""
     if say and not (resp.get("toolCalls")):
-        out.append(_ev("say", _first_line(say, 140), at=hhmm))
+        out.append(_ev("say", _para(say, 800), at=hhmm))
     return out
 
 
@@ -417,7 +431,7 @@ def _parse_wb(o, at=None):
             txt = " ".join(str(it.get("text", "")) for it in txt
                            if isinstance(it, dict)).strip()
         if isinstance(txt, str):
-            txt = _first_line(txt, 120)
+            txt = _para(txt, 800)
         if txt:
             out.append(_ev("think", txt, at=at))
     elif t == "function_call":
@@ -430,10 +444,10 @@ def _parse_wb(o, at=None):
         if isinstance(c, list):
             for it in c:
                 if isinstance(it, dict) and it.get("type") in ("output_text", "text"):
-                    txt = _first_line(it.get("text"), 140)
+                    txt = _para(it.get("text"), 800)
                     break
         elif isinstance(c, str):
-            txt = _first_line(c, 140)
+            txt = _para(c, 800)
         if txt:
             out.append(_ev("say", txt, at=at))
     return out
@@ -452,7 +466,7 @@ def _parse_claude(o, at=None):
                 continue
             k = it.get("type")
             if k in ("text", "output_text"):
-                txt = _first_line(it.get("text"), 140)
+                txt = _para(it.get("text"), 800)
                 if txt:
                     out.append(_ev("say", txt, at=at))
             elif k == "tool_use":
@@ -460,11 +474,11 @@ def _parse_claude(o, at=None):
                 kk, txt = describe_tool(nm, it.get("input"))
                 out.append(_ev(kk, txt, tool=nm, at=at))
             elif k == "thinking":
-                txt = _first_line(it.get("thinking"), 120)
+                txt = _para(it.get("thinking"), 800)
                 if txt:
                     out.append(_ev("think", txt, at=at))
     elif isinstance(ct, str):
-        txt = _first_line(ct, 140)
+        txt = _para(ct, 800)
         if txt:
             out.append(_ev("say", txt, at=at))
     return out
@@ -478,7 +492,7 @@ def _parse_generic(o, at=None):
         think = " ".join(str(it.get("text", "")) for it in think
                          if isinstance(it, dict)).strip()
     if isinstance(think, str) and think:
-        out.append(_ev("think", _first_line(think, 120), at=at))
+        out.append(_ev("think", _para(think, 800), at=at))
     calls = o.get("toolCalls") or o.get("tool_calls") or []
     if not isinstance(calls, list):
         calls = []
@@ -496,7 +510,8 @@ def _parse_generic(o, at=None):
         k, txt = describe_tool(nm, _as_args(args))
         out.append(_ev(k, txt, tool=nm, at=at))
     if not out:
-        c = o.get("content") or o.get("text") or ""
+        # `result` 是 stream-json 那种"最终答复"字段（WorkBuddy/Claude 流式输出的收尾行）
+        c = o.get("content") or o.get("text") or o.get("result") or ""
         if isinstance(c, list):
             txt2 = ""
             for it in c:
@@ -505,7 +520,7 @@ def _parse_generic(o, at=None):
                     break
             c = txt2
         if isinstance(c, str) and c:
-            out.append(_ev("say", _first_line(c, 140), at=at))
+            out.append(_ev("say", _para(c, 800), at=at))
     return out
 
 

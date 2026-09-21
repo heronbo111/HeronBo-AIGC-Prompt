@@ -1165,7 +1165,7 @@ def no_window_kwargs():
 
 
 def ask(prompt, session_id=None, cwd=None, timeout=DEFAULT_TIMEOUT,
-        permission_mode="acceptEdits", tools=None, on_line=None, extra=None,
+        permission_mode="acceptEdits", tools=None, on_line=None, on_raw=None, extra=None,
         agent=None):
     """叫 agent 干一件事（**边跑边回调每一行**，界面靠它显示实时进度）。
 
@@ -1173,6 +1173,10 @@ def ask(prompt, session_id=None, cwd=None, timeout=DEFAULT_TIMEOUT,
     - 输出**真流式**：Popen 逐行读，`on_line(text)` 立刻拿到（原先用 subprocess.run，
       行要等进程结束才一起回调，进度条会"卡在 0% 然后跳到 96%"——2026-09-15 修）。
     - on_line 里改 UI 要小心：它跑在后台线程，GUI 侧要用 after/SSE 转一手。
+    - **on_raw(line)**：给的是 stdout 的**原文**（`--output-format stream-json` 时一行一个
+      结构化事件，含 thinking / tool_use）。on_line 拿的是**已渲染成可读文本**的版本，
+      思考内容在那一步就丢了；工作台的「动作流」要显示思考与工具调用，所以要走 on_raw
+      （2026-09-21 用户：工作台上要能返回 agent 返回的这些信息）。
     - 超时就杀掉子进程，别留孤儿。
     """
     key, why = pick_agent(agent)
@@ -1242,6 +1246,11 @@ def ask(prompt, session_id=None, cwd=None, timeout=DEFAULT_TIMEOUT,
             if not line.strip():
                 continue
             tail.append(line)
+            if on_raw and mode != "text":    # 原文一行（stream-json）→ 工作台的动作流
+                try:
+                    on_raw(line)
+                except Exception:                                # noqa: BLE001
+                    pass
             if len(tail) > 3000:          # 留宽点：自定义 cmd 用单块 json 时，截断会让解析失败
                 del tail[:-3000]
             if mode == "codex-json":

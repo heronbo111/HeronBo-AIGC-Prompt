@@ -138,7 +138,9 @@ HeronBo-AIGC-Prompt/
 │   ├── samples-db.md              # 样本库对照（提示词→成片→评价）
 │   ├── paths.md                   # 路径表模板（本机取值在 paths.local.md，gitignored）
 │   ├── eval-cases.md              # 回归用例与断言
-│   └── rules.local.md             # 本机规则覆盖层（gitignored，不进仓库）
+│   ├── rules.local.md             # 本机规则覆盖层（gitignored，不进仓库）
+│   ├── paths.local.md             # 本机路径/平台取值（gitignored，由 tools\首次配置.py 写）
+│   └── eval-absorbed.local.json   # 评价回收账本（gitignored，只在本机）
 ├── tools/
 │   ├── score_gui.pyw              # 六维评分窗口（可换主题；未保存关窗会拦）
 │   ├── score_core.py              # 评分核心（窗口版与命令行版共用同一套 json）

@@ -16,6 +16,9 @@
 # 本机私有取值/账本（不进仓库，避免多机冲突）
 references/*.local.md
 references/*.local.json
+# 本机专有的说明/笔记（同 references/*.local.md 的口径：只在本机看，永不入库）
+# 例：tools/改工作台并打包.local.md —— 工作台源码怎么改、怎么打包换位的本机手册
+tools/*.local.md
 # 联调通道的本机覆盖（node / CLI 路径），不写进仓库
 tools/agent_bridge.local.json
 # 打包后这份配置就写在 exe 旁边（本机私有：选了哪个 agent）
@@ -33,6 +36,11 @@ __pycache__/
 
 # exe 打包中间产物（不进仓库）
 tools/build/
+# 同上，但这是**旧命令**的输出目录名（`--distpath dist_stage --workpath build_stage`）。
+# 2026-09-21 实测：有人按 README 里那条旧命令打包，就凭空多出两个未忽略的目录，
+# 里面是 18MB 的 exe —— 谁 `git add -A` 一下就会把 18MB 塞进仓库。文档已改，这里再兜一层。
+tools/dist_stage/
+tools/build_stage/
 # 仓库自带的 ffmpeg：**只提交压缩包**，解压出来的 bin/ 是本机派生物，不进仓库
 tools/_vendor/ffmpeg/bin/
 # exe 换位暂存：工作台开着时 exe 被占用，先打到这里、等它关掉再换过去
