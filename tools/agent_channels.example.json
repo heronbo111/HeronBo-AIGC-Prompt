@@ -1,0 +1,31 @@
+{
+  "_说明": "动作流通道的本机覆盖模板。用法：复制成 agent_channels.local.json，放到 exe 旁边（tools/dist/）或 ~/.heronbo/；也可以用环境变量 HERONBO_AGENT_CHANNELS 直接指向本文件。同 key 覆盖内置通道；exclude 里的 key 会被停用。工作台启动后按『本机探测到的通道』读动作流，探不到的自动跳过。",
+  "_内置通道": [
+    "zcode      ~/.zcode/cli/rollout/model-io-*.jsonl     fmt=zcode",
+    "workbuddy  ~/.workbuddy/projects/**/*.jsonl          fmt=workbuddy",
+    "claude     ~/.claude/projects/**/*.jsonl             fmt=claude",
+    "codex      ~/.codex/sessions/**/*.jsonl              fmt=auto",
+    "gemini     ~/.gemini/tmp/**/*.jsonl                  fmt=auto",
+    "doubao     ~/.doubao/**/*.jsonl                      fmt=auto"
+  ],
+  "_字段": {
+    "key": "通道唯一名（同 key 覆盖内置）",
+    "label": "界面上显示的名字（会写成『动作流来自 X』）",
+    "dir": "正文所在目录；支持 ~ 和 {USERPROFILE} 占位",
+    "glob": "文件名通配，默认 *.jsonl",
+    "recursive": "true＝目录下递归找",
+    "fmt": "auto（按结构猜，推荐）/ zcode / workbuddy / claude",
+    "enabled": "留空或 true；写 false 可临时关掉这个通道"
+  },
+  "channels": [
+    {
+      "key": "doubao",
+      "label": "豆包工作",
+      "dir": "~/.doubao/sessions",
+      "glob": "*.jsonl",
+      "recursive": true,
+      "fmt": "auto"
+    }
+  ],
+  "exclude": []
+}

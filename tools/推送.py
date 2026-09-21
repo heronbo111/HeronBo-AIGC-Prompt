@@ -9,16 +9,22 @@ r"""一键发布：扫 → 提交 → 推 gitee + GitHub → 校验。
 用法（在仓库根或 tools 下都行）：
 
     python tools\推送.py --dry --msg "试跑" README.md          # 只体检：扫词表、看会提交什么，不提交不推
-    python tools\推送.py --msg "工作台：②栏加了拖入体积提示" tools/workbench/app.js README.md
-    python tools\推送.py --msg "修 xxx" --changed              # 自动收集**已跟踪文件**的改动
+    python tools\推送.py --msg "feat: 工作台动作流按环境自动适配" tools/agent_trace.py
+    python tools\推送.py --msg "fix: 动作流读不到过程" --changed   # 自动收集**已跟踪文件**的改动
     python tools\推送.py --msg "..." --no-github 文件…         # 只推 gitee（GitHub 挂了时用）
+
+提交信息写法（2026-09-21 起，对齐公开仓库如 clash-verge-rev 的版本说明）：
+    标题 `类型: 一句话`（feat / fix / docs / ui / chore / refactor），讲**对使用者有什么用**；
+    需要展开时用 `✨ 新增功能` / `🐞 修复问题` / `🚀 优化改进` 三段，每条以「新增…／修复…／优化…」开头。
+    **公共历史里不写过程信息**（改了哪个源码文件、补交某文件、协作登记、测试怎么跑）；
+    完整版本叙事写 CHANGELOG.md，提交信息是它的浓缩版。详见 AGENTS.md 铁律第 4 条。
 
 它做的事：
 1. 前置检查：分支是不是 main、工作树里有没有**别人未提交的改动**（有就警告，不碰）
 2. 收文件清单（必须显式给，或 `--changed` 自动收已跟踪的改动）
 3. 敏感词扫描：**两个远程都公开，所以都扫**（词表直接读 pre-push 钩子，保持唯一真相源）
 4. 体量检查：>5MB 的二进制/视频拦下（AGENTS.md 规则 8）
-5. 提交（提交信息面向用户，不加 agent 前缀；来源写在正文末尾）
+5. 提交（提交信息按公开仓库写法：标题「类型: 一句话」+ 可选的 ✨/🐞/🚀 三段；不加 agent 前缀）
 6. push gitee → push github → 用 `ls-remote` 逐个校验远程 sha == 本地 HEAD
 """
 import argparse
@@ -43,6 +49,31 @@ def sh(cmd, cwd=ROOT, check=False):
 
 def git(*a, **kw):
     return sh(["git"] + list(a), **kw)
+
+
+def git_status_entries():
+    """`git status` 的条目列表，**不 strip、不转义**。
+
+    ⚠️ 两个坑（2026-09-21 一次 dry 里同时踩到）：
+      · `sh()` 会对整段输出 `.strip()` —— 状态位是两列（如 `" M 路径"`），整段一 strip
+        **第一行的前导空格就没了**，`line[3:]` 取到的路径名少一个字符 → 列表第一条永远
+        匹配不上真实文件名（表现：只有第一个文件显示"不动"）。
+      · 默认 git 会把**中文文件名**转义成 `"tools\\346\\216\\250..."`，和真实路径比永远不等
+        → 中文名文件被静默跳过、提交不上去。
+    修法一次解决两条：用 `--porcelain -z`（NUL 分隔 = 不 strip 也不会有换行粘连）＋
+    `core.quotepath=false`（中文名原样输出）。
+    """
+    p = subprocess.run(["git", "-c", "core.quotepath=false", "status", "--porcelain", "-z"],
+                       cwd=ROOT, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
+    return [x for x in (p.stdout or "").split("\0") if x]
+
+
+def status_path(entry):
+    """一条 porcelain 条目 → (状态位, 路径)。`XY 路径` 的两列状态位后跟一个空格。"""
+    st = entry[:2]
+    path = entry[3:] if len(entry) > 3 else ""
+    return st, path.replace("\\", "/")
 
 
 def blocked_words():
@@ -94,12 +125,17 @@ def git_push_via_proxy(remote):
 
 
 def changed_tracked():
-    """已跟踪文件的改动（不含未跟踪的新文件——按 AGENTS.md 不碰别人的新文件）。"""
+    """已跟踪文件的改动（不含未跟踪的新文件——按 AGENTS.md 不碰别人的新文件）。
+
+    ⚠️ 必须带 `-c core.quotepath=false`（2026-09-21 实测踩到）：git 默认会给**中文文件名**
+    输出成 `"tools/\346\216\250\351\200\201.py"` 这种八进制转义，脚本拿去和真实路径比对
+    永远对不上 → 中文名文件被**静默跳过、提交不上去**（`推送.py`、`docs/动作流通道.md`
+    这类名字首当其冲）。
+    """
     out = set()
-    for line in (git("diff", "--name-only") or "").splitlines():
-        out.add(line.strip())
-    for line in (git("diff", "--cached", "--name-only") or "").splitlines():
-        out.add(line.strip())
+    for args in (("diff", "--name-only"), ("diff", "--cached", "--name-only")):
+        for line in (git("-c", "core.quotepath=false", *args) or "").splitlines():
+            out.add(line.strip())
     return sorted(x for x in out if x)
 
 
@@ -127,7 +163,7 @@ def scan(paths, words):
 def main():
     ap = argparse.ArgumentParser(add_help=True)
     ap.add_argument("files", nargs="*", help="要提交的文件（相对仓库根）")
-    ap.add_argument("--msg", help="提交信息（面向用户，写清改了什么、有什么影响）")
+    ap.add_argument("--msg", help="提交信息：标题 `类型: 一句话` + 可选的 ✨/🐞/🚀 三段（见文件头说明）")
     ap.add_argument("--changed", action="store_true", help="自动收集已跟踪文件的改动")
     ap.add_argument("--dry", action="store_true", help="只体检，不提交不推送")
     ap.add_argument("--no-github", action="store_true", help="只推 gitee")
@@ -177,11 +213,12 @@ def main():
         files += [f for f in changed_tracked() if f not in files]
     files = [f.replace("\\", "/") for f in files]
 
-    dirty = git("status", "--short").splitlines()
-    print("\n[1] 工作树现状（%d 条改动）" % len(dirty))
-    for line in dirty[:40]:
-        mark = "→ 本次提交" if line[3:].strip().replace("\\", "/") in files else "  （不动）"
-        print("    %s %s" % (line, mark))
+    entries = git_status_entries()
+    print("\n[1] 工作树现状（%d 条改动）" % len(entries))
+    for entry in entries[:40]:
+        st, path = status_path(entry)
+        mark = "→ 本次提交" if path in files else "  （不动）"
+        print("    %-3s %s %s" % (st.strip() or st, path, mark))
 
     if not files:
         print("\n没有指定要提交的文件。加文件清单，或用 --changed 自动收已跟踪改动。")

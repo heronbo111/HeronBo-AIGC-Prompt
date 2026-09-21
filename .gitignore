@@ -23,6 +23,9 @@ tools/dist/agent_bridge.local.json
 # 工作台的界面偏好（项目列表排序/名次），本机私有
 tools/workbench.local.json
 tools/dist/workbench.local.json
+# 动作流通道的本机覆盖（换机器/换工具时指路：去哪找该工具的会话正文），本机私有
+tools/agent_channels.local.json
+tools/dist/agent_channels.local.json
 # 换位时留的旧 exe 备份（本机回滚用，别把 18MB 分发进仓库）
 tools/dist/score-tool_*.exe
 # Python 缓存（诊断脚本 import 工具时会生成）
