@@ -184,10 +184,13 @@ def check(path, text, pdir=""):
 
     # ④.5 「提示词正文.txt」＝**只放能复制的那段正文**（2026-09-16 用户要求：
     # ③栏只显示最核心要复制的东西）。它必须与 提示词.txt 里的主版正文逐字一致，否则会两处打架。
+    # 2026-09-21 用户裁定：提示词只放 文案/ ——正文文件认 文案/提示词正文.txt，
+    # 项目根那份只作为**老项目兼容**（新项目不再生成）。
     body_name = "提示词正文.txt"
     tdir = os.path.dirname(path) if os.path.basename(path) != body_name else os.path.dirname(
         os.path.dirname(path))
-    cands = [os.path.join(tdir, body_name), os.path.join(os.path.dirname(tdir), body_name)]
+    cands = [os.path.join(tdir, "文案", body_name), os.path.join(tdir, body_name),
+             os.path.join(os.path.dirname(tdir), body_name)]
     body_path = next((x for x in cands if os.path.isfile(x)), "")
     if os.path.basename(path) == body_name:
         say("PASS", "提示词正文.txt", "（本次体检的就是它）")

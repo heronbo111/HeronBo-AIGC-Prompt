@@ -558,9 +558,12 @@ def assemble_prompt(project_dir, form="", model="", duration="", ratio="", lines
     if not project_dir or not os.path.isdir(project_dir):
         return {"ok": False, "error": "需要 --project <项目目录>"}
     pdir = os.path.normpath(project_dir)
-    bp = os.path.join(pdir, "提示词正文.txt")
+    # 正文优先认 文案/提示词正文.txt（2026-09-21 新约定），项目根那份只兼容老项目
+    bp = os.path.join(pdir, "文案", "提示词正文.txt")
     if not os.path.isfile(bp):
-        return {"ok": False, "error": "没有 提示词正文.txt——先把正文落盘，再回来拼装"}
+        bp = os.path.join(pdir, "提示词正文.txt")
+    if not os.path.isfile(bp):
+        return {"ok": False, "error": "没有 文案/提示词正文.txt——先把正文落盘，再回来拼装"}
     body = open(bp, encoding="utf-8").read().strip()
     if not body:
         return {"ok": False, "error": "提示词正文.txt 是空的"}
@@ -620,8 +623,7 @@ def assemble_prompt(project_dir, form="", model="", duration="", ratio="", lines
             "台词：%s" % (lines or "（待补）")]
     text = "\n".join(head + ["", upload, "", body, ""])
     wrote = []
-    open(os.path.join(pdir, "提示词.txt"), "w", encoding="utf-8").write(text)
-    wrote.append("提示词.txt")
+    # 2026-09-21 用户裁定：提示词只出现在 文案/ 里 → 不再往项目根写 提示词.txt
     for sub, content in (("文案/提示词.txt", text), ("文案/提示词正文.txt", body + "\n")):
         p = os.path.join(pdir, *sub.split("/"))
         os.makedirs(os.path.dirname(p), exist_ok=True)
