@@ -208,3 +208,8 @@ python tools\推送.py --msg "评分：口型同步判据补一条" tools/score_
 ## 六、开源许可证
 
 MIT License，见 [LICENSE](LICENSE)。
+
+## 七、更新记录
+
+对使用者有意义的变化按时间倒序记在 [CHANGELOG.md](CHANGELOG.md)（规则级细节与依据在
+[`references/rules.md`](references/rules.md)）。当前版本见 `SKILL.md` 的 `version` 字段。
