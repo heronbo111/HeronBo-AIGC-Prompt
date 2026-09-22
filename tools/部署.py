@@ -32,6 +32,19 @@ ICO = os.path.join(HERE, "工作台.ico")
 EXE = os.path.join(HERE, "dist", "score-tool.exe")
 PY = sys.executable
 
+# 下载与"用到才装"的能力包（2026-09-22）：两个新模块把这两件事从本文件里拆了出去——
+#   · 下载器.py：Range 续传 / 同源重试 / sha256 校验（原来这里是 open(dst,"wb")，断一次全白下）
+#   · 能力包.py：默认只装 core（wheels + ffmpeg + exe），转写/图像/深度按需拉
+# 本文件里与它们对接的地方都写了「2026-09-22」注释，改动尽量小（另一个 agent 同时在改本文件）。
+try:
+    import 下载器 as DL
+except Exception:                                                # noqa: BLE001
+    DL = None
+try:
+    import 能力包 as KP
+except Exception:                                                # noqa: BLE001
+    KP = None
+
 _OK, _BAD, _TODO = [], [], []
 
 
@@ -348,14 +361,27 @@ FF_BIN = os.path.join(VENDOR, "ffmpeg", "bin")
 HEAVY_WHEELS = os.path.join(VENDOR, "wheels-heavy")
 CORE_WHEELS = os.path.join(VENDOR, "wheels")
 MODEL_DIR = os.path.join(VENDOR, "models", "depth-anything-v2-small")
-# 大件**不进仓库归档**（归档只放代码，约 24MB，SkillHub 之类平台才导得进来）→ 想要离线全套时
-# 从 GitHub Release 拉这三个包（2026-09-17 上传）。国内拉 GitHub 慢的话，直接用镜像在线装也一样。
-VENDOR_REL = os.environ.get("HERONBO_VENDOR_REL") or     "https://github.com/heronbo111/HeronBo-AIGC-Prompt/releases/download/vendor-2026-09-17/"
+# 大件**不进仓库归档**（归档只放代码，约 24MB，SkillHub 之类平台导得进来）→ 想要离线全套时
+# 从 Release 拉。**2026-09-22 换到新 tag**：这一版的附件重新拆过（core + 三个能力包，
+# 默认安装 304MB → 约 94MB），清单在 tools\能力包.py 里。老 tag（vendor-2026-09-17）的附件
+# 一个字都没动 → 别人机器上那份旧脚本照旧能装。
+VENDOR_REL = os.environ.get("HERONBO_VENDOR_REL") or     "https://github.com/heronbo111/HeronBo-AIGC-Prompt/releases/download/vendor-2026-09-22/"
+# 国内裸连 GitHub Release 很慢（2026-09-22 用户："别的电脑装的时候太慢"）→ 依次试：
+# 直连 → 镜像前缀。镜像前缀要拼**完整 URL**（https://gh-proxy.com/https://github.com/…）。
+# 一直都能直连的机器不用管；被卡住时脚本会自己换源，也可以用环境变量 HERONBO_VENDOR_REL 指定。
+VENDOR_MIRRORS = ["", "https://gh-proxy.com/", "https://ghproxy.net/"]
 # (附件名, 目标, MB)；目标是 _vendor 下的子目录名，或 "dist" 表示工作台 exe（落到 tools/dist/）
-VENDOR_ASSETS = [("wheels-heavy.zip", "wheels-heavy", 116),
-                 ("ffmpeg-win64-gpl-shared.zip", "ffmpeg", 82),
-                 ("depth-model.zip", "models", 88),
+# ⚠️ 2026-09-22 改了拆分：默认安装只拉 core（wheels-core + ffmpeg），转写/图像/深度变成**能力包**，
+# 用到才拉（用户原话："我最想解决的就是安装慢的核心问题"——默认安装 304MB → 约 94MB，
+# 机器上已有能力够的系统 ffmpeg 时只剩约 22MB）。清单的唯一真相源是 tools\能力包.py，
+# 下面这份只是**老布局的兼容兜底**（别人机器上的旧 tag 还在用这些名字）。
+VENDOR_ASSETS = [("wheels-core.zip", "wheels", 4),
+                 ("ffmpeg-win64-gpl-shared.zip", "ffmpeg", 76),
                  ("score-tool.exe", "dist", 18)]
+VENDOR_ASSETS_OLD = [("wheels-heavy.zip", "wheels-heavy", 116),
+                     ("ffmpeg-win64-gpl-shared.zip", "ffmpeg", 82),
+                     ("depth-model.zip", "models", 88),
+                     ("score-tool.exe", "dist", 18)]
 # 工作台 exe 是**每次改代码都会变**的那一个：别只看"在不在"（老机器上它一直在，但它是旧版）
 # → 记一份版本戳（大小+下载时间）在 exe 旁边，下次 fetch 时跟远端 HEAD 比一比，变了就换（2026-09-17）。
 EXE_DST = os.path.join(HERE, "dist", "score-tool.exe")
@@ -373,9 +399,24 @@ def _remote_head(url):
 
 
 def exe_refresh_needed():
-    """工作台 exe 要不要更新：没装 / 没记录版本 / 远端换过（比大小，能比到时间再补一刀）。"""
+    """工作台 exe 要不要更新。
+
+    2026-09-22 改：**优先用 Release 的 SHA256SUMS 比 sha256**。
+    原来只拿 `VENDOR_REL`（GitHub）发一个 HEAD 比大小——国内常常连不上 api/对象存储，
+    结果就是"问不到远端 → 先不换"，等于**永远不更新**。SHA256SUMS 是走 能力包.urls_for()
+    的多源（Gitee 优先）取的，而且比大小严格；拿不到那份清单才退回老办法。
+    """
     if not os.path.isfile(EXE_DST):
         return True, "还没装"
+    want = _expected_sha("score-tool.exe")
+    if want and DL is not None:
+        try:
+            have = DL.sha256_file(EXE_DST)
+        except Exception:                                        # noqa: BLE001
+            have = ""
+        if have == want:
+            return False, "已经是最新（sha256 一致）"
+        return True, "远端有新版本（sha256 变了）"
     try:
         with open(EXE_MARK, encoding="utf-8") as f:
             mark = json.load(f)
@@ -424,9 +465,9 @@ def refresh_exe(yes=False, force=False):
             "然后重跑这条命令" % len(run))
         return
     tmp = EXE_DST + ".new"
-    log("  下 score-tool.exe（约 18MB）…")
+    log("  下 score-tool.exe（约 18MB；直连不动会自动换镜像源）…")
     try:
-        n = _download(VENDOR_REL + "score-tool.exe", tmp)
+        n = _download_any("score-tool.exe", tmp)
     except Exception as e:                                       # noqa: BLE001
         bad("下载 score-tool.exe", str(e)[:150], "网络不通就先跳过：工作台还是你原来那个，功能不受影响")
         return
@@ -448,17 +489,41 @@ def refresh_exe(yes=False, force=False):
     ok("工作台 exe 已更新", "%.1f MB（%s）" % (n / 1048576.0, why))
 
 
-def vendor_missing():
-    """还缺哪些大件（归档安装的正常现象：仓库里没带）。"""
-    miss = []
-    if not os.path.isdir(HEAVY_WHEELS):
-        miss.append(VENDOR_ASSETS[0])
-    if not os.path.isfile(os.path.join(FF_BIN, "ffmpeg.exe")):
-        miss.append(VENDOR_ASSETS[1])
-    if not os.path.isfile(os.path.join(MODEL_DIR, "model.onnx")):
-        miss.append(VENDOR_ASSETS[2])
-    if not os.path.isfile(os.path.join(HERE, "dist", "score-tool.exe")):
-        miss.append(VENDOR_ASSETS[3])          # 工作台 exe（2026-09-17 起不进 git，改走附件）
+def _assets_for(caps=(), with_exe=True):
+    """这次要拉哪些附件：core（wheels + ffmpeg）＋ 指定能力包（＋工作台 exe）。
+
+    清单来自 `能力包.py`（唯一真相源）；没有那个模块就退回本文件里的 VENDOR_ASSETS（老布局）。
+    """
+    out = []
+    if KP is not None:
+        out = list(KP.assets_of(list(caps)))
+    else:
+        out = [(fn, sub, mb) for fn, sub, mb in VENDOR_ASSETS if not fn.endswith(".exe")]
+    if with_exe:
+        out.append(("score-tool.exe", "dist", 18))
+    return out
+
+
+def _asset_present(fn, sub):
+    if fn.endswith(".exe"):
+        return os.path.isfile(os.path.join(HERE, "dist", "score-tool.exe"))
+    if fn.startswith("ffmpeg"):
+        return os.path.isfile(os.path.join(FF_BIN, "ffmpeg.exe"))
+    if fn.startswith("cap-depth"):
+        return os.path.isfile(os.path.join(MODEL_DIR, "model.onnx"))
+    return os.path.isdir(os.path.join(VENDOR, sub))
+
+
+def vendor_missing(caps=()):
+    """还缺哪些大件（归档安装的正常现象：仓库里没带）。
+
+    2026-09-22：默认只看 core；`caps` 里点名了的能力包才算"该有"。老布局（wheels-heavy/
+    depth-model 那套）仍然认——别人机器上还可能是旧结构，别把人家已经装好的判成"缺"。
+    """
+    miss = [a for a in _assets_for(caps) if not _asset_present(a[0], a[1])]
+    if os.path.isdir(HEAVY_WHEELS) or os.path.isfile(os.path.join(MODEL_DIR, "model.onnx")):
+        # 老机器：重型 wheels/模型已在位 → 不再要求新包名（它已经能用了）
+        miss = [a for a in miss if not a[0].startswith("cap-")]
     return miss
 
 
@@ -486,6 +551,41 @@ def _download(url, dst):
     return got
 
 
+_SUMS_CACHE = {}
+
+
+def _expected_sha(rel):
+    """Release 上 SHA256SUMS.txt 里这个附件的 sha256（拿不到就返回 ""，只做大小校验）。"""
+    if rel in _SUMS_CACHE:
+        return _SUMS_CACHE[rel]
+    val = ""
+    if DL is not None:
+        try:
+            urls = (KP.urls_for("SHA256SUMS.txt") if KP is not None
+                    else [VENDOR_REL + "SHA256SUMS.txt"])
+            val = DL.hashes(urls).get(rel, "")
+        except Exception:                                        # noqa: BLE001
+            val = ""
+    _SUMS_CACHE[rel] = val
+    return val
+
+
+def _download_any(rel, dst):
+    """按 **Gitee → GitHub 直连 → 镜像** 的顺序下 Release 附件，哪个先下动用哪个。
+
+    2026-09-22 换成 下载器：
+      · **断点续传**（`Range`）——300MB 的包弱网断一次，接着下，不再从头；而且**换源也接着下**；
+      · **同一个源自己重试**（原来只换源）；
+      · **验 sha256**（Release 上有 SHA256SUMS.txt 就比，没有就比大小）——截断/错误页不再当"下好了"。
+    源顺序见 能力包.urls_for()（Gitee 排第一的理由也写在那个 docstring 里）。
+    """
+    if DL is None:
+        raise OSError("找不到 tools\\下载器.py（它负责续传与校验），先把它放进 tools/ 再跑")
+    sha = _expected_sha(rel)
+    urls = KP.urls_for(rel) if KP is not None else [VENDOR_REL + rel]
+    return DL.fetch_any(urls, dst, sha256=sha, tries=2, log=log)
+
+
 def _flatten_dup(sub):
     """解开后若出现 `_vendor/<sub>/<sub>/…` 这种多套一层，摊平它（2026-09-17 打模型包时踩到过）。"""
     inner = os.path.join(VENDOR, sub, sub)
@@ -503,25 +603,42 @@ def _flatten_dup(sub):
         pass
 
 
-def fetch_vendor(yes=False, force_exe=False):
-    """把三个大件从 Release 拉下来并解开（约 290MB，**一次就好**），顺带把工作台 exe 更新到最新。
+def fetch_vendor(yes=False, force_exe=False, caps=(), with_ffmpeg=False):
+    """把默认大件（core）从 Release 拉下来并解开，顺带把工作台 exe 更新到最新。
 
     2026-09-17 加：**exe 每次都会跟远端比一下**（老机器上它一直在，但可能是旧版——
     工作台的界面/流程全在 exe 里，旧 exe = 旧功能）。换位前会拦"工作台还开着"。
+
+    2026-09-22 改：
+      · 默认只拉 core（wheels + ffmpeg ≈ 76MB；下载器带续传，断一次不用从头）；
+      · `caps=("stt",)` 这类**能力包**按需拉（转写 26MB / 图像 60MB / 深度 88MB，见 能力包.py）；
+      · 机器上已有**能力够的系统 ffmpeg**（编码器/滤镜探测过）→ 跳过 ffmpeg 那 76MB，
+        想强制用仓库自带那份加 `--with-ffmpeg`。
     """
-    miss = [m for m in vendor_missing() if m[0] != "score-tool.exe"]
+    use_caps = list(caps)
+    skip_ffmpeg = False
+    if not with_ffmpeg and KP is not None:
+        ok_ff, why_ff = KP.ffmpeg_ok()
+        skip_ffmpeg = bool(ok_ff)
+        (ok if ok_ff else log)("系统 ffmpeg%s" % ("可以用：%s" % why_ff if ok_ff else "：%s" % why_ff))
+        if not ok_ff:
+            log("  → 这次会拉仓库自带那份 ffmpeg（约 76MB）")
+    miss = [m for m in vendor_missing(use_caps) if m[0] != "score-tool.exe"]
+    if skip_ffmpeg:
+        miss = [m for m in miss if not m[0].startswith("ffmpeg")]
     if miss:
         names = "、".join("%s（约 %dMB）" % (a[0], a[2]) for a in miss)
         if not yes:
             todo("下载离线大件：%s" % names,
-                 "python tools/deploy.py vendor --fetch --yes   （从 %s 拉；国内慢就直接用镜像在线装）" % VENDOR_REL)
+                 "python tools/deploy.py vendor --fetch --yes %s  （从 %s 拉；国内慢会自动换镜像源）"
+                 % (" ".join("--" + c for c in use_caps), VENDOR_REL))
         else:
             import zipfile
             for fn, sub, mb in miss:
                 zip_dst = os.path.join(VENDOR, fn)
-                log("  下 %s（约 %dMB）…" % (fn, mb))
+                log("  下 %s（约 %dMB；直连不动会自动换源，断了会接着下）…" % (fn, mb))
                 try:
-                    n = _download(VENDOR_REL + fn, zip_dst)
+                    n = _download_any(fn, zip_dst)
                 except Exception as e:                           # noqa: BLE001
                     bad("下载 " + fn, str(e)[:160],
                         "网络不通就先跳过：用镜像在线装（python tools/deploy.py install --yes）")
@@ -542,7 +659,15 @@ def fetch_vendor(yes=False, force_exe=False):
                 except Exception as e:                           # noqa: BLE001
                     bad("解开 " + fn, str(e)[:160])
     else:
-        ok("离线大件已齐", "wheels-heavy / ffmpeg / depth-model 都在")
+        ok("离线大件已齐", "core（wheels + %s）都在"
+           % ("用系统 ffmpeg" if skip_ffmpeg else "自带 ffmpeg"))
+    # 没点名、但确实还缺的能力包 → 说清怎么装（别让用户猜）
+    if KP is not None:
+        rest = [c for c in KP.ORDER if c not in use_caps and not KP.present(c, HERE)]
+        if rest:
+            log("  [按需] 这几个能力包还没装（用到再装，不装不影响默认流程）：")
+            for line in KP.hint(rest).splitlines():
+                log("    " + line)
     # 工作台 exe：单独走"比版本"的路（`--exe` 可强制重下）
     refresh_exe(yes, force=bool(force_exe or os.environ.get("HERONBO_FORCE_EXE")))
 
@@ -627,6 +752,44 @@ def do_install(yes=False, extras=False):
             r = run(cmd, timeout=900)
             (ok if r.returncode == 0 else bad)("安装 %s" % ", ".join(need),
                                                (r.stdout or r.stderr or "")[-200:])
+
+    # 2026-09-22：按能力包来看（能力包.py 是唯一真相源）。默认**不再**"有离线包就全装"——
+    # 用户要的是"装得快"：默认流程压根不用转写/深度，缺了就告诉他一键装哪条命令。
+    if KP is not None:
+        miss_caps, miss_mods = [], []
+        for cap in KP.ORDER:
+            if not KP.present(cap, HERE) or KP.missing_mods(PY, cap):
+                miss_caps.append(cap)
+                miss_mods += [m for m in KP.CAPS[cap]["mods"] if not KP.mod_present(m)]
+        if not miss_caps:
+            ok("能力包也已齐（转写 / 图像 / 转深度片）")
+            return
+        log("  [按需] 还没装的能力包：%s" % "、".join("%s(%s)" % (c, KP.CAPS[c]["title"]) for c in miss_caps))
+        for line in KP.hint(miss_caps).splitlines():
+            log("         " + line)
+        if extras:                       # --extras：连能力包一起装（在线装或本地能力包轮子）
+            dirs = [os.path.join(VENDOR, d) for c in miss_caps for d in KP.CAPS[c]["wheels_dirs"]
+                    if os.path.isdir(os.path.join(VENDOR, d))]
+            mods = [m for m in ("numpy", "cv2", "faster_whisper", "onnxruntime") if not KP.mod_present(m)]
+            if not mods:
+                return
+            if dirs:
+                cmd = [PY, "-m", "pip", "install", "--no-index"]
+                for d in dirs:
+                    cmd += ["--find-links", d]
+                cmd += mods
+                src = "本地能力包（免联网）"
+            else:
+                cmd = [PY, "-m", "pip", "install", "-i",
+                       "https://pypi.tuna.tsinghua.edu.cn/simple"] + mods
+                src = "在线（清华源）"
+            if not yes:
+                todo("装能力包依赖：%s（%s）" % (", ".join(mods), src), '"%s"   （加 --yes）' % '" "'.join(cmd))
+                return
+            log("  正在装：%s" % ", ".join(mods))
+            r = run(cmd, timeout=1800)
+            (ok if r.returncode == 0 else bad)("装 %s" % ", ".join(mods), (r.stdout or r.stderr or "")[-200:])
+        return
 
     heavy = [("numpy", "numpy"), ("cv2", "opencv-python-headless"),
              ("faster_whisper", "faster-whisper"), ("onnxruntime", "onnxruntime")]
@@ -724,15 +887,72 @@ def launch(yes=False, backend=None):
         bad("起工作台", str(e), "手工跑：%s" % " ".join(cmd))
 
 
+# ── Defender 误报（2026-09-22 用户在别人电脑上 exe 被删）───────────────────
+def defender(yes=False):
+    """工作台 exe 被微软 Defender（或其它杀软）删了的检查与修复。
+
+    为什么会被删：PyInstaller **onefile** 打包、又没签名 —— Defender 的启发式
+    最爱误报这种组合（Trojan:Win32/Wacatac 之类）。仓库里 exe 每周都重编，签名证书
+    又是年费项，所以现阶段给装机端的是「检查 → 加白名单 → 还原/重下」三板斧。
+    """
+    log("== Defender 误报检查（exe 被删先跑这个）==")
+    if os.path.isfile(EXE):
+        ok("score-tool.exe 在", EXE + "（本机没被删）")
+    else:
+        bad("score-tool.exe", "不在 —— 很可能被 Defender 隔离了",
+            "先加白名单（--yes），再 python tools\\部署.py vendor --fetch --yes 重下")
+    ps = ("Get-MpThreatDetection -ErrorAction SilentlyContinue | "
+          "Where-Object { ($_.Resources -join ' ') -match 'score-tool' } | "
+          "Select-Object -First 5 InitialDetectionTime,Resources | Format-List | Out-String")
+    r = run(["powershell", "-NoProfile", "-Command", ps])
+    hits = (r.stdout or "").strip()
+    if r.returncode == 0 and hits:
+        log("  [实锤] Defender 的保护历史里有它：\n%s" % hits)
+    else:
+        log("  [说明] 命令行读不到保护历史（常见，不一定是没有）；"
+            "手动看：Windows 安全中心 → 病毒和威胁防护 →「保护历史」")
+    dist = os.path.dirname(EXE)
+    cmd = "Add-MpPreference -ExclusionPath '%s'" % dist
+    if not yes:
+        todo("把工作台目录加进 Defender 白名单（要管理员权限）",
+             "管理员 PowerShell 里跑：%s" % cmd + "；然后到「保护历史」还原被隔离的 "
+             "score-tool.exe（或重跑 python tools\\部署.py vendor --fetch --yes 重下）")
+        return
+    log("  正在提权加白名单（弹出 UAC 请点「是」）…")
+    e = run(["powershell", "-NoProfile", "-Command",
+             "Start-Process powershell -Verb RunAs -Wait -ArgumentList "
+             "'-NoProfile','-Command','%s'" % cmd])
+    if e.returncode == 0:
+        v = run(["powershell", "-NoProfile", "-Command",
+                 "(Get-MpPreference).ExclusionPath -join ';'"])
+        if dist.lower() in (v.stdout or "").lower():
+            ok("白名单已加", dist + "（Defender 不会再动它）")
+        else:
+            bad("白名单没验上", (v.stdout or v.stderr or "")[-120:],
+                "手动：Windows 安全中心 → 排除项 → 添加文件夹 " + dist)
+    else:
+        bad("提权失败", (e.stderr or "")[-120:], "手动以管理员身份跑：%s" % cmd)
+    if not os.path.isfile(EXE):
+        log("  下一步：python tools\\部署.py vendor --fetch --yes  （把 exe 重新下回来）")
+
+
 def main():
     ap = argparse.ArgumentParser(description="工作台部署（自检 + 接 agent + 依赖 + 快捷方式）")
     ap.add_argument("action", nargs="?", default="check",
-                    choices=["check", "install", "agents", "shortcut", "start", "wx", "vendor", "all"])
+                    choices=["check", "install", "agents", "shortcut", "start", "wx", "vendor", "defender", "all"])
     ap.add_argument("--yes", action="store_true", help="真动手（不加就只打印命令）")
     ap.add_argument("--root", help="设置样本库根目录")
-    ap.add_argument("--fetch", action="store_true", help="vendor 时从 Release 下大件（约 290MB）")
+    ap.add_argument("--fetch", action="store_true",
+                    help="vendor 时从 Release 下大件（默认只下 core，约 76MB；断点续传）")
     ap.add_argument("--exe", action="store_true",
                     help="vendor 时强制重下工作台 exe（默认只在远端有新版本时才换）")
+    # 2026-09-22：能力包（用到才装的大件）——默认一个都不下
+    ap.add_argument("--stt", action="store_true", help="vendor 时连「转写」能力包一起下（约 26MB）")
+    ap.add_argument("--depth", action="store_true", help="vendor 时连「转深度片」能力包一起下（约 88MB）")
+    ap.add_argument("--all-caps", dest="all_caps", action="store_true",
+                    help="vendor 时把三个能力包都下齐（约 175MB）")
+    ap.add_argument("--with-ffmpeg", dest="with_ffmpeg", action="store_true",
+                    help="vendor 时强制拉仓库自带的 ffmpeg（默认：系统那份能力够就跳过这 76MB）")
     ap.add_argument("--extras", action="store_true",
                     help="install 时连「按需才装」的重包一起装（numpy/opencv/转写/深度视频）")
     ap.add_argument("--ping", dest="ping", action="store_true", default=None,
@@ -744,15 +964,19 @@ def main():
     if a.action in ("check", "all"):
         check_env()
         check_root(a.root)
+    _caps = (list(KP.ORDER) if (getattr(a, "all_caps", False) and KP is not None)
+             else [c for c in ("stt", "depth") if getattr(a, c, False)])
     if a.action == "vendor":
         if getattr(a, "fetch", False):
-            fetch_vendor(a.yes, force_exe=getattr(a, "exe", False))
+            fetch_vendor(a.yes, force_exe=getattr(a, "exe", False), caps=_caps,
+                         with_ffmpeg=getattr(a, "with_ffmpeg", False))
         else:
             vendored_ffmpeg(a.yes)
             vendored_model()
-            if vendor_missing():
+            if vendor_missing(_caps):
                 log("  [提示] 还缺大件（归档/SkillHub 安装的正常现象）："
-                    "python tools/deploy.py vendor --fetch --yes 可以一次拉齐（约 290MB）")
+                    "python tools/deploy.py vendor --fetch --yes 可以拉齐"
+                    "（默认 core 约 140MB；加 --stt/--depth 连能力包一起）")
     if a.action in ("agents", "all"):
         check_agents(a.yes, ping=a.ping)
     if a.action in ("install", "all"):
@@ -765,6 +989,8 @@ def main():
         launch(a.yes)          # 装完就弹出来：用户不用自己去找入口（2026-09-16 用户要求）
     if a.action == "wx":
         fix_webview2(a.yes)
+    if a.action == "defender":
+        defender(a.yes)
     log("\n小结：OK %d 项 · 缺 %d 项 · 待办 %d 项" % (len(_OK), len(_BAD), len(_TODO)))
     return 1 if _BAD else 0
 

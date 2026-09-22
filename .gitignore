@@ -59,8 +59,15 @@ tools/dist/*.exe.new
 # 离线大件也不进 git（2026-09-17：历史里这几样共 294MB + exe 762MB，把 Gitee 1GB 配额撑爆）。
 # 分发走 GitHub Release 附件：python tools/deploy.py vendor --fetch --yes
 tools/_vendor/wheels-heavy/
+# 2026-09-22：核心轮子目录（pywebview 依赖 + cv2 + numpy，共 52MB）也不能进 git；
+# 拆出来的能力包轮子同理。不忽略的话，`git add -A` 一下就是 52MB 进历史。
+tools/_vendor/wheels/
+tools/_vendor/wheels-stt/
+tools/_vendor/wheels-depth/
 tools/_vendor/ffmpeg/
 tools/_vendor/models/
+# 打好的发行附件（约 253MB）：只用 tools\发布发行附件.py 上传，不进仓库
+tools/_release/
 _stage/
 
 # ── 工作台源码：不进公开仓库（2026-09-19 用户裁定）──────────────────────────

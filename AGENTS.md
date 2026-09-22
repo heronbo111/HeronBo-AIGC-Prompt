@@ -115,6 +115,7 @@ python tools/发布exe附件.py                   # 把大件/exe 发到 Release
 
 | agent | 文件范围 | 开始时间 |
 |---|---|---|
+| ZCode | **安装提速线**（用户 2026-09-22 指派）：新增 `tools/下载器.py`（Range 续传/重试/sha256）、`tools/能力包.py`（转写/深度拆成可选包），另在 `tools/部署.py` 加**两处极小钩子**（`_download` 转发 + `vendor_missing` 认可选包）、`tools/_vendor` 重打包、README 安装段。⚠️ **DSH：你这轮也在改 部署.py / 安装向导.py**，我尽量只做「新文件 + 极小钩子」；你保存 部署.py 前请 `git status` 看一眼，别整文件覆盖掉钩子（钩子没了 = 安装退回无续传的老逻辑） | 2026-09-22 12:25 |
 | DSH（WorkBuddy） | 「ZCode 交班清单」收尾（已完成：`references/paths.md`、`references/samples-db.md`、`tools/联调说明.md`、`README.md`、`.gitignore`）＋ **版本＝一套完整快照（rules 71）**。**已改完、未提交、未推**：`references/rules.md`（新增第 71 条 + 索引）、`CHANGELOG.md`(v2.9)、`SKILL.md`(2.9)、`tools/project_core.py`（骨架加 `current`/`versions`）、私有工作台的 `tools/workbench_server.py` / `workbench/app.js` / `workbench/index.html` / `workbench/app.css`。**去冗已收口**：`workbench_server.py` 全量字面量替换经评估风险大于收益（3909 行、ZCode 也在改），只做口径一致性修复（4 处），不再做常量化 | 2026-09-21 16:40 |
 
 ## 分工建议（减少撞车）
