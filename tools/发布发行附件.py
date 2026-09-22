@@ -116,10 +116,17 @@ def gh_release(host, tag, body, tok, dry=False):
 
 def gh_upload(host, rel, path, tok, log=print):
     name = os.path.basename(path)
+    size = os.path.getsize(path)
     for a in rel.get("assets") or []:
-        if a.get("name") == name:                     # 同名先删（附件不可覆盖）
-            _req("%s/repos/%s/%s/releases/assets/%s" % (host["api"], host["owner"], host["repo"], a["id"]),
-                 method="DELETE", tok=tok)
+        if a.get("name") != name:
+            continue
+        if a.get("size") == size:
+            # 大小一样就当是同一份，跳过（2026-09-22：重试整批时会先删同名再传，
+            # 既慢又会留下"少一件"的窗口；比一下大小就能省掉绝大部分重复上传）
+            log("      （%s 已经在远端且大小一致 → 跳过）" % name)
+            return
+        _req("%s/repos/%s/%s/releases/assets/%s" % (host["api"], host["owner"], host["repo"], a["id"]),
+             method="DELETE", tok=tok)
     url = ("https://uploads.github.com/repos/%s/%s/releases/%s/assets?name=%s"
            % (host["owner"], host["repo"], rel["id"], urllib.parse.quote(name)))
     data = open(path, "rb").read()
