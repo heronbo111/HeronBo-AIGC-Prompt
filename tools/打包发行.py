@@ -23,6 +23,7 @@ r"""打发行包：把 `_vendor` 里的东西打成 Release 附件（默认安�
 """
 import argparse
 import hashlib
+import json
 import os
 import sys
 import time
@@ -129,7 +130,15 @@ def classify(wheel_dir, log=print):
     return out, left
 
 
-def build(tag, log=print):
+def build(tag, notes="", version="", log=print):
+    # ⚠️ 运行顺序必须是：打包换位 --build-only → --swap-only → **本脚本** → 上传。
+    # 2026-09-22 实测踩过：在换位前跑本脚本，给 version.json/SHA256SUMS 哈希的是**旧 dist**
+    # → 元数据和真正发出去的 exe 对不上 → 面板永远说"远端的包换过内容"，装完还循环报新版本。
+    _stage = os.path.join(HERE, "_stage", "score-tool.exe")
+    _dist = os.path.join(HERE, "dist", "score-tool.exe")
+    if os.path.isfile(_stage) and os.path.isfile(_dist) and             os.path.getmtime(_stage) > os.path.getmtime(_dist) + 1:
+        log("  [!!] _stage 里有一份比 dist 更新的 exe——你多半跑早了：先 "
+            "`打包换位.py --swap-only` 换位，再跑本脚本（否则元数据会指错包）")
     out = os.path.join(HERE, "_release", tag)
     os.makedirs(out, exist_ok=True)
     log("== 打 %s ==" % tag)
@@ -188,7 +197,30 @@ def build(tag, log=print):
         for a in list(assets) + extra:
             f.write("%s  %s\n" % (sha256(a), os.path.basename(a)))
     log("  · SHA256SUMS.txt（%d 条，含工作台 exe：%s）" % (len(assets) + len(extra), bool(extra)))
-    # 6) 清单（人看的）
+    # 6) version.json（2026-09-22 加）：工作台「检查更新」读的就是它——**版本号 + exe 的 sha256**。
+    #    同一份也写回 tools/_version.json，打包时被 spec 打进 exe → 「我这版是谁」与
+    #    「远端这版是谁」是同一份结构，永远不会对不上。放在 SHA256SUMS 之后，好把清单哈希也带上。
+    vp = os.path.join(out, "version.json")
+    try:
+        import 版本 as ver
+        sums_map = {}
+        with open(sums, encoding="utf-8") as f:
+            for line in f:
+                p = line.split()
+                if len(p) == 2:
+                    sums_map[p[1].lstrip("*")] = p[0]
+        local = ver.write_local(version=version, notes=notes)
+        d = dict(local)
+        if os.path.isfile(exe):                     # 两份元数据相互校验用：清单里也有一份 exe 哈希
+            d["sumsExeSha256"] = sums_map.get(os.path.basename(exe), "")
+        with open(vp, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(d, f, ensure_ascii=False, indent=2)
+        assets.append(vp)
+        log("  · version.json（版本 %s · commit %s · exe %s…）"
+            % (d.get("version"), d.get("commit") or "—", (d.get("exe") or {}).get("sha256", "")[:12]))
+    except Exception as e:                                       # noqa: BLE001
+        log("  [!!] version.json 没生成：%s（工作台就查不到新版了）" % e)
+    # 7) 清单（人看的）
     man = os.path.join(out, "MANIFEST.md")
     with open(man, "w", encoding="utf-8", newline="\n") as f:
         f.write("# %s 发行附件\n\n生成时间：%s\n\n" % (tag, time.strftime("%Y-%m-%d %H:%M:%S")))
@@ -225,9 +257,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tag", default=TAG_DEFAULT)
     ap.add_argument("--upload-plan", action="store_true")
+    ap.add_argument("--notes", default="", help="写进 version.json 的更新说明（默认取 CHANGELOG 顶部）")
+    ap.add_argument("--version", default="", help="工作台版本号（如 0.2；不给就按 skill_version 的老口径）")
     a = ap.parse_args()
     if not a.upload_plan:
-        build(a.tag)
+        build(a.tag, notes=a.notes, version=a.version)
     upload_plan(a.tag)
     return 0
 

@@ -120,10 +120,10 @@ def gh_upload(host, rel, path, tok, log=print):
     for a in rel.get("assets") or []:
         if a.get("name") != name:
             continue
-        if a.get("size") == size:
-            # 大小一样就当是同一份，跳过（2026-09-22：重试整批时会先删同名再传，
-            # 既慢又会留下"少一件"的窗口；比一下大小就能省掉绝大部分重复上传）
-            log("      （%s 已经在远端且大小一致 → 跳过）" % name)
+        if a.get("size") == size and size > 1024 * 1024:
+            # **只有大件（>1MB）才按大小跳**（2026-09-22 补刀：version.json/SHA256SUMS 这类
+            # 文本"内容变了但字节数一样"，按大小跳会把改过的元数据错跳掉 → 面板永远读到旧的）
+            log("      （%s 已经在远端且大小一致（大件）→ 跳过）" % name)
             return
         _req("%s/repos/%s/%s/releases/assets/%s" % (host["api"], host["owner"], host["repo"], a["id"]),
              method="DELETE", tok=tok)
@@ -183,13 +183,19 @@ def gt_upload(host, rel, path, tok, log=print):
     name = os.path.basename(path)
     url = ("%s/repos/%s/%s/releases/%s/attach_files"
            % (host["api"], host["owner"], host["repo"], rel["id"]))
-    # Gitee 的同名附件是**再挂一个**（不像 GitHub 会覆盖）→ 先删掉同名的，免得新机下到旧包
+    # Gitee 的同名附件是**再挂一个**（不像 GitHub 会覆盖）→ 先删掉同名的，免得新机下到旧包。
+    # 大小一样就当同一份跳过（跟 GitHub 侧对齐：重试整批时别白传 271MB）
     for a in gt_attachments(host, rel["id"], tok):
-        if a.get("name") == name:
-            _req("%s/repos/%s/%s/releases/%s/attach_files/%s?access_token=%s"
-                 % (host["api"], host["owner"], host["repo"], rel["id"], a["id"], tok),
-                 method="DELETE")
-            log("      （先删掉同名的旧附件 %s，id=%s）" % (name, a.get("id")))
+        if a.get("name") != name:
+            continue
+        _sz = os.path.getsize(path)
+        if a.get("size") == _sz and _sz > 1024 * 1024:
+            log("      （%s 已在远端且大小一致（大件）→ 跳过）" % name)
+            return
+        _req("%s/repos/%s/%s/releases/%s/attach_files/%s?access_token=%s"
+             % (host["api"], host["owner"], host["repo"], rel["id"], a["id"], tok),
+             method="DELETE")
+        log("      （先删掉同名的旧附件 %s，id=%s）" % (name, a.get("id")))
     body, ctype = multipart({"access_token": tok}, [("file", path)])
     log("      （%.1f MB 上传中…）" % mb(path))
     code, txt = _req(url, method="POST", data=body, ctype=ctype, timeout=1800)
