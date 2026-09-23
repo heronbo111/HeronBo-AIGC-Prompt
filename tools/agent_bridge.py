@@ -988,6 +988,13 @@ def live_cache():
     return d if isinstance(d, dict) else {}
 
 
+# 否定缓存的"有效期"。只给**失败原因是运行态**的通道用：客户端没带调试端口起 → 一会儿就变，
+# 缓存挂着会让用户以为"永远接不通"（2026-09-23 实测：客户端已带端口在跑，界面上还写着"连不上"）。
+# 别的通道（装没装 CLI）不会几分钟内变，照旧缓存到用户主动重测。
+LIVE_NEG_TTL = {"doubaowork": 120}      # 秒
+_LAST_RECHECK = {}                       # key → 上次重检时间（别让轮询把自检跑成高频）
+
+
 def set_live(key, ok, why="", mode="version"):
     """记下这条通道的实测结果（成功/失败都记，界面靠它区分"未验证"与"真的不行"）。"""
     cfg = _local_cfg()
@@ -1177,6 +1184,17 @@ def list_agents():
     for key, a in ADAPTERS.items():
         ok, why = a["probe"]()
         lv = live.get(key) or {}
+        if lv and lv.get("ok") is False:
+            ttl = LIVE_NEG_TTL.get(key, 0)
+            if ttl and (time.time() - float(lv.get("at") or 0)) > ttl \
+                    and (time.time() - _LAST_RECHECK.get(key, 0)) > ttl:
+                # 这类通道的"不通"是**运行态**（客户端没带调试端口起），几分钟前的否定已经不作数：
+                # 用户把客户端重启好了、界面却还挂着"连不上"——2026-09-23 实测就是这么被误判的。
+                _LAST_RECHECK[key] = time.time()
+                ok2, why2 = quick_check(key)
+                if ok2 is not None:
+                    set_live(key, ok2, why2, "version")
+                    lv = {"ok": ok2, "why": why2, "at": time.time()}
         if lv and lv.get("ok") is False:
             rows.append({"key": key, "label": a["label"], "found": bool(ok), "ok": False,
                          "verified": False, "weak": False, "host": key in hosts,
@@ -1588,7 +1606,9 @@ def ask(prompt, session_id=None, cwd=None, timeout=DEFAULT_TIMEOUT,
                 if len(err_lines) > 400:
                     del err_lines[:-400]
                 if on_line and mode == "text":
-                    on_line(chr(183) + " " + line.strip()[:200])
+                    s = line.strip()
+                    # 桥脚本自己已经按 `· ` 打进度了，别再叠一层（否则界面上是「· · 已发送…」）
+                    on_line(s if s.startswith(chr(183)) else (chr(183) + " " + s[:200]))
         except Exception:                                        # noqa: BLE001
             pass
 

@@ -11,11 +11,11 @@
  * 干活链路：
  *   ① 连上 `doubaowork://doubaowork-chat/chat` 这个页面
  *   ② 找到输入框（自动发现 textarea / contenteditable，取"可见 + 靠下 + 最大"那个）
- *   ③ `Input.insertText` 灌入 prompt → 回车（不行再点发送按钮）
- *   ④ **结果从磁盘读**：豆包把每轮写进
- *      `<workspace>\.sessions\<会话id>\agents\<agentid>\system\trajectory.jsonl`
- *      （每行 `{"role":"user|assistant|tool","content":...,"tool_calls":...}`）
- *      → 读新行当进度（工具行形如 `Read "C:\...\文件"`），最后一条 assistant 正文当答复
+ *   ③ `Input.insertText` 灌入 prompt → 回车（不行再点发送按钮），用"界面上多出一条我说的话"确认发出
+ *   ④ **结果从界面读**（⚠️ 2026-09-23 实测更正）：这一版豆包工作**不往
+ *      `trajectory.jsonl` 写 assistant 行**（只写用户那条），所以答复只能从聊天区 DOM 取——
+ *      `[data-testid="receive_message"]` 的最后一条，出现"消耗 N 点"或连续数秒不再变长＝写完了。
+ *      轨迹文件仍读，但只当辅助（有些版本/模式下它会写工具调用）。
  *
  * ⚠️ 前提与边界：
  *   · 豆包工作**必须用调试端口启动**才能被接管；已经在跑（没有端口）时要先退出它。
@@ -45,6 +45,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
+import net from 'node:net';
 
 const argv = process.argv.slice(2);
 const action = argv[0] && !argv[0].startsWith('--') ? argv[0] : 'status';
@@ -79,22 +80,41 @@ const EXE_CANDIDATES = [
 ].filter(Boolean);
 const EXE = opt('exe') || EXE_CANDIDATES.find((p) => { try { return fs.existsSync(p); } catch { return false; } });
 
+const SESS_REL = ['.doubaowork', 'agent_mode', 'workspace', '.sessions'];
+
 function sessionsRoot() {
   const env = opt('sessions') || process.env.HERONBO_DOUBAO_SESSIONS;
   if (env) return env;
   const la = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
   const ud = path.join(la, 'DoubaoWork', 'User Data');
-  const rel = ['.doubaowork', 'agent_mode', 'workspace', '.sessions'];
   const cands = [];
-  // **先把每个 profile 目录都试一遍**（换机/企业版/多开时它不一定叫 Default）
+  // **每个 profile 目录都试一遍**（换机/企业版/多开时它不一定叫 Default）
   try {
-    for (const d of fs.readdirSync(ud)) cands.push(path.join(ud, d, ...rel));
+    for (const d of fs.readdirSync(ud)) cands.push(path.join(ud, d, ...SESS_REL));
   } catch {}
-  cands.push(path.join(ud, 'Default', ...rel));
-  for (const c of cands) { try { if (fs.existsSync(c)) return c; } catch {} }
-  return cands[cands.length - 1];
+  cands.push(path.join(ud, 'Default', ...SESS_REL));
+  const live = cands.filter((c) => { try { return fs.existsSync(c); } catch { return false; } });
+  // ⚠️ 不能"取第一个存在的"：目录按字母序 Default 在前，但**真正在用的往往是 Profile 2**
+  // （2026-09-23 实测：Default 里躺着 9 月 2 日的旧会话，新会话全在 Profile 2 → 取答复永远取空）。
+  // 判定标准＝哪个 profile 的轨迹文件最新。
+  let best = '', bestMs = -1;
+  for (const c of live) {
+    const t = newestTrajectoryIn(c);
+    if (t && t.mtimeMs > bestMs) { bestMs = t.mtimeMs; best = c; }
+  }
+  return best || live[0] || cands[cands.length - 1];
 }
-const SESSIONS = sessionsRoot();
+/** 给定会话 id，找出哪个 profile 下真有它（用于"当前这段对话"精确定位） */
+function sessionDirFor(sid) {
+  if (!sid) return null;
+  const la = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+  const ud = path.join(la, 'DoubaoWork', 'User Data');
+  const cands = [];
+  try { for (const d of fs.readdirSync(ud)) cands.push(path.join(ud, d, ...SESS_REL, String(sid))); } catch {}
+  for (const c of cands) { try { if (fs.existsSync(c)) return c; } catch {} }
+  return null;
+}
+let SESSIONS = sessionsRoot();
 
 // ---------- 基础工具 ----------
 function getJson(p) {
@@ -210,6 +230,30 @@ const CLICK_SEND = `(() => {
   return true;
 })()`;
 
+/** 聊天区快照：消息条数 + 最后一条问答 + "它写完了没"。
+ *  ⚠️ 这一版豆包工作**不往 trajectory.jsonl 写 assistant 行**（只写用户那条），
+ *  所以答复只能从界面读——2026-09-23 实测确认（界面上有"好。"，文件里没有）。 */
+const MSG_STATE = `(() => {
+  const rows = (sel) => [...document.querySelectorAll(sel)];
+  const txt = (el) => {
+    const c = el.querySelector('[data-testid="message_text_content"]') || el;
+    return String(c.innerText || '').trim();
+  };
+  const sends = rows('[data-testid="send_message"]');
+  const recvs = rows('[data-testid="receive_message"]');
+  const lastRecvEl = recvs.length ? recvs[recvs.length - 1] : null;
+  const bar = lastRecvEl ? String(lastRecvEl.innerText || '') : '';
+  return {
+    sends: sends.length,
+    recvs: recvs.length,
+    lastSend: sends.length ? txt(sends[sends.length - 1]) : '',
+    lastRecv: lastRecvEl ? txt(lastRecvEl) : '',
+    done: /消耗\\s*[\\d.]+\\s*点/.test(bar),
+    busy: /停止生成|生成中|正在生成|思考中|请稍候/.test(bar),
+  };
+})()`;
+const PAGE_SID = `(() => { const m = location.href.match(/chat\\/(\\d+)/); return m ? m[1] : ''; })()`;
+
 async function pickChatTarget() {
   const list = await getJson('/json/list');
   if (!Array.isArray(list)) return null;
@@ -229,7 +273,7 @@ function stateWrite(d) {
 /** 端口占用探测：能 listen 就说明空闲，立刻关掉把口还回去 */
 function portFree(port) {
   return new Promise((resolve) => {
-    const srv = require('node:net').createServer();
+    const srv = net.createServer();
     srv.once('error', () => resolve(false));
     srv.once('listening', () => srv.close(() => resolve(true)));
     srv.listen(port, '127.0.0.1');
@@ -286,7 +330,7 @@ async function ensureAttached({ launch = true } = {}) {
 }
 
 // ---------- 会话轨迹（结果与进度的真源） ----------
-function newestTrajectory() {
+function newestTrajectoryIn(root) {
   let best = null;
   const walk = (dir, depth) => {
     let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
@@ -299,9 +343,10 @@ function newestTrajectory() {
       }
     }
   };
-  walk(SESSIONS, 0);
+  walk(root, 0);
   return best;
 }
+function newestTrajectory() { return newestTrajectoryIn(SESSIONS); }
 function readLines(file, fromByte) {
   let fd; try { fd = fs.openSync(file, 'r'); } catch { return { lines: [], size: 0 }; }
   try {
@@ -399,7 +444,6 @@ async function actAsk() {
   if (!at.ok) { log('✗ ' + at.why); return at.code || 2; }
 
   const t0 = Date.now();
-  const before = newestTrajectory();
   const t = await pickChatTarget();
   if (!t) { log('✗ 没有可用的页面目标'); return 5; }
   step('接管页面：' + clip(t.title, 40));
@@ -407,14 +451,26 @@ async function actAsk() {
   const cdp = new Cdp(t.webSocketDebuggerUrl);
   await cdp.connect();
   let answer = '';
+  let sid = '';
   try {
     await cdp.send('Runtime.enable');
     await cdp.send('Page.enable').catch(() => {});
     await cdp.send('Page.bringToFront').catch(() => {});
 
+    // 认准"当前这段对话"落哪个 profile（多 profile 时 Default 常是旧壳）
+    sid = String(await cdp.evalJs(PAGE_SID) || '');
+    const sd = sessionDirFor(sid);
+    if (sd) {
+      const root = path.dirname(sd);                 // <…>\workspace\.sessions
+      if (root && root !== SESSIONS) { SESSIONS = root; step('会话目录：' + clip(root, 80)); }
+    }
+
     const foc = await cdp.evalJs(FOCUS_COMPOSER);
     if (!foc) { log('✗ 没找到输入框（可能停在登录页/主页——先在豆包工作里进到对话页再试）'); return 5; }
     step('输入框：<' + foc.tag + '> ' + clip(foc.cls, 40));
+
+    const st0 = await cdp.evalJs(MSG_STATE) || { sends: 0, recvs: 0 };
+    const before = newestTrajectory();
 
     await cdp.send('Input.insertText', { text: prompt }, 30000);
     await sleep(300);
@@ -433,71 +489,79 @@ async function actAsk() {
     step('已填入 ' + String(typed || '').length + ' 字');
     if (!String(typed || '').trim()) { log('✗ 文字塞不进输入框'); return 5; }
 
-    // 提交：回车 → 6 秒后看输入框是否清空 → 没清就点发送按钮
+    // 提交：回车 → 轮询"界面上多出一条我说的话"（输入框清空只是弱证据，别单看它）
     const key = (type) => cdp.send('Input.dispatchKeyEvent',
       { type, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, text: type === 'char' ? '\r' : undefined });
+    const marker = String(prompt).trim().replace(/\s+/g, ' ').slice(0, 24);
+    const mineIn = (s) => !!s && String(s.lastSend || '').replace(/\s+/g, ' ').includes(marker.slice(0, 12));
     await key('keyDown'); await key('char'); await key('keyUp');
     let sent = false;
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 8; i++) {
       await sleep(1000);
-      const now = String(await cdp.evalJs(COMPOSER_TEXT) || '').trim();
-      if (!now) { sent = true; break; }
+      const s = await cdp.evalJs(MSG_STATE);
+      if (s && ((s.sends || 0) > (st0.sends || 0) || mineIn(s))) { sent = true; break; }
     }
     if (!sent) {
       step('回车没提交，改点发送按钮');
       const clicked = await cdp.evalJs(CLICK_SEND);
-      if (clicked) { await sleep(1500); sent = String(await cdp.evalJs(COMPOSER_TEXT) || '').trim() === ''; }
+      if (clicked) {
+        for (let i = 0; i < 8; i++) {
+          await sleep(1000);
+          const s = await cdp.evalJs(MSG_STATE);
+          if (s && ((s.sends || 0) > (st0.sends || 0) || mineIn(s))) { sent = true; break; }
+        }
+      }
     }
     if (!sent) { log('✗ 没能把消息发出去（没找到发送按钮，或页面变了）'); return 5; }
-    step('已发送，开始等它干活…');
+    step('已发送，等它答复…');
 
-    // 等轨迹文件出现新内容：先等"新文件/新行出现"，再流式读
-    const marker = String(prompt).trim().slice(0, 30);
-    let cur = before ? before.path : null;
-    let offset = before ? before.size : 0;
-    let lastGrow = Date.now();
-    let sawMine = false;
+    // 取答复：**以界面为准**（这一版不写 trajectory 的 assistant 行）。
+    // 判定写完：出现"消耗 N 点"标记，或文本连续 4 秒不再变长。
+    const baseRecv = st0.recvs || 0;
+    const STABLE_MS = Math.min(6000, Math.max(2500, (IDLE || 8) * 400));   // --idle 调的是这个"静了多久算写完"
+    let last = '';
+    let lastGrow = 0;      // 首次拿到答复文本的时刻（0＝还没拿到）
+    let lastProgress = 0;
     while (Date.now() - t0 < TIMEOUT * 1000) {
-      await sleep(1500);
-      const newest = newestTrajectory();
-      if (newest && newest.path !== cur) {           // 开了新会话
-        cur = newest.path; offset = 0;
-        if (!sawMine) step('新会话：' + path.basename(path.dirname(path.dirname(path.dirname(cur)))));
-      }
-      if (!cur) continue;
-      const { lines, size } = readLines(cur, offset);
-      if (size > offset) { offset = size; lastGrow = Date.now(); }
-      for (const ln of lines) {
-        let o; try { o = JSON.parse(ln); } catch { continue; }
-        if (o.role === 'user') {
-          if (!sawMine && String(o.content || '').includes(marker)) {
-            sawMine = true;
-            step('它收到指令了，开始干');
-          }
-          continue;
-        }
-        const p = progressOf(o);
-        if (p) step(p);
-        if (o.role === 'assistant' && String(o.content || '').trim()) {
-          const txt = stripRenderBlock(o.content);
-          if (txt) answer = txt;
+      await sleep(1200);
+      let s = null;
+      try { s = await cdp.evalJs(MSG_STATE); } catch { /* 页面重绘时偶发，下一轮再读 */ }
+      if (!s) continue;
+      const got = (s.recvs || 0) > baseRecv ? String(s.lastRecv || '') : '';
+      if (got && !last) step('它开始答了');
+      if (got && got !== last) {
+        last = got;
+        if (!lastGrow) lastGrow = Date.now();
+        if (got.length - lastProgress >= 150) {      // 别刷屏：每长 150 字报一次
+          lastProgress = got.length;
+          step('正在写…（' + got.length + ' 字）');
         }
       }
-      if (sawMine && answer && Date.now() - lastGrow > IDLE * 1000) break;
+      if (got && got === last && lastGrow && Date.now() - lastGrow > STABLE_MS) break;  // 静了＝写完
+      if (got && s.done) break;                                                         // "消耗 N 点"＝写完
     }
+    if (last) answer = stripRenderBlock(String(last).replace(/^消耗\s*[\d.]+\s*点\s*/m, ''));
   } finally { cdp.close(); }
 
   if (!answer) { log('✗ 到时间没拿到答复（看上面的进度判断它卡在哪一步）'); return 4; }
-  const sid = cur ? path.basename(path.dirname(path.dirname(path.dirname(cur)))) : '';
   if (sid) log('· 会话 ' + sid);
-  step('答完了（用时 %ds）', Math.round((Date.now() - t0) / 1000));
+  const late = Date.now() - t0 >= TIMEOUT * 1000;
+  step(late ? '答复可能还没写完（已超时，先取现有的）'
+            : '答完了（用时 ' + Math.round((Date.now() - t0) / 1000) + 's）');
   process.stdout.write(answer + '\n');             // stdout = 纯答复（工作台 text 模式直接取它）
   return 0;
 }
 
 function killApp() {
-  step('正在温和结束豆包工作（你会话里的历史都在，只是进程重启）');
-  try { execSync('taskkill /IM DoubaoWork.exe /T', { stdio: 'ignore' }); } catch {}
+  // ⚠️ 必须 **/F 强制 + 等到进程数归零**：只发关闭请求时单实例锁还在，
+  // 再拉起来的新进程会被合并到旧实例上 → 调试端口根本不会开（2026-09-23 实测踩到）。
+  step('正在结束豆包工作（你会话里的历史都在，只是进程重启）');
+  try { execSync('taskkill /IM DoubaoWork.exe /F /T', { stdio: 'ignore' }); } catch {}
+  for (let i = 0; i < 20; i++) {
+    if (!doubaoRunning()) return true;
+    execSync('cmd /c ping -n 2 127.0.0.1 >nul', { stdio: 'ignore' });
+  }
+  return !doubaoRunning();
 }
 
 async function main() {
@@ -513,8 +577,9 @@ async function main() {
   }
   if (action === 'restart') {
     if (!has('yes')) { log('✗ restart 会关掉你正在用的豆包工作，要显式加 --yes'); return 2; }
-    killApp();
-    for (let i = 0; i < 20 && doubaoRunning(); i++) await sleep(1000);
+    const gone = killApp();
+    if (!gone) { log('✗ 等了 40 秒它还在跑（可能被别的进程看护着）——手动退出它再试'); return 3; }
+    step('已完全退出，正在带端口重起…');
     const r = await launchApp();
     log(r.ok ? '· 已用调试端口重启（端口 ' + PORT + '）' : '✗ ' + r.why);
     return r.ok ? 0 : 2;

@@ -115,8 +115,6 @@ python tools/发布exe附件.py                   # 把大件/exe 发到 Release
 
 | agent | 文件范围 | 开始时间 |
 |---|---|---|
-| ZCode | **界面二选一改造**（用户 2026-09-22 指派）：只动 workbench/index.html、workbench/app.js、workbench/shell.js —— ① 界面三选里移除「经典界面」按钮（用户点过它就「弹回网页端、切不回来」，走他给的兜底：只留流程台＋极简）②「工作台界面」改名「流程台界面」③ 清掉各窗口里没必要的小字。**不碰** workbench_server.py / score_gui.pyw / 版本.py / 更新助手.py（DSH 在改）。**已完成**：exe 已换位重开、浏览器 DOM 断言 11 项全过（17:5x）。**第二轮（18:1x 起，同人）**：①流程台界面＝左侧流程指挥台（openBoard 覆盖层）②更新面板改常见样式（删回滚/meta 小字）③@ 规范化 → 改 `references/rules.md` 第 58 条与 `tools/提示词体检.py`（**这两个是公仓文件，DSH 别动**）；workbench_server.py 只加 /api/update/pull 一个端点；版本.py 修了 repo_behind 无 origin（gitee 优先）与 skill_root 打包后找不到根；另修 打包换位/打包发行/发布附件 三个脚本的顺序与跳过护栏。**已完成**：面板 DOM 断言 9/9 + 圆点/拉取护栏/板子开合全过、60s 稳定，发行件 v0.2 两端已传并核对一致（exe=62e3fd20…） | 2026-09-22 14:35 |
-| ZCode | **安装提速线**（用户 2026-09-22 指派）：**已完成并提交 `4ceceef`（已推 GitHub；Gitee 待 README 那 2 个提交合流后再推）**。新增 `tools/下载器.py`、`tools/能力包.py`、`tools/打包发行.py`、`tools/发布发行附件.py`；`tools/部署.py` 里加了三处钩子（`_download_any` 转发多源续传、`vendor --fetch` 能力包参数、`exe_refresh_needed` 改比 sha256）；发行 tag 换到 `vendor-2026-09-22`（Gitee 8 件已验、GitHub 补齐中）。⚠️ **DSH：你这轮也在改 部署.py / 安装向导.py**，保存 部署.py 前请 `git status` 看一眼，别把上面那三处钩子整文件覆盖掉（钩子没了 = 安装退回"无续传、默认拉 300MB"的老逻辑） | 2026-09-22 12:25 |
 | DSH（WorkBuddy） | 「ZCode 交班清单」收尾（已完成：`references/paths.md`、`references/samples-db.md`、`tools/联调说明.md`、`README.md`、`.gitignore`）＋ **版本＝一套完整快照（rules 71）**。**已改完、未提交、未推**：`references/rules.md`（新增第 71 条 + 索引）、`CHANGELOG.md`(v2.9)、`SKILL.md`(2.9)、`tools/project_core.py`（骨架加 `current`/`versions`）、私有工作台的 `tools/workbench_server.py` / `workbench/app.js` / `workbench/index.html` / `workbench/app.css`。**去冗已收口**：`workbench_server.py` 全量字面量替换经评估风险大于收益（3909 行、ZCode 也在改），只做口径一致性修复（4 处），不再做常量化 | 2026-09-21 16:40 |
 
 ## 分工建议（减少撞车）

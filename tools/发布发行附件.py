@@ -98,12 +98,21 @@ def _json(txt):
     return d if isinstance(d, dict) else None
 
 
-def gh_release(host, tag, body, tok, dry=False):
+def gh_release(host, tag, body, tok, dry=False, recreate=False):
     url = "%s/repos/%s/%s/releases" % (host["api"], host["owner"], host["repo"])
     code, txt = _req("%s/tags/%s" % (url, tag), tok=tok)
     rel = _json(txt) if code == 200 else None
     if rel and rel.get("id"):
-        return rel
+        if not recreate:
+            return rel
+        # 重建（2026-09-23 加）：GitHub 上会撞上一种怪状态——同名附件**既传不上（422 already_exists）
+        # 又删不掉（DELETE → 404，哪怕 token 是 admin）**，于是 version.json / exe 永远停在旧版。
+        # 这时唯一的路是**整套删掉重建**（tag 会留着；代价是全部附件得重传一遍）。
+        code, out = _req("%s/%s" % (url, rel["id"]), method="DELETE", tok=tok)
+        if code not in (200, 204):
+            raise SystemExit("GitHub 删发行版失败（%s）：%s" % (code, out[:200]))
+        print("   （已删掉旧发行版 %s，重新建一个；附件要全量重传）" % tag)
+        rel = None
     if dry:
         return {"id": None, "assets": [], "_would_create": True}
     payload = json.dumps({"tag_name": tag, "name": tag, "body": body,
@@ -125,8 +134,12 @@ def gh_upload(host, rel, path, tok, log=print):
             # 文本"内容变了但字节数一样"，按大小跳会把改过的元数据错跳掉 → 面板永远读到旧的）
             log("      （%s 已经在远端且大小一致（大件）→ 跳过）" % name)
             return
-        _req("%s/repos/%s/%s/releases/assets/%s" % (host["api"], host["owner"], host["repo"], a["id"]),
-             method="DELETE", tok=tok)
+        code, out = _req("%s/repos/%s/%s/releases/assets/%s" % (host["api"], host["owner"], host["repo"], a["id"]),
+                         method="DELETE", tok=tok)
+        if code not in (200, 204):
+            # 删不掉同名旧附件 → 后面的上传必然 422 already_exists。GitHub 上出现过这种状态
+            # （token 是 admin、DELETE 却 404，2026-09-23 实测），只能整套重建：--recreate。
+            log("      [!!] 删不掉远端同名旧附件 %s（%s）→ 加 --recreate 重建发行版" % (name, code))
     url = ("https://uploads.github.com/repos/%s/%s/releases/%s/assets?name=%s"
            % (host["owner"], host["repo"], rel["id"], urllib.parse.quote(name)))
     data = open(path, "rb").read()
@@ -226,7 +239,7 @@ def main():
     ap.add_argument("--drop", default="",
                     help="（Gitee 上删不动单个附件，见 gt_release 注释）")
     ap.add_argument("--recreate", action="store_true",
-                    help="Gitee 重传时先把发行版整个删掉重建（避免新旧附件并存）")
+                    help="重传时先把发行版整个删掉重建（Gitee 一直这样；GitHub 也用得上——见下面那条注释）")
     a = ap.parse_args()
     d = a.dir or os.path.join(HERE, "_release", a.tag)
     if not os.path.isdir(d):
@@ -250,8 +263,7 @@ def main():
         if not tok:
             print("   !! 拿不到凭据（git credential fill 没给 %s 的 token）→ 跳过" % host["host"])
             continue
-        rel = rel_fn(host, a.tag, body, tok, dry=a.dry,
-                     recreate=a.recreate) if key == "gitee" else rel_fn(host, a.tag, body, tok, dry=a.dry)
+        rel = rel_fn(host, a.tag, body, tok, dry=a.dry, recreate=a.recreate)
         if rel.get("_would_create"):
             print("   会新建发行版 %s；现有附件 %d 个" % (a.tag, len(rel.get("assets") or [])))
         else:

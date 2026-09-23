@@ -40,7 +40,10 @@ AI 视频提示词生成 + 成片六维评价工具。把「文案/台词 + 素�
 | Codex CLI | `C:\Users\你的用户名\.codex\skills\HeronBo-AIGC-Prompt\` |
 | DeepSeek Harness（DSH） | `C:\Users\你的用户名\.dsh\skills\HeronBo-AIGC-Prompt\` |
 | 豆包（个人版） | `C:\Users\你的用户名\Doubao\skills\HeronBo-AIGC-Prompt\` |
-| 豆包工作（企业版） | `%LOCALAPPDATA%\DoubaoWork\User Data\Default\.doubaowork\agent_mode\workspace\.user_skills\HeronBo-AIGC-Prompt\` |
+| 豆包工作（企业版） | `%LOCALAPPDATA%\DoubaoWork\User Data\<profile>\.doubaowork\agent_mode\workspace\.user_skills\HeronBo-AIGC-Prompt\` |
+
+> 豆包家两个客户端**都可能有多份 profile**（`Default` / `Profile 2` …），**真在用的那个不一定叫 `Default`**
+> ——`Default` 里可能只是几周前的空壳。所以技能目录这里写 `<profile>` 占位，工作台侧是带通配去找的。
 
 ### 安装向导：先问你装哪（2026-09-22 起）
 

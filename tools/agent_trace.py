@@ -16,20 +16,26 @@
     claude     ~/.claude/projects/**/*.jsonl            fmt=claude
     codex      ~/.codex/sessions/**/*.jsonl             fmt=auto（抽检通过才启用）
     gemini     ~/.gemini/tmp/**/*.jsonl                 fmt=auto
-    doubao     ~/.doubao/**/*.jsonl                     fmt=auto
+    doubao     豆包（个人版） %LOCALAPPDATA%/Doubao/User Data/*/.doubao/agent_mode/workspace/.sessions
+    doubaowork 豆包工作（企业版） %LOCALAPPDATA%/DoubaoWork/User Data/*/.doubaowork/…/.sessions
+               —— 两者 glob=trajectory.jsonl（每轮一行 {role,content,tool_calls}）。
+               ⚠️ 2026-09-23 实测：**这一版豆包工作不往轨迹写 assistant 行**（只写用户那条），
+               答复只在界面里；轨迹通道对它的价值＝"指令已送达"级别的进度，答复靠 doubao_cdp.mjs 读 DOM。
 
 **换机器 / 换工具不用改代码**：在本机写一份 `agent_channels.local.json` 指路
 （放在 exe 旁边、或 `~/.heronbo/agent_channels.json`，或用环境变量
 HERONBO_AGENT_CHANNELS 指向它）：
 
     {"channels": [
-       {"key": "doubao", "label": "豆包工作", "dir": "~/.doubao/sessions",
+       {"key": "doubao", "label": "豆包", "dir": "~/.doubao/sessions",
         "glob": "*.jsonl", "recursive": true, "fmt": "auto"}
      ],
      "exclude": ["claude"]}
 
 fmt 取值：auto（按结构猜，推荐）/ zcode / workbuddy / claude。
-dir 支持 ~ 与 {USERPROFILE} 占位；同 key 覆盖内置；exclude 停用内置。
+dir 支持 ~ 与 {USERPROFILE} 占位，**也支持 `*` 通配**（多 profile 的客户端：真在用的常常不是 Default，
+2026-09-23 实测豆包工作的活会话在 `Profile 2`，Default 里是几周前的空壳）；
+同 key 覆盖内置；exclude 停用内置。
 
 ⚠️ 猜测型通道（fmt=auto）要「抽最新正文尾部若干行，真能解析出事件」才启用，
 免得把机器上无关的 .jsonl 当过程流显示出来。
@@ -85,14 +91,16 @@ BUILTIN_CHANNELS = [
     {"key": "gemini", "label": "Gemini CLI", "dir": _h(".gemini", "tmp"),
      "glob": "*.jsonl", "recursive": True, "fmt": "auto"},
     {"key": "doubao", "label": "豆包", "dir": _h("AppData", "Local", "Doubao", "User Data",
-                                                "Default", ".doubao", "agent_mode", "workspace",
+                                                "*", ".doubao", "agent_mode", "workspace",
                                                 ".sessions"),
      "glob": "trajectory.jsonl", "recursive": True, "fmt": "doubao"},
     # 2026-09-23 修：原来这条指向 `~/.doubao`（**本机根本没这个目录**，一条正文都读不到），
-    # 本体其实是桌面端的 Electron profile：`%LOCALAPPDATA%\<应用>\User Data\Default\.<名>\...`。
+    # 本体其实是桌面端的 Electron profile：`%LOCALAPPDATA%\<应用>\User Data\<profile>\.<名>\...`。
     # 顺带补上「豆包工作」（企业版那支，目录名 `.doubaowork`）——用户 2026-09-23："企业统一要求采用豆包工作"。
+    # ⚠️ profile 段用 `*` 通配：真在用的 profile **不叫 Default**（本机是 `Profile 2`，
+    # Default 里躺的是几周前的空壳会话，写死 Default 等于读不到任何新内容）。
     {"key": "doubaowork", "label": "豆包工作", "dir": _h("AppData", "Local", "DoubaoWork", "User Data",
-                                                        "Default", ".doubaowork", "agent_mode",
+                                                        "*", ".doubaowork", "agent_mode",
                                                         "workspace", ".sessions"),
      "glob": "trajectory.jsonl", "recursive": True, "fmt": "doubao"},
 ]
@@ -176,31 +184,69 @@ def load_channels():
     return chans
 
 
+def _dirs_matching(d):
+    """dir 里带 `*` / `?` 时展开成真实目录列表（逐段通配）。
+
+    为什么需要：有些客户端多 profile（真在用的 profile 不叫 Default），
+    写死一个名字就会指到空壳目录上——2026-09-23 实测豆包工作踩过。
+    """
+    d = str(d or "")
+    if not d:
+        return []
+    if "*" not in d and "?" not in d:
+        return [d] if os.path.isdir(d) else []
+    segs = [s for s in re.split(r"[\\/]+", d) if s]
+    if not segs:
+        return []
+    if re.match(r"^[A-Za-z]:$", segs[0]):
+        cur, rest = [segs[0] + os.sep], segs[1:]
+    elif d.startswith(("/", "\\")):
+        cur, rest = [os.sep], segs
+    else:
+        cur, rest = [""], segs
+    for s in rest:
+        nxt = []
+        for c in cur:
+            if "*" in s or "?" in s:
+                nxt += [p for p in glob.glob(os.path.join(c, s)) if os.path.isdir(p)]
+            else:
+                p = os.path.join(c, s)
+                if os.path.isdir(p):
+                    nxt.append(p)
+        cur = nxt
+        if not cur:
+            break
+    return cur
+
+
 def _files_in(ch):
     """这个通道下所有候选正文文件。递归时限制深度，免得在大目录里乱走。"""
     d = _expand(ch.get("dir"))
-    if not d or not os.path.isdir(d):
+    dirs = _dirs_matching(d)
+    if not dirs:
         return []
     pat = ch.get("glob") or "*.jsonl"
-    if not ch.get("recursive"):
-        try:
-            return [f for f in glob.glob(os.path.join(d, pat)) if os.path.isfile(f)]
-        except OSError:
-            return []
     out = []
-    try:
-        base = d.rstrip("\\/").count(os.sep)
-        for root, dirs, files in os.walk(d):
-            depth = root.rstrip("\\/").count(os.sep) - base
-            if depth >= 4:
-                dirs[:] = []
-            for fn in files:
-                if fnmatch.fnmatch(fn, pat):
-                    out.append(os.path.join(root, fn))
-                    if len(out) >= 4000:
-                        return out
-    except OSError:
-        return out
+    for d in dirs:
+        if not ch.get("recursive"):
+            try:
+                out += [f for f in glob.glob(os.path.join(d, pat)) if os.path.isfile(f)]
+            except OSError:
+                pass
+            continue
+        try:
+            base = d.rstrip("\\/").count(os.sep)
+            for root, dirs2, files in os.walk(d):
+                depth = root.rstrip("\\/").count(os.sep) - base
+                if depth >= 4:
+                    dirs2[:] = []
+                for fn in files:
+                    if fnmatch.fnmatch(fn, pat):
+                        out.append(os.path.join(root, fn))
+                        if len(out) >= 4000:
+                            return out
+        except OSError:
+            continue
     return out
 
 
