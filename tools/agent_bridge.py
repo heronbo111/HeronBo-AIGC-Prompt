@@ -402,9 +402,15 @@ def doubaowork_exe():
             os.path.join(os.environ.get("ProgramFiles(x86)", ""), "DoubaoWork", "app", "DoubaoWork.exe"),
             os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "DoubaoWork", "app", "DoubaoWork.exe"),
             os.path.join(os.environ.get("LOCALAPPDATA", ""), "DoubaoWork", "app", "DoubaoWork.exe")]
+    pats.append(os.path.join(os.environ.get("LOCALAPPDATA", ""), "DoubaoWork", "DoubaoWork.exe"))
+    pats.append(os.path.join(os.environ.get("APPDATA", ""), "DoubaoWork", "app", "DoubaoWork.exe"))
     for r in _app_roots():
         pats.append(os.path.join(r, "DoubaoWork", "app", "DoubaoWork.exe"))
         pats.append(os.path.join(r, "DoubaoWork", "DoubaoWork.exe"))
+    # **换台机器也认**：各盘 + 常见安装父目录下逐层通配（含"多套一层目录"的形状）
+    pats += _glob_in_roots(("DoubaoWork", "app", "DoubaoWork.exe"))
+    for r in _app_roots():
+        pats.append(os.path.join(r, "*", "DoubaoWork", "app", "DoubaoWork.exe"))
     return _glob_first(pats)
 
 
@@ -666,9 +672,14 @@ def host_agents():
     name = skill_name()
     out = []
     home = os.path.expanduser("~")
+    import glob as _glob
     for key, parts in HOMES.items():
+        # 路径段里允许 `*`（豆包工作的用户数据目录在换机后不一定叫 Default）→ 通配一层
         p = os.path.join(home, *parts, name)
-        if os.path.exists(p):
+        if any("*" in str(x) for x in parts):
+            if _glob.glob(p):
+                out.append(key)
+        elif os.path.exists(p):
             out.append(key)
     return out
 
@@ -849,9 +860,15 @@ ADAPTERS = {
     # 个人版豆包同款结构（目录名 `.doubao`），需要时把它也照这形状加一条即可。
     "doubaowork": {"label": "豆包工作", "probe": _probe_doubaowork,
                    "proc": ["DoubaoWork.exe"],
-                   "transcripts": [("AppData", "Local", "DoubaoWork", "User Data", "Default",
-                                    ".doubaowork", "agent_mode", "workspace", ".sessions",
-                                    "{sid}", "agents", "*", "system", "trajectory.jsonl")]},
+                   "transcripts": [
+                       # 两条都留着：`*` 那条是"换台机器也认"的关键——企业版/多开时
+                       # 用户数据目录不一定叫 Default（2026-09-23 改成通配 + 兜底 Default）
+                       ("AppData", "Local", "DoubaoWork", "User Data", "*", ".doubaowork",
+                        "agent_mode", "workspace", ".sessions", "{sid}", "agents", "*",
+                        "system", "trajectory.jsonl"),
+                       ("AppData", "Local", "DoubaoWork", "User Data", "Default", ".doubaowork",
+                        "agent_mode", "workspace", ".sessions", "{sid}", "agents", "*",
+                        "system", "trajectory.jsonl")]},
     # 这两个先留探测位：ZCode / DSH 目前没在安装目录暴露无头 CLI。
     # 找得到就把命令写进 agent_bridge.local.json 的 cmd 字段（见 pick_agent 的说明）。
     # ZCode：桌面端主进程参数里没有无头入口，但**安装目录里自带 CLI**（resources/glm/zcode.cjs），
@@ -1292,7 +1309,11 @@ def build_cmd_for(key, prompt, session_id=None, cwd=None, permission_mode=None,
                 f.write(prompt)
         except OSError as e:
             return ["cmd", "/c", "echo 写不了临时 prompt 文件：%s 1>&2 & exit 9" % e], "text"
-        return [runner, js, "ask", "--prompt-file", pf], "text"
+        cmd = [runner, js, "ask", "--prompt-file", pf]
+        exe = doubaowork_exe()                 # 桥自己也找，但这边找到的就明确告诉它（换机不乱猜）
+        if exe:
+            cmd += ["--exe", exe]
+        return cmd, "text"
     return build_cmd(prompt, session_id=session_id, permission_mode=permission_mode or "acceptEdits",
                      tools=tools, output_format="stream-json", extra=extra), "workbuddy-json"
 

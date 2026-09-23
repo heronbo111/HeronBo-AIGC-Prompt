@@ -56,7 +56,10 @@ const has = (n) => argv.includes('--' + n);
 const log = (...a) => console.error(...a);          // 进度一律走 stderr（工作台把 `· ` 行当动作流）
 const step = (...a) => log('· ' + a.map((x) => String(x)).join(' '));
 
-const PORT = Number(opt('port', process.env.HERONBO_DOUBAO_PORT || 9333));
+const PORT_ENV = opt('port', process.env.HERONBO_DOUBAO_PORT || '');
+let PORT = Number(PORT_ENV || 9333);            // 可能在 ensureAttached 里被改成别的空闲口
+const PORT_RANGE = 12;                           // 往后再试这么多个口（别的机器上 9333 可能被占）
+const STATE_FILE = path.join(os.tmpdir(), 'heronbo_doubao_cdp.json');
 const IDLE = Number(opt('idle', 8));
 const TIMEOUT = Number(opt('timeout', 600));
 const NO_LAUNCH = has('no-launch');
@@ -69,6 +72,10 @@ const EXE_CANDIDATES = [
   'F:\\DoubaoWork\\app\\DoubaoWork.exe',
   path.join(process.env['ProgramFiles'] || 'C:\\Program Files', 'DoubaoWork', 'app', 'DoubaoWork.exe'),
   path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'DoubaoWork', 'app', 'DoubaoWork.exe'),
+  path.join(os.homedir(), 'AppData', 'Local', 'DoubaoWork', 'app', 'DoubaoWork.exe'),
+  path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'DoubaoWork', 'DoubaoWork.exe'),
+  path.join(os.homedir(), 'AppData', 'Roaming', 'DoubaoWork', 'app', 'DoubaoWork.exe'),
+  'C:\Program Files\DoubaoWork\app\DoubaoWork.exe',
 ].filter(Boolean);
 const EXE = opt('exe') || EXE_CANDIDATES.find((p) => { try { return fs.existsSync(p); } catch { return false; } });
 
@@ -76,8 +83,16 @@ function sessionsRoot() {
   const env = opt('sessions') || process.env.HERONBO_DOUBAO_SESSIONS;
   if (env) return env;
   const la = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
-  return path.join(la, 'DoubaoWork', 'User Data', 'Default', '.doubaowork',
-                   'agent_mode', 'workspace', '.sessions');
+  const ud = path.join(la, 'DoubaoWork', 'User Data');
+  const rel = ['.doubaowork', 'agent_mode', 'workspace', '.sessions'];
+  const cands = [];
+  // **先把每个 profile 目录都试一遍**（换机/企业版/多开时它不一定叫 Default）
+  try {
+    for (const d of fs.readdirSync(ud)) cands.push(path.join(ud, d, ...rel));
+  } catch {}
+  cands.push(path.join(ud, 'Default', ...rel));
+  for (const c of cands) { try { if (fs.existsSync(c)) return c; } catch {} }
+  return cands[cands.length - 1];
 }
 const SESSIONS = sessionsRoot();
 
@@ -205,8 +220,46 @@ async function pickChatTarget() {
   return chat || null;
 }
 
+function stateRead() {
+  try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch { return {}; }
+}
+function stateWrite(d) {
+  try { fs.writeFileSync(STATE_FILE, JSON.stringify(d, null, 1)); } catch {}
+}
+/** 端口占用探测：能 listen 就说明空闲，立刻关掉把口还回去 */
+function portFree(port) {
+  return new Promise((resolve) => {
+    const srv = require('node:net').createServer();
+    srv.once('error', () => resolve(false));
+    srv.once('listening', () => srv.close(() => resolve(true)));
+    srv.listen(port, '127.0.0.1');
+  });
+}
+async function pickPort() {
+  if (PORT_ENV) return Number(PORT_ENV);
+  for (let i = 0; i < PORT_RANGE; i++) {
+    const p = 9333 + i;
+    if (await portFree(p)) return p;
+  }
+  return 9333;
+}
+/** 这台机器上现在有没有"能连的 CDP"：先看记下来的口，再扫一遍候选口 */
+async function findLivePort() {
+  const saved = Number(stateRead().port || 0);
+  if (saved) {
+    PORT = saved;
+    if (await cdpReady()) return saved;
+  }
+  for (let i = 0; i < PORT_RANGE; i++) {
+    PORT = 9333 + i;
+    if (await cdpReady()) { stateWrite({ port: PORT }); return PORT; }
+  }
+  return 0;
+}
+
 async function launchApp() {
   if (!EXE) return { ok: false, why: '没找到 DoubaoWork.exe（用 --exe 指定，或设 HERONBO_DOUBAO_EXE）' };
+  PORT = await pickPort();
   step('正在带调试端口启动豆包工作：端口 ' + PORT);
   const args = ['--remote-debugging-port=' + PORT, '--remote-allow-origins=*'];
   spawn(EXE, args, { detached: true, stdio: 'ignore' }).unref();
@@ -219,7 +272,7 @@ async function launchApp() {
 
 /** 等到"能连上 CDP"；连不上时按需拉起，且在"已在跑但没端口"时明确报错而不是瞎点。 */
 async function ensureAttached({ launch = true } = {}) {
-  if (await cdpReady()) return { ok: true };
+  if (await findLivePort()) return { ok: true };
   if (doubaoRunning() && !launch) return { ok: false, code: 3, why: '豆包工作在跑，但不是调试端口起的' };
   if (doubaoRunning() && launch) {
     return { ok: false, code: 3,
@@ -228,6 +281,7 @@ async function ensureAttached({ launch = true } = {}) {
   if (!launch) return { ok: false, code: 3, why: '豆包工作没在跑' };
   const r = await launchApp();
   if (!r.ok) return { ok: false, code: 2, why: r.why };
+  stateWrite({ port: PORT, exe: EXE });
   return { ok: true };
 }
 
