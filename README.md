@@ -39,6 +39,8 @@ AI 视频提示词生成 + 成片六维评价工具。把「文案/台词 + 素�
 | ZCode 客户端 | `C:\Users\你的用户名\.zcode\skills\HeronBo-AIGC-Prompt\` |
 | Codex CLI | `C:\Users\你的用户名\.codex\skills\HeronBo-AIGC-Prompt\` |
 | DeepSeek Harness（DSH） | `C:\Users\你的用户名\.dsh\skills\HeronBo-AIGC-Prompt\` |
+| 豆包（个人版） | `C:\Users\你的用户名\Doubao\skills\HeronBo-AIGC-Prompt\` |
+| 豆包工作（企业版） | `%LOCALAPPDATA%\DoubaoWork\User Data\Default\.doubaowork\agent_mode\workspace\.user_skills\HeronBo-AIGC-Prompt\` |
 
 ### 安装向导：先问你装哪（2026-09-22 起）
 
@@ -49,7 +51,7 @@ python 安装向导.py            # 问两件事：①skill 装到哪（按本�
 python 安装向导.py --list     # 只看各 harness 的默认目录
 ```
 
-它会：选位置（ZCode / WorkBuddy / Codex / DSH 默认目录或自定义）→ 没下载就浅克隆（`--depth 1`，
+它会：选位置（ZCode / WorkBuddy / Codex / DSH / 豆包 / 豆包工作 默认目录或自定义）→ 没下载就浅克隆（`--depth 1`，
 没 git 就直接下 gitee 的 zip 源码包，**不用装 git**）→ 写样本库根 → 可选给其它 agent 建 junction
 （一份实体多处可用）→ 可选接着跑 `tools\部署.py all --yes`。
 

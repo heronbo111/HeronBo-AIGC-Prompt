@@ -6,7 +6,8 @@
     "claude     ~/.claude/projects/**/*.jsonl             fmt=claude",
     "codex      ~/.codex/sessions/**/*.jsonl              fmt=auto",
     "gemini     ~/.gemini/tmp/**/*.jsonl                  fmt=auto",
-    "doubao     ~/.doubao/**/*.jsonl                      fmt=auto"
+    "doubao     %LOCALAPPDATA%/Doubao/User Data/Default/.doubao/agent_mode/workspace/.sessions/**/trajectory.jsonl   fmt=doubao",
+    "doubaowork %LOCALAPPDATA%/DoubaoWork/User Data/Default/.doubaowork/agent_mode/workspace/.sessions/**/trajectory.jsonl  fmt=doubao"
   ],
   "_字段": {
     "key": "通道唯一名（同 key 覆盖内置）",
@@ -14,17 +15,17 @@
     "dir": "正文所在目录；支持 ~ 和 {USERPROFILE} 占位",
     "glob": "文件名通配，默认 *.jsonl",
     "recursive": "true＝目录下递归找",
-    "fmt": "auto（按结构猜，推荐）/ zcode / workbuddy / claude",
+    "fmt": "auto（按结构猜，推荐）/ zcode / workbuddy / claude / doubao（豆包两兄弟）",
     "enabled": "留空或 true；写 false 可临时关掉这个通道"
   },
   "channels": [
     {
-      "key": "doubao",
+      "key": "doubaowork",
       "label": "豆包工作",
-      "dir": "~/.doubao/sessions",
-      "glob": "*.jsonl",
+      "dir": "%LOCALAPPDATA%/DoubaoWork/User Data/Default/.doubaowork/agent_mode/workspace/.sessions",
+      "glob": "trajectory.jsonl",
       "recursive": true,
-      "fmt": "auto"
+      "fmt": "doubao"
     }
   ],
   "exclude": []

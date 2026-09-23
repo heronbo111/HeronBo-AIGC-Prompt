@@ -285,7 +285,7 @@ WorkBuddy 的 headless CLI（`tools\agent_bridge.py` 封装，已自动避开端
   出提示词 · 按反馈重出一版 · **核对归类**（软件只按文件名/扩展名猜角色，不准的靠 agent 复核并写回
   `框架.json`）· **评价反哺 skill**（读 `评价/*.json`、废片废因、`_会话/回执.jsonl`，把可复用经验沉淀成
   `references/rules*.md` 的规则——④⑤两栏的产出必须回到 skill，闭环才成立）。
-- **谁干活**：`agent_bridge.py` **按环境探测**——本机装了什么就认什么（WorkBuddy / Claude Code / Codex / ZCode / DSH，界面**只列本机真正有的**，没装的收进折叠块，别在别人的电脑上显示他没装的 agent）——优先"把本技能装在
+- **谁干活**：`agent_bridge.py` **按环境探测**——本机装了什么就认什么（WorkBuddy / Claude Code / Codex / ZCode / DSH / 豆包工作，界面**只列本机真正有的**，没装的收进折叠块，别在别人的电脑上显示他没装的 agent）——优先"把本技能装在
   自己名下且命令行可用"的那个；多个可用时首次会问用户一次并记住。**选择记在哪**见 `cfg_path()`：源码运行＝
   `tools/agent_bridge.local.json`，打包后＝**exe 旁边**的同名文件（界面的 agent 弹窗会把它显示出来）。
   2026-09-15 修过一个 bug：原先固定写 `__file__` 同目录，打包后那是 PyInstaller 的 `%TEMP%\_MEIxxxx`

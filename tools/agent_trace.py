@@ -43,6 +43,7 @@ import fnmatch
 import glob
 import json
 import os
+import re
 import sys
 import time
 
@@ -83,8 +84,17 @@ BUILTIN_CHANNELS = [
      "glob": "*.jsonl", "recursive": True, "fmt": "auto"},
     {"key": "gemini", "label": "Gemini CLI", "dir": _h(".gemini", "tmp"),
      "glob": "*.jsonl", "recursive": True, "fmt": "auto"},
-    {"key": "doubao", "label": "豆包工作", "dir": _h(".doubao"),
-     "glob": "*.jsonl", "recursive": True, "fmt": "auto"},
+    {"key": "doubao", "label": "豆包", "dir": _h("AppData", "Local", "Doubao", "User Data",
+                                                "Default", ".doubao", "agent_mode", "workspace",
+                                                ".sessions"),
+     "glob": "trajectory.jsonl", "recursive": True, "fmt": "doubao"},
+    # 2026-09-23 修：原来这条指向 `~/.doubao`（**本机根本没这个目录**，一条正文都读不到），
+    # 本体其实是桌面端的 Electron profile：`%LOCALAPPDATA%\<应用>\User Data\Default\.<名>\...`。
+    # 顺带补上「豆包工作」（企业版那支，目录名 `.doubaowork`）——用户 2026-09-23："企业统一要求采用豆包工作"。
+    {"key": "doubaowork", "label": "豆包工作", "dir": _h("AppData", "Local", "DoubaoWork", "User Data",
+                                                        "Default", ".doubaowork", "agent_mode",
+                                                        "workspace", ".sessions"),
+     "glob": "trajectory.jsonl", "recursive": True, "fmt": "doubao"},
 ]
 TRUSTED_FMT = ("zcode", "workbuddy", "claude")   # 已知格式，直接信任；其余要抽检
 
@@ -389,6 +399,16 @@ def _sniff_fmt(o):
         return "workbuddy"                               # WorkBuddy：顶层 type 条目
     if t in ("assistant", "user") and isinstance(o.get("message"), dict):
         return "claude"                                  # Claude Code：消息包在 message 里
+    # 豆包 / 豆包工作（桌面端 agent 模式）：role=user|assistant|tool + tool_calls/tool_call_id
+    if o.get("role") in ("assistant", "tool") and ("tool_calls" in o or "tool_call_id" in o):
+        return "doubao"
+    if o.get("role") == "tool":
+        return "doubao"
+    # 豆包的 user/system 行也是这个形状（`{role,content}`，没有 type/message）→ 也认成 doubao，
+    # 这样 `_parse_doubao` 会把它们**丢掉**（否则它们会落到 generic 解析器，把
+    # <system-reminder>/<usage_guide> 这种几千字的内部指南当"说明"塞进动作流）
+    if o.get("role") in ("user", "system") and isinstance(o.get("content"), str)             and "type" not in o and "message" not in o:
+        return "doubao"
     return "generic"
 
 
@@ -484,6 +504,59 @@ def _parse_claude(o, at=None):
     return out
 
 
+def _parse_doubao(o, at=None):
+    """豆包 / 豆包工作（桌面端 agent 模式）：每行 `{role, content, tool_calls, tool_call_id}`。
+
+    2026-09-23 实查（`%LOCALAPPDATA%\\DoubaoWork\\User Data\\Default\\.doubaowork\\agent_mode\\
+    workspace\\.sessions\\<sid>\\agents\\<aid>\\system\\trajectory.jsonl`）：
+      · `tool_calls` 是**字符串**（Python repr 风格的单引号列表），不是 JSON → 用正则挖名字与参数
+      · `role: tool` 行的 `content` 形如 `Read "C:\\…\\文件"`，取首行就够读
+      · `role: user/system` 是它自己的指令与行为指南（很长）→ **不产出事件**，否则动作流全是噪音
+    """
+    role = str(o.get("role") or "").lower()
+    out = []
+    if role == "tool":
+        txt = _para(str(o.get("content") or ""), 300)
+        if txt:
+            out.append(_ev("tool", (txt.splitlines() or [""])[0][:200], at=at))
+        return out
+    if role != "assistant":
+        return out
+    for nm, args in _doubao_tool_calls(o.get("tool_calls")):
+        try:
+            kk, txt = describe_tool(nm, args)
+        except Exception:                                    # noqa: BLE001
+            kk, txt = "tool", nm
+        if not str(txt or "").strip():                       # 参数没挖到时，至少把工具名显示出来
+            kk, txt = ("tool" if kk not in KIND_ICON else kk), nm
+            if not args:
+                txt = nm
+        out.append(_ev(kk, txt, tool=nm, at=at))
+    txt = _para(str(o.get("content") or ""), 800)
+    if txt:
+        out.append(_ev("say", txt, at=at))
+    return out
+
+
+def _doubao_tool_calls(raw):
+    """从豆包那串"Python repr 风格"的 tool_calls 里挖出 [(工具名, 参数摘要)]。
+
+    形状实测：`[{'id': '…', 'type': 'function', 'function': {'name': 'Read', 'arguments': {'file_path': 'C:\\…'}}}]`
+    ——单引号 + 嵌套，`json.loads` 解不了，所以正则取 name 与首个"路径/命令类"参数。
+    """
+    if not raw:
+        return []
+    s = raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False)
+    out = []
+    for m in re.finditer(r"['\"]name['\"]\s*:\s*['\"]([^'\"]+)['\"]([\s\S]{0,600}?)"
+                         r"(?=['\"]name['\"]\s*:|$)", s):
+        nm = m.group(1)
+        seg = m.group(2)
+        a = re.search(r"['\"](?:file_path|file|path|command|cmd|pattern|query)['\"]\s*:\s*['\"]([^'\"]*)['\"]", seg)
+        out.append((nm, a.group(1) if a else ""))
+    return out
+
+
 def _parse_generic(o, at=None):
     """兜底：尽量从常见键里挖出思考/工具/说明（新工具没配 fmt 时能有个交代）。"""
     out = []
@@ -544,6 +617,8 @@ def events_from_line(line, at=None, fmt=None):
         return _parse_wb(o, at)
     if f == "claude":
         return _parse_claude(o, at)
+    if f == "doubao":
+        return _parse_doubao(o, at)
     return _parse_generic(o, at)
 
 

@@ -372,6 +372,63 @@ def cli_js():
     return None
 
 
+def _probe_doubaowork():
+    """豆包工作：只看"客户端在哪 + 桥脚本能不能跑"——**探测不启动它**（探测要有无副作用）。
+
+    能不能接管（CDP 通不通）留给 quick_check（那个会真跑一次 `status`）。
+    """
+    js = doubao_js()
+    if not js:
+        return False, "找不到豆包桥脚本 tools\\doubao_cdp.mjs（它随本仓库走，别单独拷一半）"
+    exe = doubaowork_exe()
+    if not exe:
+        return False, ("没找到豆包工作客户端（装官方桌面端即可；装在别处就用 "
+                       "agent_bridge.local.json 的 \"doubaowork\" 字段写 DoubaoWork.exe 绝对路径）")
+    if not lib_runner(js)[0]:
+        return False, "跑不了桥脚本：需要 Node（没有独立 node 时，本机的 WorkBuddy/ZCode 自带 Electron 也能当 node）"
+    if _doubaowork_running():
+        return True, exe + "（正在运行；接管它要**用调试端口起的**那份，否则先退出重开，见 tools\\doubao_cdp.mjs）"
+    return True, exe + "（没在跑：点「出提示词」时我会带调试端口把它拉起来）"
+
+
+def doubaowork_exe():
+    """找豆包工作客户端（DoubaoWork.exe）。装的位置很自由（本机在 E:\\DoubaoWork\\app\\）。"""
+    cfg = _local_cfg().get("doubaowork")
+    if cfg and os.path.isfile(cfg):
+        return cfg
+    pats = [r"E:\DoubaoWork\app\DoubaoWork.exe", r"F:\DoubaoWork\app\DoubaoWork.exe",
+            r"D:\DoubaoWork\app\DoubaoWork.exe", r"C:\DoubaoWork\app\DoubaoWork.exe",
+            os.path.join(os.environ.get("ProgramFiles", ""), "DoubaoWork", "app", "DoubaoWork.exe"),
+            os.path.join(os.environ.get("ProgramFiles(x86)", ""), "DoubaoWork", "app", "DoubaoWork.exe"),
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "DoubaoWork", "app", "DoubaoWork.exe"),
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "DoubaoWork", "app", "DoubaoWork.exe")]
+    for r in _app_roots():
+        pats.append(os.path.join(r, "DoubaoWork", "app", "DoubaoWork.exe"))
+        pats.append(os.path.join(r, "DoubaoWork", "DoubaoWork.exe"))
+    return _glob_first(pats)
+
+
+def _doubaowork_running():
+    try:
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq DoubaoWork.exe", "/FO", "CSV", "/NH"],
+                             capture_output=True, text=True, errors="replace", timeout=20).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "DoubaoWork.exe" in (out or "")
+
+
+def doubao_js():
+    """豆包工作 CDP 桥脚本（tools/doubao_cdp.mjs）。打包后要能在解包目录里找到它。"""
+    cfg = _local_cfg().get("doubao_js")
+    if cfg and os.path.isfile(cfg):
+        return cfg
+    cands = [os.path.join(HERE, "doubao_cdp.mjs")]
+    for d in (getattr(sys, "_MEIPASS", ""), os.path.dirname(os.path.abspath(sys.executable))):
+        if d:
+            cands.append(os.path.join(d, "doubao_cdp.mjs"))
+    return _glob_first(cands)
+
+
 def node_exe():
     """找 node：显式配置 → PATH → 常见安装位置（含 winget / nvm / volta / scoop / 各盘）。"""
     cfg = _local_cfg().get("node")
@@ -553,11 +610,18 @@ def build_cmd(prompt, session_id=None, permission_mode="acceptEdits",
 #      skills/<技能名> 里能找到一个），且它的 CLI 可用
 #   3) 本机任一个可用的 agent（workbuddy → codex 顺序）
 #   4) 都没有 → UI 明确报「没找到 agent」，而不是点了没反应
+# 各 agent 的**用户级技能目录**（按"相对 ~ 的路径段"写，末尾再拼 skill 名）。
+# 2026-09-23：加了豆包两兄弟——个人版豆包在 `~/Doubao/skills`（本机实测存在，
+# 之前只被 scan_hosts 报成"疑似"）；豆包工作（企业版）把用户技能放在它的 Electron
+# profile 里（`.user_skills`），路径长但一样是"目录联接"能挂的地方。
 HOMES = {
     "zcode": (".zcode", "skills"),
     "codex": (".codex", "skills"),
     "dsh": (".dsh", "skills"),
     "workbuddy": (".workbuddy", "skills"),
+    "doubao": ("Doubao", "skills"),
+    "doubaowork": ("AppData", "Local", "DoubaoWork", "User Data", "Default", ".doubaowork",
+                   "agent_mode", "workspace", ".user_skills"),
 }
 
 
@@ -602,8 +666,8 @@ def host_agents():
     name = skill_name()
     out = []
     home = os.path.expanduser("~")
-    for key, (d, sub) in HOMES.items():
-        p = os.path.join(home, d, sub, name)
+    for key, parts in HOMES.items():
+        p = os.path.join(home, *parts, name)
         if os.path.exists(p):
             out.append(key)
     return out
@@ -777,6 +841,17 @@ ADAPTERS = {
                   "transcripts": [(".workbuddy", "projects", "*", "{sid}.jsonl")]},
     "codex": {"label": "Codex CLI", "probe": _probe_codex, "proc": [],
               "transcripts": [(".codex", "sessions", "*", "*", "rollout-*{sid}*.jsonl")]},
+    # 豆包工作（2026-09-23 加；用户："企业统一要求采用豆包工作"）。**它没有 CLI**——
+    # 只有 Electron 桌面端（`E:\DoubaoWork\app\DoubaoWork.exe`，Chrome/147）。所以走 CDP 桥：
+    # `tools/doubao_cdp.mjs` 带 `--remote-debugging-port` 把它拉起来 → 往聊天页输入框灌 prompt
+    # → 从它自己的会话轨迹里流式读进度与答复（轨迹每行 {role,content,tool_calls}）。
+    # transcripts 的 {sid} ＝那串数字会话目录名（如 38439925116803842）。
+    # 个人版豆包同款结构（目录名 `.doubao`），需要时把它也照这形状加一条即可。
+    "doubaowork": {"label": "豆包工作", "probe": _probe_doubaowork,
+                   "proc": ["DoubaoWork.exe"],
+                   "transcripts": [("AppData", "Local", "DoubaoWork", "User Data", "Default",
+                                    ".doubaowork", "agent_mode", "workspace", ".sessions",
+                                    "{sid}", "agents", "*", "system", "trajectory.jsonl")]},
     # 这两个先留探测位：ZCode / DSH 目前没在安装目录暴露无头 CLI。
     # 找得到就把命令写进 agent_bridge.local.json 的 cmd 字段（见 pick_agent 的说明）。
     # ZCode：桌面端主进程参数里没有无头入口，但**安装目录里自带 CLI**（resources/glm/zcode.cjs），
@@ -966,6 +1041,23 @@ def quick_check(key):
             if not (pkg and runner):
                 return False, "DSH 的脚本找不到或没有 node 跑它"
             cmd = [runner, pkg, "--version"]
+        elif key == "doubaowork":
+            js = doubao_js()
+            runner, renv = lib_runner(js) if js else (None, None)
+            if not (js and runner):
+                return False, "豆包桥脚本找不到、或没有 node/Electron 跑它"
+            rc, out = _run_quiet([runner, js, "status"], timeout=60)
+            d = {}
+            try:
+                d = json.loads(out[out.index("{"):])
+            except (ValueError, TypeError):
+                d = {}
+            if d.get("cdp"):
+                return True, "豆包工作在跑，且能被接管（调试端口 %s）" % d.get("port")
+            if d.get("running"):
+                return False, ("豆包工作在跑，但**不是调试端口起的**——我连不上。先退出它，"
+                               "或在命令行跑 `node tools\\doubao_cdp.mjs restart --yes` 让它带着端口重启")
+            return False, "豆包工作没在跑：点「出提示词」时我会带调试端口把它拉起来"
         else:
             return None, "这条通道没有自检命令（自定义通道请点「真跑一句」）"
         rc, out = _run_quiet(cmd)
@@ -1185,6 +1277,22 @@ def build_cmd_for(key, prompt, session_id=None, cwd=None, permission_mode=None,
         if session_id:
             cmd += ["--resume", session_id]
         return cmd, "claude-json"
+    if key == "doubaowork":
+        # 豆包工作没有 CLI：走 CDP 桥（起客户端 → 灌 prompt → 从会话轨迹读答复）。
+        # prompt 可能好几千字，**走临时文件**别塞 argv（Windows 命令行有长度上限，DSH 那条踩过引号被吃）。
+        js = doubao_js()
+        runner, _renv = lib_runner(js) if js else (None, None)
+        if not (js and runner):
+            return ["cmd", "/c", "echo 豆包桥不可用（缺 tools\\doubao_cdp.mjs 或 node）1>&2 & exit 9"], "text"
+        import tempfile
+        pf = os.path.join(tempfile.gettempdir(),
+                          "heronbo_doubao_prompt_%d.txt" % int(time.time() * 1000))
+        try:
+            with open(pf, "w", encoding="utf-8", newline="\n") as f:
+                f.write(prompt)
+        except OSError as e:
+            return ["cmd", "/c", "echo 写不了临时 prompt 文件：%s 1>&2 & exit 9" % e], "text"
+        return [runner, js, "ask", "--prompt-file", pf], "text"
     return build_cmd(prompt, session_id=session_id, permission_mode=permission_mode or "acceptEdits",
                      tools=tools, output_format="stream-json", extra=extra), "workbuddy-json"
 

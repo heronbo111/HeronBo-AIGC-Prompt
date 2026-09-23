@@ -34,6 +34,11 @@ HARNESS_DIRS = [
     ("WorkBuddy", os.path.join(os.path.expanduser("~"), ".workbuddy", "skills")),
     ("Codex CLI", os.path.join(os.path.expanduser("~"), ".codex", "skills")),
     ("DeepSeek Harness（DSH）", os.path.join(os.path.expanduser("~"), ".dsh", "skills")),
+    # 2026-09-23 加：豆包（个人版）的用户技能目录；豆包工作（企业版）的用户技能在它的
+    # Electron profile 里（`.user_skills`）——同一个目录联接套路，改一处四处同步。
+    ("豆包", os.path.join(os.path.expanduser("~"), "Doubao", "skills")),
+    ("豆包工作", os.path.join(os.environ.get("LOCALAPPDATA", ""), "DoubaoWork", "User Data",
+                              "Default", ".doubaowork", "agent_mode", "workspace", ".user_skills")),
 ]
 
 

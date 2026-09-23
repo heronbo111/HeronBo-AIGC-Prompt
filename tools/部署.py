@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """工作台部署脚本（给 AI/agent 用：一条命令把环境、依赖、agent 通道、快捷方式都弄好）。
 
-为什么要它：这套东西散在几处——Python 依赖（pywebview）、node、四个 agent 的 CLI 通道
+为什么要它：这套东西散在几处——Python 依赖（pywebview）、node、五家 agent 通道（WorkBuddy / Claude Code / Codex / ZCode / DSH）+ 豆包工作（CDP 桥）
 （WorkBuddy / Claude Code / Codex / ZCode / DSH，其中 ZCode 要 OAuth 登录 + 配置 provider/model）、
 桌面快捷方式与图标。手工逐个接容易漏，所以做成一个自检 + 修复的脚本，agent 直接跑。
 
@@ -325,10 +325,10 @@ def check_agents(yes=False, ping=None):
         else:
             bad("agent: " + r["label"], line, (r.get("fix") or ""))
     if not usable:
-        log("  [说明] 一台电脑上装哪个 agent 就用哪个——四个通道任意一个可用即可，"
-            "四个都没有时只有「出提示词」那类按钮不能用，其余流程照常。")
-        log("         想接一个：装 WorkBuddy / ZCode 桌面端（免装 Node）、或 Claude Code / Codex CLI / DSH 任一个，"
-            "再跑一次本命令。")
+        log("  [说明] 一台电脑上装哪个 agent 就用哪个——任意一个可用即可，"
+            "都没有时只有「出提示词」那类按钮不能用，其余流程照常。")
+        log("         想接一个：装 WorkBuddy / ZCode 桌面端（免装 Node）、豆包工作桌面端，"
+            "或 Claude Code / Codex CLI / DSH 任一个，再跑一次本命令。")
         return
     # ZCode 有它自己的麻烦（要登录 + provider 配置），单独接一下
     wire_zcode(yes)
