@@ -54,6 +54,16 @@ tools/dist/score-tool_*.exe
 # exe 的版本戳（跟远端比对用）与下载中的临时文件：随机器不同，不进 git
 # ⚠️ 下面两行**不能写行尾注释**——gitignore 不支持行内注释，会把注释当成模式的一部分
 tools/dist/score-tool.version.json
+# 工作台「检查更新」的运行时产物（2026-09-22）：回滚用的中转副本、ASCII 名旧备份、
+# 换位助手留下的日志（助手本身是 tools/更新助手.py，那份要进仓库）
+tools/dist/score-tool.rollback.exe
+tools/dist/score-tool_old_*.exe
+tools/dist/score-tool.update.log
+tools/dist/score-tool.update.cmd
+tools/dist/_wtest.tmp
+# 版本身份（2026-09-22）：打包/发行时由 tools\版本.py 生成（记版本号 + exe 哈希），
+# 打包换位.py 会在打包前自动写一份 —— 是本机生成物，不进仓库
+tools/_version.json
 tools/dist/*.exe.new
 
 # 离线大件也不进 git（2026-09-17：历史里这几样共 294MB + exe 762MB，把 Gitee 1GB 配额撑爆）。

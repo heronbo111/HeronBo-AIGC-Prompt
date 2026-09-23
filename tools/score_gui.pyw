@@ -35,6 +35,26 @@ import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+# ── 更新助手模式（2026-09-22）：以 --update-helper 跑起来时**只换文件、不开界面** ──
+# 位置必须在 tkinter 之前：助手是同一个 exe 的"第二份实例"，绝不能弹窗、也不能抢服务端口。
+if "--update-helper" in sys.argv:
+    def _run_update_helper():
+        _base = getattr(sys, "_MEIPASS", HERE)
+        for _d in (_base, HERE):
+            _p = os.path.join(_d, "更新助手.py")
+            if os.path.isfile(_p):
+                try:
+                    _spec = importlib.util.spec_from_file_location("heronbo_update_helper", _p)
+                    _m = importlib.util.module_from_spec(_spec)
+                    _spec.loader.exec_module(_m)
+                    return _m.main(sys.argv[sys.argv.index("--update-helper") + 1:])
+                except Exception as _e:                      # noqa: BLE001
+                    sys.stderr.write("update helper failed: %r\n" % (_e,))
+                    return 3
+        sys.stderr.write("更新助手.py not found\n")
+        return 4
+    sys.exit(_run_update_helper())
+
 
 def _find_tk_python():
     """找一个「带 tkinter」的解释器；找不到返回 None。

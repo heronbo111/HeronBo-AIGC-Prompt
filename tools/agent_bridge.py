@@ -740,6 +740,12 @@ def _probe_dsh():
     runner, _renv = lib_runner(pkg)
     if not runner:
         return False, "DSH 脚本找到了，但本机没有 node（DSH 不是 Electron 应用，必须装 Node.js）"
+    # ⚠️ 命中 npx 缓存 ≠ 装了它（2026-09-22 用户反馈）：「谁以前用 npx 跑过一次」就会在
+    # `npm-cache\_npx\…` 留下整包，被当成"装了 DSH 且可用"。这种标成 weak（疑似），
+    # 界面显示成"未验证"，要用户点一下「测一下」才认。
+    if "npm-cache" in pkg.lower() or "_npx" in pkg.lower():
+        return True, ("只找到 npx 缓存里的那份（以前 npx 跑过一次留下的）：%s"
+                      "；未验证，点「测一下」确认" % pkg)
     return True, pkg + _dsh_note()
 
 
@@ -747,6 +753,10 @@ def _probe_codex():
     exe = codex_exe()
     if not exe:
         return False, "没找到 codex（需要先装 Codex CLI）"
+    # npm 装的是 .cmd/.bat 壳，没 node 跑不起来——别只看文件在就报"可用"
+    # （2026-09-22：用户反馈"只装了 WorkBuddy 却显示别的通道都接入了"，残留 shim 是主因之一）
+    if exe.lower().endswith((".cmd", ".bat")) and not node_exe():
+        return False, "找到 %s，但它是 npm 脚本、本机没有 node 跑不了（装 Node.js 或改用 native 安装）" % exe
     return True, exe
 
 
@@ -776,7 +786,7 @@ ADAPTERS = {
               # 2026-09-16 查实：ZCode 的 CLI 会话正文在 ~/.zcode/cli/rollout/model-io-<sess_xxx>.jsonl
               "transcripts": [(".zcode", "cli", "rollout", "model-io-{sid}.jsonl")]},
     "dsh": {"label": "DSH（DeepSeek Harness）", "probe": _probe_dsh, "proc": [],
-            "transcripts": []},
+            "transcripts": [], "weak": True},   # weak：命中 npx 缓存也算"找到"，别当已装
     # Claude Code（2026-09-16 加）：`claude -p` 无头跑，会话正文在 ~/.claude/projects/<cwd>/<sid>.jsonl。
     # **本机未实测**（作者机没装）；命令形状照官方文档：-p + --output-format stream-json --verbose。
     "claude": {"label": "Claude Code", "probe": _probe_claude, "proc": ["claude.exe"],
@@ -862,14 +872,217 @@ def transcript_path(key, cwd, session_id):
     return ""
 
 
+# ── 「这条通道到底接上没有」的判定（2026-09-22 用户反馈改写）─────────────────
+# 用户看到的现象：别人电脑上**只装了 WorkBuddy**，工作台却列出一堆通道且都算"可用"。
+# 根因：原来的 ok **只等于"盘上找到了那个文件"**，而这些都会被算成"找到了"——
+#   · npm 留下的残留 shim（装过又卸了：`AppData\Roaming\npm\codex.cmd` 还在）；
+#   · **npx 缓存里的包**（谁以前 `npx @deepseek-ai/dsh` 跑过一次就永久躺在
+#     `npm-cache\_npx\…` 里）→ 被当成"装了 DSH"；
+#   · 别的软件同名的目录/可执行文件。
+# 现在规矩是三条，界面据此显示三态（不再把"找到文件"说成"接上了"）：
+#   ① found ：盘上确实有它（探针通过）——没找到的收进「本机没装的」折叠块；
+#   ② 可用   ：found **且没被实测否掉**（没测过也允许用，但界面标「未验证」）；
+#   ③ verified：**真跑过**才算"接上了"——`--version` 这种免费自检，或真跑一句
+#              （每次成功干完活也会自动记上）。结果与时间戳写进
+#              `agent_bridge.local.json` 的 `live` 段，每台机器各记各的。
+# 另外**不再预设"支持哪些 agent"**：内置那几条只是为了"开箱能用"，别的 harness
+# （opencode / Hermes / …）靠两件事发现——扫盘看宿主目录 + 让用户写一条自定义命令行。
+LIVE_KEY = "live"
+
+
+def live_cache():
+    """本机的"测过没有"记录：{key: {ok, why, at, mode}}。"""
+    d = _local_cfg().get(LIVE_KEY)
+    return d if isinstance(d, dict) else {}
+
+
+def set_live(key, ok, why="", mode="version"):
+    """记下这条通道的实测结果（成功/失败都记，界面靠它区分"未验证"与"真的不行"）。"""
+    cfg = _local_cfg()
+    d = cfg.get(LIVE_KEY)
+    if not isinstance(d, dict):
+        d = {}
+    d[key] = {"ok": bool(ok), "why": (why or "")[:300], "at": time.time(), "mode": mode}
+    cfg[LIVE_KEY] = d
+    try:
+        os.makedirs(os.path.dirname(cfg_path()), exist_ok=True)
+    except OSError:
+        pass
+    try:
+        with open(cfg_path(), "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+        return True
+    except OSError:
+        return False
+
+
+def _run_quiet(cmd, timeout=25, cwd=None):
+    """跑一条命令收输出（自检用；出错不抛，交调用方判）。"""
+    env = child_env()
+    env.update(runtime_env_for(cmd))
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=timeout, env=env,
+                           cwd=cwd or HERE, stdin=subprocess.DEVNULL)
+        return r.returncode, ((r.stdout or "") + (r.stderr or "")).strip()
+    except (OSError, subprocess.SubprocessError) as e:
+        return -1, str(e)
+
+
+def quick_check(key):
+    """**免费**自检：跑这条 CLI 自己的版本/帮助命令，看它到底能不能启动。
+
+    返回 (ok, why)：ok 为 True/False 表示测得出来；**None 表示这条通道没有合适的自检命令**
+    （自定义通道、或 CLI 不认 `--version`）——这时不算它不行，只是"没验证"，让用户
+    决定要不要点「真跑一句」（那个要花一点点额度）。
+    为什么要有这道：只查文件在不在，会把"卸载残留 / npx 缓存"当成人能用的通道。
+    """
+    try:
+        if key == "workbuddy":
+            js = cli_js()
+            runner, renv = lib_runner(js) if js else (None, None)
+            if not (js and runner):
+                return False, "WorkBuddy 的无头 CLI 找不到或跑不动"
+            cmd = [runner, js, "--version"]
+        elif key == "codex":
+            exe = codex_exe()
+            if not exe:
+                return False, "没找到 codex 命令"
+            cmd = [exe, "--version"]
+        elif key == "claude":
+            exe = claude_exe()
+            if not exe:
+                return False, "没找到 claude 命令"
+            cmd = [exe, "--version"]
+        elif key == "zcode":
+            cli = zcode_cli()
+            runner, renv = lib_runner(cli) if cli else (None, None)
+            if not (cli and runner):
+                return False, "ZCode 自带的 CLI 找不到或跑不动"
+            cmd = [runner, cli, "--version"]
+        elif key == "dsh":
+            pkg = dsh_pkg()
+            runner, renv = lib_runner(pkg) if pkg else (None, None)
+            if not (pkg and runner):
+                return False, "DSH 的脚本找不到或没有 node 跑它"
+            cmd = [runner, pkg, "--version"]
+        else:
+            return None, "这条通道没有自检命令（自定义通道请点「真跑一句」）"
+        rc, out = _run_quiet(cmd)
+        low = out.lower()
+        # 不认 --version 的 CLI：不算它不行，只是"没验证"
+        for soft in ("unknown option", "unknown argument", "not recognized", "unrecognized",
+                     "invalid option", "no such option", "usage:"):
+            if soft in low and rc != 0:
+                return None, "这条 CLI 不认自检命令（不算失败，只是没验证）"
+        if rc == 0:
+            return True, (out.splitlines()[0][:120] if out else "自检通过")
+        return False, ("命令能启动但自检返回 %d：%s" % (rc, (out or "")[:120])
+                       if rc > 0 else ("跑不起来：%s" % (out or "")[:120]))
+    except Exception as e:                                       # noqa: BLE001
+        return False, "自检出错：%s" % e
+
+
+def test_agent(key, lite=True, timeout=180):
+    """测一下这条通道到底能不能用。
+
+    lite=True（默认）＝免费自检（`--version`）；lite=False＝**真跑一句最小任务**
+    （会消耗一点点额度，但这是唯一能证明"接得上"的办法）。
+    结果写进 live 段；下次开界面直接显示，不必重测。
+    """
+    if key not in {r["key"] for r in list_agents()}:
+        return {"ok": False, "error": "未知的通道：%s" % key}
+    if lite:
+        ok, why = quick_check(key)
+        if ok is None:
+            return {"ok": False, "unsupported": True, "agent": key, "why": why,
+                    "error": why}
+        set_live(key, ok, why, "version")
+        return {"ok": bool(ok), "agent": key, "lite": True, "why": why}
+    r = ask("只回一个字：好。不要读任何文件、不要用任何工具。", agent=key,
+            timeout=timeout, tools="")
+    ok = bool(r.get("ok"))
+    why = (r.get("text") or "").strip()[:60] or (r.get("error") or "")[:200]
+    set_live(key, ok, why, "run")
+    return {"ok": ok, "agent": key, "lite": False, "why": why}
+
+
+# ── 不预设"支持哪些 agent"：扫盘发现 + 用户自定义 ─────────────────────────────
+def custom_agents():
+    """本机配置里用户自己写的通道：`agents: [{key,label,cmd:[…],cmd_mode}]`。
+
+    为什么要有：opencode / Hermes / 下个月才出的某个 harness —— 代码里写不完，也不该写。
+    用户（或帮他配的 agent）在 `agent_bridge.local.json` 里加一条命令行即可，不用改代码。
+    `cmd` 里支持 `{prompt}` / `{cwd}` 两个占位符。
+    """
+    out = []
+    for a in (_local_cfg().get("agents") or []):
+        if isinstance(a, dict) and a.get("key") and a.get("cmd"):
+            out.append(a)
+    return out
+
+
+def scan_hosts(max_depth=1):
+    """扫盘：这台机器上还有哪些"agent 宿主"目录（**不预设名字**）。
+
+    ZCode / Codex / DSH / WorkBuddy 的形状都是 `~/.<名字>/skills/`；opencode、Hermes
+    之类多半也一样。这里只扫用户主目录的**一级／二级目录**里的 `skills`（很便宜），
+    把不是内置适配器的那些报成"疑似通道"——界面提示用户可以给它们配一条命令行。
+    """
+    home = os.path.expanduser("~")
+    found = {}
+    try:
+        names = os.listdir(home)
+    except OSError:
+        return []
+    for n in names:
+        p = os.path.join(home, n)
+        if not os.path.isdir(p):
+            continue
+        for sub in ("skills", os.path.join("config", "skills")):
+            q = os.path.join(p, sub)
+            if os.path.isdir(q):
+                found.setdefault(n.lstrip("."), q)
+    out = []
+    known = set(ADAPTERS) | {a["key"] for a in custom_agents()}
+    for label, q in sorted(found.items()):
+        if label in known or label.lower() in known:
+            continue
+        out.append({"key": "host:" + label, "label": label + "（疑似）", "found": True,
+                    "ok": False, "weak": True, "host": False, "verified": False,
+                    "why": "这台机器上有 %s，但工作台还不知道怎么叫它干活——"
+                           "在 agent_bridge.local.json 里加一条 agents（key/label/cmd）就能用" % q})
+    return out
+
+
 def list_agents():
-    """本机探测结果：[{key,label,ok,why,host}]（host = 本 skill 装在这个 agent 名下）。"""
+    """本机探测结果（**只报盘上真有的**，并区分"测过没有"）。
+
+    每行：key / label / found（盘上有）/ ok（能用＝有且没被实测否掉）/
+          verified（真跑过）/ weak（像是残留或缓存，别太当真）/ why / host / at。
+    没找到的也会返回（found=False），界面把它们收进折叠块并给出装法。
+    """
     hosts = host_agents()
+    live = live_cache()
     rows = []
     for key, a in ADAPTERS.items():
         ok, why = a["probe"]()
-        rows.append({"key": key, "label": a["label"], "ok": bool(ok), "why": why,
-                     "host": key in hosts})
+        lv = live.get(key) or {}
+        if lv and lv.get("ok") is False:
+            rows.append({"key": key, "label": a["label"], "found": bool(ok), "ok": False,
+                         "verified": False, "weak": False, "host": key in hosts,
+                         "why": "实测不通：%s" % (lv.get("why") or "（没给原因）"),
+                         "at": lv.get("at") or 0})
+            continue
+        rows.append({"key": key, "label": a["label"], "found": bool(ok), "ok": bool(ok),
+                     "verified": bool(lv.get("ok")), "weak": bool(a.get("weak")),
+                     "host": key in hosts, "why": why, "at": lv.get("at") or 0})
+    for a in custom_agents():
+        rows.append({"key": a["key"], "label": a.get("label") or a["key"], "found": True,
+                     "ok": True, "verified": bool((live.get(a["key"]) or {}).get("ok")),
+                     "weak": False, "host": False,
+                     "why": "自定义通道" + ("（已测通）" if (live.get(a["key"]) or {}).get("ok") else "（未验证）")})
+    rows += scan_hosts()
     return rows
 
 
@@ -895,14 +1108,21 @@ def pick_agent(prefer=None):
         r = rows.get(key)
         if r and r["ok"]:
             return key, "%s（你正开着它，自动跟随）" % r["label"]
-    for key in ("workbuddy", "codex", "zcode", "dsh"):
-        r = rows.get(key)
-        if r and r["ok"] and r["host"]:
-            return key, "%s（本 skill 就装在它名下）" % r["label"]
-    for key in ("workbuddy", "codex", "zcode", "dsh"):
-        r = rows.get(key)
-        if r and r["ok"]:
-            return key, "%s（本机可用；本 skill 未装在任何 agent 名下）" % r["label"]
+    # ② 其余按"越可信越优先"排队（2026-09-22 改）：
+    #   已验证过的 > 只是找到的；本 skill 装在它名下的 > 没装的；非 weak（不是残留/npx 缓存）> weak。
+    #   原来写死了 workbuddy→codex→zcode→dsh 的顺序，等于"预设了谁更好"，与"环境里有什么用什么"相悖。
+    def _rank(k):
+        r = rows[k]
+        return (0 if r.get("verified") else 1,
+                0 if r.get("host") else 1,
+                1 if r.get("weak") else 0)
+    for key in sorted([k for k, r in rows.items() if r.get("ok")], key=_rank):
+        r = rows[key]
+        if r.get("host"):
+            return key, "%s（本 skill 就装在它名下%s）" % (
+                r["label"], "，已验证" if r.get("verified") else "，还没验证过")
+        return key, "%s（本机可用%s）" % (
+            r["label"], "，已验证" if r.get("verified") else "，还没验证过；建议点一下「测一下」")
     miss = "；".join("%s：%s" % (r["label"], r["why"]) for r in rows.values())
     return None, "本机没找到可用的 agent（%s）" % miss
 
@@ -915,6 +1135,12 @@ def build_cmd_for(key, prompt, session_id=None, cwd=None, permission_mode=None,
         cmd = [str(x).replace("{prompt}", prompt).replace("{cwd}", cwd or "")
                for x in cfg["cmd"]]
         return cmd, cfg.get("cmd_mode") or "text"
+    # 用户自己加的通道（agents 段里的任意 agent：opencode / Hermes / …）
+    for a in custom_agents():
+        if a.get("key") == key:
+            cmd = [str(x).replace("{prompt}", prompt).replace("{cwd}", cwd or "")
+                   for x in a["cmd"]]
+            return cmd, a.get("cmd_mode") or "text"
     if key == "zcode":
         cli = zcode_cli()
         if not cli:

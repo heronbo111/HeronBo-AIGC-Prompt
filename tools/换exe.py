@@ -61,6 +61,19 @@ def swap(new, to, force=False):
     except OSError as e:
         return 4, ("换不进去（%s）：%s\n新 exe 还在原地：%s"
                    % (to, e, new))
+    # 自动回收：只保留最近的几个旧备份，避免 dist 无限堆积
+    try:
+        KEEP_OLD = 2
+        _d = os.path.dirname(os.path.abspath(to))
+        _olds = sorted(f for f in os.listdir(_d)
+                       if f.startswith("score-tool_旧_") and f.endswith(".exe"))
+        for _fn in _olds[:-KEEP_OLD]:                 # 文件名带时间戳，字典序=时间序，留最新 KEEP_OLD 个
+            try:
+                os.remove(os.path.join(_d, _fn))
+            except OSError:
+                pass
+    except OSError:
+        pass
     return 0, ("已换位：%s\n旧版备份：%s%s"
                % (to, old, "\n⚠ 这次是 --force 强换的：正在跑的那个实例请**关掉重开**"
                            if pids else ""))

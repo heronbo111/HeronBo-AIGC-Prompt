@@ -40,11 +40,26 @@ AI 视频提示词生成 + 成片六维评价工具。把「文案/台词 + 素�
 | Codex CLI | `C:\Users\你的用户名\.codex\skills\HeronBo-AIGC-Prompt\` |
 | DeepSeek Harness（DSH） | `C:\Users\你的用户名\.dsh\skills\HeronBo-AIGC-Prompt\` |
 
-克隆（**建议带 `--depth 1`**）：
+### 安装向导：先问你装哪（2026-09-22 起）
+
+装 skill / 放项目**都会先问位置**，不再默认塞进固定目录：
 
 ```bash
-git clone --depth 1 https://gitee.com/HeronBo/HeronBo-AIGC-Prompt.git      # 国内
-git clone --depth 1 https://github.com/heronbo111/HeronBo-AIGC-Prompt.git   # GitHub
+python 安装向导.py            # 问两件事：①skill 装到哪（按本机 agent 给默认值）②项目样本库放哪
+python 安装向导.py --list     # 只看各 harness 的默认目录
+```
+
+它会：选位置（ZCode / WorkBuddy / Codex / DSH 默认目录或自定义）→ 没下载就浅克隆（`--depth 1`，
+没 git 就直接下 gitee 的 zip 源码包，**不用装 git**）→ 写样本库根 → 可选给其它 agent 建 junction
+（一份实体多处可用）→ 可选接着跑 `tools\部署.py all --yes`。
+
+### 下载（任选其一，都只要最新一层）
+
+```bash
+git clone --depth 1 https://gitee.com/HeronBo/HeronBo-AIGC-Prompt.git      # 国内，浅克隆约 13MB
+git clone --depth 1 https://github.com/heronbo111/HeronBo-AIGC-Prompt.git   # GitHub（已公开）
+# 没装 git：直接下 zip（解压后跑 python 安装向导.py）
+# https://gitee.com/HeronBo/HeronBo-AIGC-Prompt/repository/archive/main.zip
 ```
 
 ### 一键安装（新机最短路径）
@@ -57,12 +72,52 @@ python tools\部署.py all --yes
 
 它会：找 Python → 用仓库自带的离线 wheel 装必需依赖 → 接 agent 通道并真跑一句验证连通 → 建桌面快捷方式 → 把工作台弹出来。
 
-### 换机四件套（必做）
+### 大件与工作台 exe 怎么拿（仓库只放代码）
 
-0. **环境检查**：运行 `python tools\环境检查.py` 逐项自检
-1. **问项目位置**：运行 `python tools\首次配置.py --project "<项目目录>"` 建框架
-2. **问平台**：按需安装 CLI（仅用户指定时）
-3. **装依赖**：一次性看全并安装所需组件
+**仓库只放代码（约 13MB），大件走 Release 附件**（2026-09-17 起）——因为把 300MB 安装资产和
+历代 exe 放进 git，会把 Gitee 的 1GB 配额撑爆（实测 1047MB 被拒收）。
+
+| 你要什么 | 命令 |
+|---|---|
+| 代码（clone 12 秒） | `git clone --depth 1 https://gitee.com/HeronBo/HeronBo-AIGC-Prompt.git` |
+| **安装全套**（Python 轮子 + ffmpeg + 深度模型 + 工作台 exe，约 305MB，一次就好） | `python tools/deploy.py vendor --fetch --yes` |
+| **更新工作台**（已有安装，想把 exe 换成最新版） | **工作台里点标题条右侧的「检查更新」** → 「下载并重启」，它自己下、校验、换位、重启（开着工作台也能更新；弹窗里还有「回滚到上一版」）。命令行也能：关掉工作台 → `python tools/deploy.py vendor --fetch --yes`（`--exe` 可强制重下）|
+| 只要核心（工作台 + 出提示词 + 评分） | 什么都不用做 |
+| 想要最新 exe | **工作台里点「检查更新」**（不用关工作台）；命令行：关掉工作台 → `python tools/deploy.py vendor --fetch --yes` |
+| 我这版是哪一版 | 看一眼标题条「检查更新」旁的版本号；命令行 `python tools\版本.py`（current / remote / check）|
+
+附件地址：`https://github.com/heronbo111/HeronBo-AIGC-Prompt/releases`（最新 tag `vendor-2026-09-22`）
+（下载慢的话：脚本会**自动换镜像源**（gh-proxy 等前缀依次试）；也可 `HERONBO_VENDOR_REL=<镜像前缀>` 手动换源）。
+`python tools/deploy.py all --yes` 会**自动**把缺的拉齐。
+
+### exe 被杀软 / Defender 删了（2026-09-22 实测）
+
+打包是 PyInstaller onefile 且未签名，Defender 启发式容易误报。装机端跑：
+
+```bash
+python tools/deploy.py defender          # 只检查：exe 还在不在、保护历史有没有动过它
+python tools/deploy.py defender --yes    # 提权把工作台目录加进白名单（UAC 点「是」）
+```
+
+然后二选一：到「Windows 安全中心 → 保护历史」把隔离的 `score-tool.exe` **还原**；
+或 `python tools/deploy.py vendor --fetch --yes` **重新下一份**。加过白名单后不会再删。
+要彻底除名可向微软提交误报申诉（https://www.microsoft.com/en-us/wdsi/filesubmission）。
+
+**工作台窗口一片空白？** 那是 WebView2 运行库坏了（注册表写着装了、目录里 `msedgewebview2.exe` 却没了）——
+`python tools\部署.py check` 会报出来，`python tools\部署.py wx --yes` 一条命令修好；工作台现在还会
+**自动退到 Edge 窗口**，不会再晾你一个白窗。整条新机流程见 `docs/新机部署.md`。
+
+### 换机四件套（必做，约 5 分钟）
+
+0. **环境检查（第一件事）**：`python tools\环境检查.py` —— 逐项自检 python≥3.9 / ffmpeg / ffprobe / WebView2 / pywebview，以及**按需**的 numpy / opencv / faster-whisper（拆解转写）/ onnxruntime（深度视频）/ Yunet 人脸模型 / 系统 OCR / Depth 模型，缺什么就打印该装什么。
+   装缺项：**先问用户**，同意后 `python tools\环境检查.py --install --yes`（**仓库自带离线包时默认一次装全**；ffmpeg 与深度模型都在 `tools/_vendor/` 里，装完即用）；模型另跑 `--models`（Depth，约 99MB，HF 需代理）与 `--warm-asr`（预下转写模型）。**装软件必须用户同意，不许静默安装。**
+1. **问项目位置**：agent 问「请问您要把项目建在哪里？您提供好素材后，我会自动将其进行归类」→ `python tools\首次配置.py --project "<项目目录>"` 建框架（`文案/素材/成片/废片/评价/备注`）+ 自动归类素材 + 写入 `references/paths.local.md`（已 gitignore，不进仓库）。
+2. **问平台（可选装 CLI）**：agent 问「你主要用哪个平台做 AI 视频？即梦 / 小云雀 / updream」→ 按 `references/platforms.md` 检测：
+   - 即梦 = `dreamina`（官方脚本 `curl -fsSL https://jimeng.jianying.com/cli | bash`；Windows 用 Git Bash 或按官方指引）；
+   - 小云雀 = `pippit-tool-cli`（`npm i -g @pippit-dev/cli`，使用时需 `XYQ_ACCESS_KEY`，用户自行申请、不要写进仓库）；
+   - updream = 暂无公开 CLI → **不装**，网页操作。
+   **只有用户指定、且该平台确实有 CLI 时才装**；不检测账号、不代登录。
+3. **装依赖**：跑第 0 件即可一次看全：python、ffmpeg、numpy/opencv、可选 faster-whisper（转写）与 onnxruntime（深度视频）；Edge/Chrome（必须 localhost 方式打开，file:// 无法写入本地目录）。**不检测即梦账号**，账号由用户自己登录。
 
 ### 自检清单
 
