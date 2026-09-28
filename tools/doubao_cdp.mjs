@@ -178,7 +178,11 @@ class Cdp {
   async evalJs(expr, timeoutMs = 15000) {
     const r = await this.send('Runtime.evaluate',
       { expression: expr, returnByValue: true, awaitPromise: true }, timeoutMs);
-    if (r && r.exceptionDetails) throw new Error('页面脚本报错：' + JSON.stringify(r.exceptionDetails).slice(0, 200));
+    if (r && r.exceptionDetails) {
+      const edd = r.exceptionDetails;
+      const descr = (edd.exception && edd.exception.description) || edd.text || JSON.stringify(edd);
+      throw new Error('页面脚本报错：' + String(descr).slice(0, 700) + ' || @line' + edd.lineNumber + ' col' + edd.columnNumber);
+    }
     return r && r.result ? r.result.value : undefined;
   }
   close() { try { this.ws && this.ws.close(); } catch {} }
@@ -218,17 +222,53 @@ const COMPOSER_TEXT = `(() => {
   const el = all[0];
   return String(el.value !== undefined ? el.value : el.innerText || '');
 })()`;
+// 2026-09-28 新版豆包工作发送按钮：[data-testid="chat_input_send_button"]（右下角圆形 ↑，
+// 无文字标签）。优先点它；找不到再退回"发送/send"文字匹配。返回 {ok,how}。
 const CLICK_SEND = `(() => {
+  const r = (el) => el.getBoundingClientRect();
+  const usable = (b) => { const bb = r(b); return !b.disabled && bb.width >= 20 && bb.height >= 20; };
+  const t = document.querySelector('[data-testid="chat_input_send_button"]');
+  if (t && usable(t)) { t.click(); return { ok: true, how: 'testid' }; }
   const bs = [...document.querySelectorAll('button, [role="button"], div')].filter((b) => {
-    const t = (b.getAttribute('aria-label') || b.getAttribute('title') || b.innerText || '');
+    const x = (b.getAttribute('aria-label') || b.getAttribute('title') || b.innerText || '');
     const c = String(b.className || '');
-    return /发送|submit|send/i.test(t + ' ' + c) && b.getBoundingClientRect().width > 10;
+    return /发送|submit|send/i.test(x + ' ' + c) && usable(b);
   });
-  if (!bs.length) return false;
-  const b = bs[bs.length - 1];
-  b.click();
-  return true;
+  if (!bs.length) return { ok: false };
+  bs[bs.length - 1].click();
+  return { ok: true, how: 'text' };
 })()`;
+
+// 填字：直接走 tiptap EditorView（view.dispatch），让 ProseMirror state 正确更新——
+// 只往 DOM 塞文字（insertText/innerText）时 state 不更新，发送按钮不会出现、也发不出去。
+// 用法：FILL_VIA_EDITOR + '(' + JSON.stringify(text) + ')'
+const FILL_VIA_EDITOR = `(text => {
+  const r = (el) => el.getBoundingClientRect();
+  const vis = (el) => { const b = r(el); return b.width > 60 && b.height > 16 && b.bottom > 0 && b.top < innerHeight; };
+  const eds = [...document.querySelectorAll('textarea,[contenteditable="true"],[contenteditable=""]')].filter(vis);
+  eds.sort((a, b) => r(b).bottom - r(a).bottom);
+  const ed = eds[0]; if (!ed) return { ok: false, why: 'no editor' };
+  const E = ed.editor;
+  if (!E || !E.view) return { ok: false, why: 'no tiptap editor' };
+  const view = E.view;
+  const raw = String(text).replace(/\\r\\n/g, '\\n');
+  for (let k = 0; k < 3; k++) {
+    try { view.focus();
+      if (E.chain && E.commands && E.commands.insertContent) {
+        // 官方 API、传纯字符串让 tiptap 自己建节点（手动构造 doc/HTML 会在 React 渲染期报错）
+        E.chain().focus().clearContent({ emit: false }).insertContent(raw).run();
+      } else {
+        // 兜底：手动 dispatch（换行退化为空格，保证能发出）
+        const schema = view.state.schema, flat = raw.replace(/\\n/g, ' ');
+        view.dispatch(view.state.tr.replaceWith(0, view.state.doc.content.size,
+          schema.nodes.doc.create(null, schema.nodes.paragraph.create(null, schema.text(flat))).content));
+      }
+      const len = view.state.doc.textContent.length;
+      if (len > 0) return { ok: true, len };
+    } catch (e) { if (k === 2) return { ok: false, why: String((e && e.message) || e).slice(0, 90) }; }
+  }
+  return { ok: false, why: 'empty after fill' };
+})`;
 
 /** 聊天区快照：消息条数 + 最后一条问答 + "它写完了没"。
  *  ⚠️ 这一版豆包工作**不往 trajectory.jsonl 写 assistant 行**（只写用户那条），
@@ -254,6 +294,82 @@ const MSG_STATE = `(() => {
 })()`;
 const PAGE_SID = `(() => { const m = location.href.match(/chat\\/(\\d+)/); return m ? m[1] : ''; })()`;
 
+// 定位左侧"新工作任务"应点击的坐标（文字SPAN→closest语义按钮→否则整行祖先）
+const FIND_NEW_TARGET = `(() => {
+  const r = (el) => el.getBoundingClientRect();
+  let span = null;
+  [...document.querySelectorAll('*')].forEach((e) => {
+    if ((e.innerText || '').trim() === '新工作任务' && r(e).width > 30 && !span) span = e;
+  });
+  if (!span) return null;
+  let el = span.closest('button,a,[role="button"]');
+  if (!el) { let p = span;
+    for (let i = 0; i < 4; i++) { p = p.parentElement; if (!p) break;
+      if (r(p).width > 120 && r(p).height >= 30 && r(p).height < 70) { el = p; break; } } }
+  el = el || span;
+  const b = r(el);
+  return { cx: Math.round(b.x + b.width / 2), cy: Math.round(b.y + b.height / 2),
+           w: Math.round(b.width), h: Math.round(b.height) };
+})()`;
+
+// 当前是否"空白新会话"：URL 无 sid 且输入框无文字
+const IS_FRESH = `(() => {
+  const r = (el) => el.getBoundingClientRect();
+  const vis = (el) => { const b = r(el); return b.width > 60 && b.height > 16; };
+  const sidM = location.href.match(/chat\\/(\\d+)/);
+  const eds = [...document.querySelectorAll('textarea,[contenteditable="true"],[contenteditable=""]')].filter(vis);
+  eds.sort((a, b) => r(b).bottom - r(a).bottom);
+  const ed = eds[0];
+  const t = ed ? String(ed.value !== undefined ? ed.value : ed.innerText || '') : '';
+  return { sid: sidM ? sidM[1] : '', text: t, fresh: !sidM && !t.trim() };
+})()`;
+
+// 后台静默新建空白会话：页面内 JS 点击「新工作任务」并轮询进入空白页（不抢焦、不依赖真实鼠标）
+const NEW_CHAT_JS = `(async () => {
+  const r = (el) => el.getBoundingClientRect();
+  const isFresh = () => {
+    const sidM = location.href.match(/chat\\/(\\d+)/);
+    const ed = document.querySelector('[data-testid="chat_input_input"]');
+    const t = ed ? String(ed.innerText || '') : '';
+    return !sidM && !t.trim();
+  };
+  if (isFresh()) return { ok: true, already: true };
+  let span = null;
+  [...document.querySelectorAll('*')].forEach((e) => {
+    if ((e.innerText || '').trim() === '新工作任务' && r(e).width > 30 && !span) span = e;
+  });
+  if (!span) return { ok: false, why: 'no entry' };
+  let el = span.closest('button,a,[role="button"]');
+  if (!el) { let p = span;
+    for (let i = 0; i < 4; i++) { p = p.parentElement; if (!p) break;
+      if (r(p).width > 120 && r(p).height >= 30 && r(p).height < 70) { el = p; break; } } }
+  el = el || span;
+  el.click();
+  for (let i = 0; i < 24; i++) {
+    await new Promise((rr) => setTimeout(rr, 300));
+    if (isFresh()) return { ok: true, i };
+  }
+  const b = r(el);
+  return { ok: false, why: 'not fresh after js click', cx: Math.round(b.x + b.width / 2), cy: Math.round(b.y + b.height / 2) };
+})()`;
+
+// 后台静默发送：页面内轮询等发送按钮启用再 JS 点击（不抢焦）；testid 优先，文字兜底
+const CLICK_SEND_WAIT = `(async () => {
+  const r = (el) => el.getBoundingClientRect();
+  for (let i = 0; i < 24; i++) {
+    const t = document.querySelector('[data-testid="chat_input_send_button"]');
+    if (t && !t.disabled && r(t).width >= 20) { t.click(); return { ok: true, how: 'testid', i }; }
+    await new Promise((rr) => setTimeout(rr, 250));
+  }
+  const usable = (b) => { const bb = r(b); return !b.disabled && bb.width >= 20 && bb.height >= 20; };
+  const bs = [...document.querySelectorAll('button,[role="button"],div')].filter((b) => {
+    const x = b.getAttribute('aria-label') || b.getAttribute('title') || b.innerText || '';
+    return /发送|submit|send/i.test(x + ' ' + String(b.className || '')) && usable(b);
+  });
+  if (bs.length) { bs[bs.length - 1].click(); return { ok: true, how: 'text' }; }
+  return { ok: false };
+})()`;
+
 async function pickChatTarget() {
   const list = await getJson('/json/list');
   if (!Array.isArray(list)) return null;
@@ -262,6 +378,44 @@ async function pickChatTarget() {
             || pages.find((t) => String(t.title || '').includes('豆包工作'))
             || pages[0];
   return chat || null;
+}
+
+// 所有"聊天页"target（含空白 chat 与带 sid 的会话；可能不止一个窗口）
+async function listChatTargets() {
+  const list = await getJson('/json/list');
+  if (!Array.isArray(list)) return [];
+  return list.filter((t) => t.type === 'page' && t.webSocketDebuggerUrl
+    && /(doubaowork-chat\/chat|doubaowork-launcher\/chat|\/chat($|\/))/i.test(t.url || ''));
+}
+// 连接一个 target 并返回 cdp（已 Runtime.enable）
+async function attachTarget(t) {
+  const c = new Cdp(t.webSocketDebuggerUrl);
+  await c.connect();
+  await c.send('Runtime.enable');
+  return c;
+}
+const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+/** 发送后定位"真正承载本次消息"的 target：扫描所有聊天页，lastSend 含 prompt 指纹即命中。
+ *  无论新会话是同窗口路由还是另开窗口都能锁定。返回 {cdp(保持连接,调用方关),sid,state}；找不到 null。 */
+async function locateSentTarget(marker, waitMs = 22000) {
+  const key = norm(marker).slice(0, 12);
+  const deadline = Date.now() + waitMs;
+  while (Date.now() < deadline) {
+    const targets = await listChatTargets();
+    for (const t of targets) {
+      let c;
+      try { c = await attachTarget(t); } catch { continue; }
+      let state = null, sid = '';
+      try {
+        state = await c.evalJs(MSG_STATE);
+        sid = String(await c.evalJs(PAGE_SID) || '');
+      } catch { c.close(); continue; }
+      if (state && norm(state.lastSend).includes(key)) return { cdp: c, sid, state: state || {} };
+      c.close();
+    }
+    await sleep(700);
+  }
+  return null;
 }
 
 function stateRead() {
@@ -327,6 +481,28 @@ async function ensureAttached({ launch = true } = {}) {
   if (!r.ok) return { ok: false, code: 2, why: r.why };
   stateWrite({ port: PORT, exe: EXE });
   return { ok: true };
+}
+
+/** ask 前确保在一个"空白新会话"（工作台一键、不污染旧会话、也避免自己给自己发）。
+ *  已在空白页就直接用；否则点「新工作任务」并轮询进入空白页；没成则退回当前会话。 */
+async function ensureFreshChat(cdp) {
+  // 优先页面内 JS 静默点击（不抢焦、不动 OS 焦点）
+  const r = await cdp.evalJs(NEW_CHAT_JS, 20000);
+  if (r && r.ok) { step(r.already ? '已在空白新会话' : '已进入空白新会话'); return true; }
+  // 兜底：CDP 合成鼠标事件（后台页面也能接收，无需 bringToFront）
+  const tg = await cdp.evalJs(FIND_NEW_TARGET);
+  if (!tg) { step('没找到「新工作任务」入口，将在当前会话发送'); return false; }
+  step('JS 点击没成（' + ((r && r.why) || '?') + '），改用合成鼠标…');
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: tg.cx, y: tg.cy });
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: tg.cx, y: tg.cy, button: 'left', clickCount: 1 });
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: tg.cx, y: tg.cy, button: 'left', clickCount: 1 });
+  for (let i = 0; i < 14; i++) {
+    await sleep(500);
+    const st = await cdp.evalJs(IS_FRESH);
+    if (st && st.fresh) { step('已进入空白新会话'); return true; }
+  }
+  step('新建会话没成功，退回当前会话发送');
+  return false;
 }
 
 // ---------- 会话轨迹（结果与进度的真源） ----------
@@ -452,18 +628,14 @@ async function actAsk() {
   await cdp.connect();
   let answer = '';
   let sid = '';
+  let readCdp = null;
   try {
     await cdp.send('Runtime.enable');
     await cdp.send('Page.enable').catch(() => {});
-    await cdp.send('Page.bringToFront').catch(() => {});
+    // 不 bringToFront：豆包工作在后台被静默驱动，避免抢占用户正在看的会话视图
 
-    // 认准"当前这段对话"落哪个 profile（多 profile 时 Default 常是旧壳）
-    sid = String(await cdp.evalJs(PAGE_SID) || '');
-    const sd = sessionDirFor(sid);
-    if (sd) {
-      const root = path.dirname(sd);                 // <…>\workspace\.sessions
-      if (root && root !== SESSIONS) { SESSIONS = root; step('会话目录：' + clip(root, 80)); }
-    }
+    // 自动进入空白新会话（工作台一键、不污染旧会话）；没成则退回当前会话
+    await ensureFreshChat(cdp);
 
     const foc = await cdp.evalJs(FOCUS_COMPOSER);
     if (!foc) { log('✗ 没找到输入框（可能停在登录页/主页——先在豆包工作里进到对话页再试）'); return 5; }
@@ -472,62 +644,85 @@ async function actAsk() {
     const st0 = await cdp.evalJs(MSG_STATE) || { sends: 0, recvs: 0 };
     const before = newestTrajectory();
 
-    await cdp.send('Input.insertText', { text: prompt }, 30000);
-    await sleep(300);
-    let typed = await cdp.evalJs(COMPOSER_TEXT);
-    if (!String(typed || '').trim()) {
-      // 有些编辑器不吃 insertText：退回"直接塞值 + 触发 input 事件"
-      await cdp.evalJs(`(() => { const el = document.activeElement;
-        if (!el) return false;
-        if (el.value !== undefined) { el.value = ${JSON.stringify(prompt)}; }
-        else { el.innerText = ${JSON.stringify(prompt)}; }
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-        return true; })()`);
-      typed = await cdp.evalJs(COMPOSER_TEXT);
+    // 填字：优先走 tiptap EditorView（state 正确更新、发送按钮才会启用）；没成再降级 insertText/塞值
+    const fill = await cdp.evalJs(FILL_VIA_EDITOR + '(' + JSON.stringify(prompt) + ')', 30000);
+    if (!fill || !fill.ok) {
+      step('tiptap 写入没成（' + ((fill && fill.why) || '?') + '），降级 insertText');
+      await cdp.send('Input.insertText', { text: prompt }, 30000).catch(() => {});
+      await sleep(300);
+      let typed0 = await cdp.evalJs(COMPOSER_TEXT);
+      if (!String(typed0 || '').trim()) {
+        // 有些编辑器不吃 insertText：退回"直接塞值 + 触发 input 事件"
+        await cdp.evalJs(`(() => { const el = document.activeElement;
+          if (!el) return false;
+          if (el.value !== undefined) { el.value = ${JSON.stringify(prompt)}; }
+          else { el.innerText = ${JSON.stringify(prompt)}; }
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          return true; })()`);
+      }
     }
+    await sleep(200);
+    const typed = await cdp.evalJs(COMPOSER_TEXT);
     step('已填入 ' + String(typed || '').length + ' 字');
     if (!String(typed || '').trim()) { log('✗ 文字塞不进输入框'); return 5; }
 
-    // 提交：回车 → 轮询"界面上多出一条我说的话"（输入框清空只是弱证据，别单看它）
-    const key = (type) => cdp.send('Input.dispatchKeyEvent',
-      { type, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, text: type === 'char' ? '\r' : undefined });
+    // 提交：优先点发送按钮（页面内等它启用再点，最稳）；不成再用回车
     const marker = String(prompt).trim().replace(/\s+/g, ' ').slice(0, 24);
     const mineIn = (s) => !!s && String(s.lastSend || '').replace(/\s+/g, ' ').includes(marker.slice(0, 12));
-    await key('keyDown'); await key('char'); await key('keyUp');
-    let sent = false;
-    for (let i = 0; i < 8; i++) {
-      await sleep(1000);
+    const isSent = async () => {
       const s = await cdp.evalJs(MSG_STATE);
-      if (s && ((s.sends || 0) > (st0.sends || 0) || mineIn(s))) { sent = true; break; }
-    }
+      return !!(s && ((s.sends || 0) > (st0.sends || 0) || mineIn(s)));
+    };
+    let sent = false;
+    const sr = await cdp.evalJs(CLICK_SEND_WAIT, 20000);
+    if (sr && sr.ok) {
+      step('点了发送按钮（' + sr.how + '）');
+      for (let i = 0; i < 8; i++) { await sleep(1000); if (await isSent()) { sent = true; break; } }
+    } else { step('没点到发送按钮，改用回车'); }
     if (!sent) {
-      step('回车没提交，改点发送按钮');
-      const clicked = await cdp.evalJs(CLICK_SEND);
-      if (clicked) {
-        for (let i = 0; i < 8; i++) {
-          await sleep(1000);
-          const s = await cdp.evalJs(MSG_STATE);
-          if (s && ((s.sends || 0) > (st0.sends || 0) || mineIn(s))) { sent = true; break; }
-        }
-      }
+      const key = (type) => cdp.send('Input.dispatchKeyEvent',
+        { type, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, text: type === 'char' ? '\r' : undefined });
+      await cdp.evalJs(FOCUS_COMPOSER);          // 回车前重新聚焦
+      await key('keyDown'); await key('char'); await key('keyUp');
+      for (let i = 0; i < 8; i++) { await sleep(1000); if (await isSent()) { sent = true; break; } }
     }
     if (!sent) { log('✗ 没能把消息发出去（没找到发送按钮，或页面变了）'); return 5; }
-    step('已发送，等它答复…');
+    step('已发送，正在定位承载本次任务的会话…');
+
+    // 发送后**重新扫描所有聊天页**，用 prompt 指纹锁定真正承载本次消息的 target（视图可能被切走），
+    // 从锁定的连接读答复；扫不到才退回原连接。
+    const located = await locateSentTarget(marker);
+    if (located) {
+      readCdp = located.cdp;
+      sid = located.sid || sid;
+    } else {
+      readCdp = cdp;
+      sid = String(await cdp.evalJs(PAGE_SID) || '');
+      step('没扫到带本次消息标记的会话，退回当前连接读取');
+    }
+    // 认准会话落哪个 profile（多 profile 时 Default 常是旧壳）
+    if (sid) {
+      const sd = sessionDirFor(sid);
+      if (sd) {
+        const root = path.dirname(sd);                 // <…>\workspace\.sessions
+        if (root && root !== SESSIONS) { SESSIONS = root; step('会话目录：' + clip(root, 80)); }
+      }
+    }
+    step('等它答复…');
 
     // 取答复：**以界面为准**（这一版不写 trajectory 的 assistant 行）。
-    // 判定写完：出现"消耗 N 点"标记，或文本连续 4 秒不再变长。
-    const baseRecv = st0.recvs || 0;
-    const STABLE_MS = Math.min(6000, Math.max(2500, (IDLE || 8) * 400));   // --idle 调的是这个"静了多久算写完"
+    // 判定写完：出现"消耗 N 点"标记，或文本连续 STABLE_MS 不再变长。
+    const STABLE_MS = Math.min(6000, Math.max(2500, (IDLE || 8) * 400));   // --idle 调"静了多久算写完"
     let last = '';
     let lastGrow = 0;      // 首次拿到答复文本的时刻（0＝还没拿到）
     let lastProgress = 0;
     while (Date.now() - t0 < TIMEOUT * 1000) {
       await sleep(1200);
       let s = null;
-      try { s = await cdp.evalJs(MSG_STATE); } catch { /* 页面重绘时偶发，下一轮再读 */ }
+      try { s = await readCdp.evalJs(MSG_STATE); } catch { /* target 重绘时偶发，下一轮再读 */ }
       if (!s) continue;
-      const got = (s.recvs || 0) > baseRecv ? String(s.lastRecv || '') : '';
+      const got = String(s.lastRecv || '').trim();
       if (got && !last) step('它开始答了');
       if (got && got !== last) {
         last = got;
@@ -541,7 +736,10 @@ async function actAsk() {
       if (got && s.done) break;                                                         // "消耗 N 点"＝写完
     }
     if (last) answer = stripRenderBlock(String(last).replace(/^消耗\s*[\d.]+\s*点\s*/m, ''));
-  } finally { cdp.close(); }
+  } finally {
+    try { readCdp && readCdp.close(); } catch {}
+    try { if (readCdp !== cdp) cdp.close(); } catch {}
+  }
 
   if (!answer) { log('✗ 到时间没拿到答复（看上面的进度判断它卡在哪一步）'); return 4; }
   if (sid) log('· 会话 ' + sid);

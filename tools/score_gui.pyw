@@ -3261,7 +3261,7 @@ def main():
     # 仍然走 Tk 那条无头路径，agent 与文档里的契约不受影响。
     _batch = bool(opt.get("add") or opt.get("root") or opt.get("name")
                   or opt.get("material") or opt.get("dnd_selftest"))
-    if not opt.get("classic") and not _batch:
+    if not _batch:
         try:
             _ws = _load_core("workbench_server.py", "workbench_server")
             if _ws is not None:
@@ -3276,7 +3276,16 @@ def main():
                      "w", encoding="utf-8").write(traceback.format_exc())
             except OSError:
                 pass
-        # 起不来就静默退回 Tk 界面（别让用户对着什么都没有的桌面）
+        # 网页工作台起不来：明确报错并退出（**不再退回经典 Tk 界面**）
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(
+                0, "AI 视频工作台启动失败。\n日志：%s"
+                % os.path.join(os.environ.get("TEMP", "."), "workbench_web_crash.log"),
+                "HeronBo · AI 视频工作台", 0x10)
+        except Exception:                                        # noqa: BLE001
+            pass
+        return
     root = _TkDnD.Tk() if _TkDnD is not None else tk.Tk()
     try:      # 拖拽诊断：冻结后 tkdnd 有没有真的加载，写文件给 agent 看
         _diag = {"tkinterdnd2": _TkDnD is not None,
@@ -3295,15 +3304,6 @@ def main():
     selftest_res = {"code": None}
     try:
         app = App(root, opt.get("sample"))
-        if opt.get("classic"):
-            try:      # 经典界面与 HTML 工作台会同时存在过一会儿，标题里标出来便于分辨
-                root.title("HeronBo · AI 视频工作台（经典界面 · Ctrl+Shift+W 回网页工作台）")
-            except tk.TclError:
-                pass
-            try:      # 再弹一条启动提示：光看标题容易漏
-                Toast(root, "经典界面：按 Ctrl+Shift+W 可回网页工作台", app.theme, ms=4600)
-            except Exception:                                     # noqa: BLE001
-                pass
         if (opt.get("material") or opt.get("add") or opt.get("name")
                 or opt.get("project")):          # --project 单独给也要落到那个项目上
             root.after(120, lambda: _run_material_actions(app, opt))

@@ -335,7 +335,15 @@ def transcribe(wav, lang="zh"):
     except Exception:
         print("[提示] 没装 faster-whisper，跳过转写（--asr）")
         return None
-    model = WhisperModel("small", device="cpu", compute_type="int8")
+    # 模型优先用 _vendor 里封好的本地版（离线开箱即用）；没有再回退 "small"（走缓存/联网）
+    model_path = "small"
+    try:
+        local = os.path.join(HERE, "_vendor", "models", "faster-whisper-small")
+        if os.path.isfile(os.path.join(local, "model.bin")):
+            model_path = local
+    except Exception:
+        pass
+    model = WhisperModel(model_path, device="cpu", compute_type="int8")
     segments, info = model.transcribe(wav, language=lang, vad_filter=True)
     out = [{"start": round(s.start, 2), "end": round(s.end, 2), "text": s.text.strip()} for s in segments]
     return {"lang_prob": round(float(info.language_probability), 2), "segments": out}
