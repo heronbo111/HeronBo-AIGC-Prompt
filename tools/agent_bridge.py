@@ -417,7 +417,8 @@ def doubaowork_exe():
 def _doubaowork_running():
     try:
         out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq DoubaoWork.exe", "/FO", "CSV", "/NH"],
-                             capture_output=True, text=True, errors="replace", timeout=20).stdout
+                             capture_output=True, text=True, errors="replace", timeout=20,
+                             **no_window_kwargs()).stdout
     except (OSError, subprocess.SubprocessError):
         return False
     return "DoubaoWork.exe" in (out or "")
@@ -1022,7 +1023,8 @@ def _run_quiet(cmd, timeout=25, cwd=None):
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
                            errors="replace", timeout=timeout, env=env,
-                           cwd=cwd or HERE, stdin=subprocess.DEVNULL)
+                           cwd=cwd or HERE, stdin=subprocess.DEVNULL,
+                           **no_window_kwargs())
         return r.returncode, ((r.stdout or "") + (r.stderr or "")).strip()
     except (OSError, subprocess.SubprocessError) as e:
         return -1, str(e)
