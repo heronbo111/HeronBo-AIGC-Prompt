@@ -2,8 +2,8 @@
 
 > 只记**对使用者有意义**的变化。规则级细节与依据见 [`references/rules.md`](references/rules.md)
 > （每条规则都带「规则 + 依据（日期/来源）」），写法与句式见 [`references/prompt-templates.md`](references/prompt-templates.md)。
-> 分发口径：仓库只放代码；大件与工作台 exe 走 [Release 附件](https://github.com/heronbo111/HeronBo-AIGC-Prompt/releases)，
-> 拉齐用 `python tools/deploy.py vendor --fetch --yes`。
+> 分发口径：普通用户下载 Release 的**完整安装包**（v0.4.0 起双击即装、依赖全封装）；仓库只放代码。
+> [Release 页面](https://github.com/heronbo111/HeronBo-AIGC-Prompt/releases/tag/v0.4.0)
 
 ## v0.4.0 · 2026-09-29
 

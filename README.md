@@ -77,23 +77,25 @@ python tools\部署.py all --yes
 
 它会：找 Python → 用仓库自带的离线 wheel 装必需依赖 → 接 agent 通道并真跑一句验证连通 → 建桌面快捷方式 → 把工作台弹出来。
 
-### 大件与工作台 exe 怎么拿（仓库只放代码）
+### 怎么拿到工作台（推荐：完整安装包）
 
-**仓库只放代码（约 13MB），大件走 Release 附件**（2026-09-17 起）——因为把 300MB 安装资产和
-历代 exe 放进 git，会把 Gitee 的 1GB 配额撑爆（实测 1047MB 被拒收）。
+**普通用户 / 不想装环境：直接下载完整安装包，双击即装。** v0.4.0 起，安装包已把嵌入式 Python、
+便携 Node、ffmpeg、深度模型、语音转写和全部依赖封进去（约 792MB），离线机器装完即用，**不需要 Python/Git**。
 
-| 你要什么 | 命令 |
+| 你要什么 | 怎么做 |
 |---|---|
-| 代码（clone 12 秒） | `git clone --depth 1 https://gitee.com/HeronBo/HeronBo-AIGC-Prompt.git` |
-| **安装全套**（Python 轮子 + ffmpeg + 深度模型 + 工作台 exe，约 305MB，一次就好） | `python tools/deploy.py vendor --fetch --yes` |
-| **更新工作台**（已有安装，想把 exe 换成最新版） | **工作台里点标题条右侧的「检查更新」** → 「下载并重启」，它自己下、校验、换位、重启（开着工作台也能更新；弹窗里还有「回滚到上一版」）。命令行也能：关掉工作台 → `python tools/deploy.py vendor --fetch --yes`（`--exe` 可强制重下）|
-| 只要核心（工作台 + 出提示词 + 评分） | 什么都不用做 |
-| 想要最新 exe | **工作台里点「检查更新」**（不用关工作台）；命令行：关掉工作台 → `python tools/deploy.py vendor --fetch --yes` |
-| 我这版是哪一版 | 看一眼标题条「检查更新」旁的版本号；命令行 `python tools\版本.py`（current / remote / check）|
+| **安装 / 使用工作台（推荐）** | 到 Release 下载 `HeronBo视频工作台_完整版_Setup_v0.4.0.exe`，双击安装（可选安装位置、桌面快捷方式） |
+| **更新工作台** | 工作台标题条右侧「检查更新」→「下载并重启」，自动下载、校验、换位、重启（弹窗可「回滚到上一版」） |
+| 我这版是哪一版 | 看「检查更新」旁版本号；命令行 `python tools\版本.py`（current / remote / check） |
+| 只要核心（出提示词 + 评分） | 完整包已包含，装上即可 |
 
-附件地址：`https://github.com/heronbo111/HeronBo-AIGC-Prompt/releases`（最新 tag `vendor-2026-09-22`）
-（下载慢的话：脚本会**自动换镜像源**（gh-proxy 等前缀依次试）；也可 `HERONBO_VENDOR_REL=<镜像前缀>` 手动换源）。
-`python tools/deploy.py all --yes` 会**自动**把缺的拉齐。
+- Release 页面（GitHub，含完整安装包与 score-tool 内核）：
+  https://github.com/heronbo111/HeronBo-AIGC-Prompt/releases/tag/v0.4.0
+- Gitee 因附件单文件 **100MB 上限**无法托管完整包；Gitee 发行版 v0.4.0 放了 score-tool 内核，
+  完整包请走上面的 GitHub 链接：https://gitee.com/HeronBo/HeronBo-AIGC-Prompt/releases
+
+**开发者 / 想从源码运行**：clone 仓库（`--depth 1`）后跑 `python tools\部署.py all --yes`，
+或 `python tools\环境检查.py` 自行联网装依赖（完整包已内含的离线大件不再随 Release 提供）。
 
 ### exe 被杀软 / Defender 删了（2026-09-22 实测）
 
@@ -104,8 +106,8 @@ python tools/deploy.py defender          # 只检查：exe 还在不在、保护
 python tools/deploy.py defender --yes    # 提权把工作台目录加进白名单（UAC 点「是」）
 ```
 
-然后二选一：到「Windows 安全中心 → 保护历史」把隔离的 `score-tool.exe` **还原**；
-或 `python tools/deploy.py vendor --fetch --yes` **重新下一份**。加过白名单后不会再删。
+然后二选一：到「Windows 安全中心 → 保护历史」把隔离的程序**还原**；
+或重新下载完整安装包（见上「怎么拿到工作台」）**重装一份**。加过白名单后不会再删。
 要彻底除名可向微软提交误报申诉（https://www.microsoft.com/en-us/wdsi/filesubmission）。
 
 **工作台窗口一片空白？** 那是 WebView2 运行库坏了（注册表写着装了、目录里 `msedgewebview2.exe` 却没了）——
@@ -115,7 +117,7 @@ python tools/deploy.py defender --yes    # 提权把工作台目录加进白名�
 ### 换机四件套（必做，约 5 分钟）
 
 0. **环境检查（第一件事）**：`python tools\环境检查.py` —— 逐项自检 python≥3.9 / ffmpeg / ffprobe / WebView2 / pywebview，以及**按需**的 numpy / opencv / faster-whisper（拆解转写）/ onnxruntime（深度视频）/ Yunet 人脸模型 / 系统 OCR / Depth 模型，缺什么就打印该装什么。
-   装缺项：**先问用户**，同意后 `python tools\环境检查.py --install --yes`（**仓库自带离线包时默认一次装全**；ffmpeg 与深度模型都在 `tools/_vendor/` 里，装完即用）；模型另跑 `--models`（Depth，约 99MB，HF 需代理）与 `--warm-asr`（预下转写模型）。**装软件必须用户同意，不许静默安装。**
+   装缺项：**先问用户**，同意后 `python tools\环境检查.py --install --yes`（**仓库自带必需依赖离线包**；本机开发目录的 `tools/_vendor/` 另含 ffmpeg 与深度模型可离线装，公开 clone 无大件、由脚本联网获取——普通用户直接用完整安装包即可）；模型另跑 `--models`（Depth，约 99MB，HF 需代理）与 `--warm-asr`（预下转写模型）。**装软件必须用户同意，不许静默安装。**
 1. **问项目位置**：agent 问「请问您要把项目建在哪里？您提供好素材后，我会自动将其进行归类」→ `python tools\首次配置.py --project "<项目目录>"` 建框架（`文案/素材/成片/废片/评价/备注`）+ 自动归类素材 + 写入 `references/paths.local.md`（已 gitignore，不进仓库）。
 2. **问平台（可选装 CLI）**：agent 问「你主要用哪个平台做 AI 视频？即梦 / 小云雀 / updream」→ 按 `references/platforms.md` 检测：
    - 即梦 = `dreamina`（官方脚本 `curl -fsSL https://jimeng.jianying.com/cli | bash`；Windows 用 Git Bash 或按官方指引）；

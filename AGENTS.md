@@ -33,7 +33,7 @@
 python tools/首次配置.py                     # 自检：已配置 exit 0；未配置 exit 1 并打印要问用户的话
 python tools/联调自检.py                     # 全流程自检（35 项，改工具链后必跑）
 python tools/提示词体检.py --project "<项目目录>"   # 提示词外形与内容体检（0 不合格才算交付）
-python tools/部署.py vendor --fetch --yes    # 拉大件与工作台 exe（Release 附件，约 305MB）
+python tools/打包换位.py                      # 开发者重打/换位工作台 exe（普通用户走完整安装包）
 python tools/换exe.py                        # 换工作台 exe（要求当前没有实例在跑）
 tools/score_gui.cmd                          # 弹评分窗口（或直接跑 tools/dist/score-tool.exe）
 python tools/发布exe附件.py                   # 把大件/exe 发到 Release 附件
@@ -63,8 +63,8 @@ python tools/发布exe附件.py                   # 把大件/exe 发到 Release
      先确认自己没有未提交改动，再 `git fetch <远程> && git reset --hard FETCH_HEAD` 对齐
      （这是第 6 条的**必要例外**）；或者干脆删掉重新 clone。
    - **重写之后克隆的副本**：不受影响，照旧 `git pull --rebase`。
-   - 工作台源码（界面 / 本地服务 / 启动器 / 打包配置）**不在本仓库**了；用户拿工作台走
-     Release 附件（`python tools\部署.py vendor --fetch --yes`），不需要源码。
+   - 工作台源码（界面 / 本地服务 / 启动器 / 打包配置）**不在本仓库**；用户直接下载 Release 的
+     v0.4.0 完整安装包（双击即装），不需要源码、也不需要 Python/Git。
 7.1 **冲突裁决**：以「用户实测反馈 > 模板惯例 > 推断」为准；合并后必须自检：
    - `python tools/首次配置.py` 无参运行：已配置 exit 0；未配置 exit 1 并打印「请问您要把项目建在哪里？您提供好素材后，我会自动将其进行归类」
    - `tools\score_gui.cmd` 能弹出评分窗口（或直接跑 `tools\dist\score-tool.exe`）

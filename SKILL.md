@@ -145,7 +145,7 @@ agent_created: true
 3. 多段时附拼接说明（切点/承接点/跳切微调）
 4. **硬性要求：交付完必须把评分工具弹出来**——这是交付动作的一部分，不是可选项；不许只留一句「记得打分」就算完。
    - 起法（agent 自己起，别让用户去找）：`tools\score_gui.cmd`（双击等价）；想打开就定位到某个项目 → `tools\dist\score-tool.exe --sample "<项目名关键词>"`。
-   - 没打包过 exe 的机器：`score_gui.cmd` 会自动改用 pythonw 起 `score_gui.pyw`；要 exe 就跑 `python tools\部署.py vendor --fetch --yes` 拿官方 exe（Release 附件）。
+   - 没打包过 exe 的机器：`score_gui.cmd` 会自动改用 pythonw 起 `score_gui.pyw`；要用现成工作台就到 Release 下载 v0.4.0 完整安装包（双击即装）。
    - 窗口用法：选样本 → 选成片 → 六维/违禁项逐项点分 → 五星 + 结论 + 备注 → **保存评分**（也可 `Ctrl+S`）。
    - 可换主题（浅色 / 深色 / 莫兰迪 / 护眼绿 / 暗夜），选过的主题自动记住。
    - **没保存就关窗会被拦**：弹「还有没保存的评分」，给「返回继续 / 直接关闭 / 保存并关闭」三个选择。
@@ -310,10 +310,9 @@ WorkBuddy 的 headless CLI（`tools\agent_bridge.py` 封装，已自动避开端
   ZCode 的 CLI 找法按"根目录 + 1~3 层通配"搜（能认出 `F:\新建文件夹 (3)\ZCode\resources\glm\zcode.cjs`
   这种多套一层的情况）；跑之前还会查 `~/.zcode/cli/config.json` 有没有 provider/model，没有就直说
   「先跑一次 zcode login」，别让用户"选了才发现跑不了"。
-- **打包替换 exe**（2026-09-16 加）：`python tools\部署.py vendor --fetch --yes`（从 Release 拿官方 exe，换到 `tools\dist\score-tool.exe`，
-  自动留一份 `score-tool_旧_*.exe` 回滚）。**换位工具会拦"工作台还开着"**：exe 在跑的时候换，
-  正在跑的实例会读到改过的文件、可能莫名崩（2026-09-16 用 `mv -f` 硬换踩到过）；真被拦下就关掉
-  工作台再跑，实在要硬换加 `--force` 并**手工关掉重开**那个实例。
+- **更新工作台**：普通用户在工作台点「检查更新」、或下载 v0.4.0 完整安装包重装；开发者重打 exe 用 `tools\打包换位.py`
+  （换位会拦"工作台还开着"：exe 在跑的时候换，正在跑的实例可能莫名崩，2026-09-16 用 `mv -f` 硬换踩到过；
+  被拦下就关掉工作台再换位，实在要硬换加 `--force` 并**手工关掉重开**那个实例）。
 - **clone 用 `--depth 1`**（2026-09-16）：仓库历史里有历代 18 MB 的 exe，完整 clone 要下 70 MB+ 历史，
   浅克隆 20 MB 左右。新机照着 `docs/新机部署.md` 走。
 - **图文教程**：`docs/工作台与新手教程.html`（内容与本节同步；改规则请改仓库文件，不要只改那份 html）。

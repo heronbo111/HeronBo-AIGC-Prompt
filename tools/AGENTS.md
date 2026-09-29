@@ -22,7 +22,7 @@
 python 首次配置.py                       # 自检：已配置 exit 0；未配置 exit 1 并打印要问用户的话
 python 联调自检.py                       # 全流程自检（35 项）
 python 提示词体检.py --project "<项目>"    # 提示词体检（0 不合格才算交付）
-python 部署.py vendor --fetch --yes      # 拉 Release 附件里的大件与工作台 exe
+python 打包换位.py                        # 开发者重打/换位 exe（普通用户下载完整安装包）
 python 换exe.py                          # 换工作台 exe（实例在跑会拒绝——别用 --force 硬换）
 python 发布exe附件.py                     # 把大件/exe 发到 Release 附件
 python 打市场包.py                        # 打上架用的包
