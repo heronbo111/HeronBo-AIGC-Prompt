@@ -66,6 +66,15 @@ const TIMEOUT = Number(opt('timeout', 600));
 const NO_LAUNCH = has('no-launch');
 const PROMPT_FILE = opt('prompt-file');
 const PROMPT = opt('prompt');
+// 视频生成（action=video）相关参数
+const VSTAGE = opt('stage', 'prepare');
+const VIMAGE = opt('image');
+const VAUDIO = opt('audio');
+const VMODEL = opt('model');
+const VRATIO = opt('ratio');
+const VDURATION = opt('duration');
+const VSID = opt('sid');
+const VOUT = opt('out');
 
 const EXE_CANDIDATES = [
   process.env.HERONBO_DOUBAO_EXE,
@@ -283,13 +292,18 @@ const MSG_STATE = `(() => {
   const recvs = rows('[data-testid="receive_message"]');
   const lastRecvEl = recvs.length ? recvs[recvs.length - 1] : null;
   const bar = lastRecvEl ? String(lastRecvEl.innerText || '') : '';
+  // 运行中最可靠信号：输入区“中断”按钮(chat_input_local_break_button)在思考/工具调用/输出全程都在，
+  // 任务真正结束才消失。文字正则在“工具调用间隙、无思考提示”时会漏，故以该按钮为准。
+  const running = !!document.querySelector('[data-testid="chat_input_local_break_button"]');
   return {
     sends: sends.length,
     recvs: recvs.length,
     lastSend: sends.length ? txt(sends[sends.length - 1]) : '',
     lastRecv: lastRecvEl ? txt(lastRecvEl) : '',
+    fullRecv: bar,
     done: /消耗\\s*[\\d.]+\\s*点/.test(bar),
-    busy: /停止生成|生成中|正在生成|思考中|请稍候/.test(bar),
+    running,
+    busy: running || /停止生成|生成中|正在生成|思考中|正在思考|请稍候|高峰期|优先通道|排队|正在准备|加载中/.test(bar),
   };
 })()`;
 const PAGE_SID = `(() => { const m = location.href.match(/chat\\/(\\d+)/); return m ? m[1] : ''; })()`;
@@ -417,6 +431,185 @@ async function locateSentTarget(marker, waitMs = 22000) {
   }
   return null;
 }
+/** 在**后台标签页**打开空白会话（独立 target/webContents，不弹窗、不抢焦点）：与其他会话隔离，
+ *  别的会话提前回消息也不会把它导航/顶掉。返回已连接的 cdp（含 .targetId）。
+ *  Electron 默认会节流/挂起后台页面（点击发送零请求），这里用「焦点模拟 + 强制 active」对抗，
+ *  另由 launchApp 的抗节流启动开关双保险。 */
+async function createIsolatedChat(opts = {}) {
+  const asWindow = !!(opts && opts.asWindow);
+  const silent = !!(opts && opts.silent);
+  const ver = await getJson('/json/version');
+  if (!ver || !ver.webSocketDebuggerUrl) throw new Error('拿不到 browser 级 CDP 连接');
+  const b = new Cdp(ver.webSocketDebuggerUrl);
+  await b.connect();
+  let newId = '';
+  try {
+    const r = await b.send('Target.createTarget',
+      asWindow
+        ? { url: 'doubaowork://doubaowork-chat/chat', newWindow: true }
+        : { url: 'doubaowork://doubaowork-chat/chat', newWindow: false, background: true }, 15000);
+    newId = r.targetId;
+  } finally { b.close(); }
+  if (!newId) throw new Error('Target.createTarget 没返回 targetId');
+  let t = null;
+  for (let i = 0; i < 30; i++) {
+    await sleep(400);
+    const list = await getJson('/json/list');
+    t = (list || []).find((x) => (x.targetId || x.id) === newId && x.webSocketDebuggerUrl);
+    if (t) break;
+  }
+  if (!t) throw new Error('新建的会话页没出现在 target 列表');
+  const cdp = new Cdp(t.webSocketDebuggerUrl);
+  await cdp.connect();
+  await cdp.send('Runtime.enable');
+  await cdp.send('Page.enable').catch(() => {});
+  // 无论窗口/标签：模拟焦点 + 强制 active，后台/最小化下不被节流、tiptap 可聚焦、DOM click 可发送
+  await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
+  await cdp.send('Page.setWebLifecycleState', { state: 'active' }).catch(() => {});
+  if (asWindow && !silent) {
+    // 非静默：置前获得真实焦点
+    await cdp.send('Page.bringToFront').catch(() => {});
+  }
+  if (asWindow && silent) {
+    // 静默：不置前、立即最小化到任务栏（不挡屏不抢焦），页面仍 active；失败/取消由调用方关窗
+    for (let i = 0; i < 8; i++) {
+      try {
+        const w = await cdp.send('Browser.getWindowForTarget', { targetId: newId });
+        await cdp.send('Browser.setWindowBounds',
+          { windowId: w.windowId, bounds: { windowState: 'minimized' } });
+        break;
+      } catch { await sleep(250); }
+    }
+  }
+  // 等输入框**真正渲染**：FOCUS_COMPOSER 非空。不能用 IS_FRESH——无编辑器时它会误报 fresh。
+  let ready = false;
+  for (let i = 0; i < 30; i++) {
+    const c = await cdp.evalJs(FOCUS_COMPOSER).catch(() => null);
+    if (c) { ready = true; break; }
+    await sleep(400);
+  }
+  if (!ready) throw new Error('后台会话输入框没渲染出来');
+  // 再充分等待，让网络/IPC/鉴权等初始化全部完成（否则点击发送会被吞、按钮卡 disabled）。
+  await sleep(2500);
+  cdp.targetId = newId;
+  return cdp;
+}
+/** 关闭指定会话窗口（Target.closeTarget） */
+async function closeTarget(targetId) {
+  if (!targetId) return;
+  const ver = await getJson('/json/version');
+  if (!ver || !ver.webSocketDebuggerUrl) return;
+  const b = new Cdp(ver.webSocketDebuggerUrl);
+  await b.connect();
+  try { await b.send('Target.closeTarget', { targetId }, 8000); } catch {}
+  finally { b.close(); }
+}
+
+// ========== 视频生成（普通对话，三档可选；prepare / confirm / cancel） ==========
+// 上传附件：直接对隐藏 input[type=file] 用 DOM.setFileInputFiles（绕过系统文件选择框）
+async function uploadAttachments(cdp, files) {
+  await cdp.send('DOM.enable').catch(() => {});
+  for (const f of files.map((x) => path.resolve(x))) {
+    let nodeId = 0;
+    try {
+      const s = await cdp.send('DOM.performSearch', { query: 'input[type="file"]' }, 10000);
+      if (s && s.resultCount > 0) {
+        const r = await cdp.send('DOM.getSearchResults',
+          { searchId: s.searchId, fromIndex: 0, toIndex: 1 });
+        nodeId = r.nodeIds[0];
+      }
+    } catch {}
+    if (!nodeId) throw new Error('没找到文件上传 input[type=file]');
+    await cdp.send('DOM.setFileInputFiles', { files: [f], nodeId }, 20000);
+    step('已选择上传：' + path.basename(f));
+    await sleep(2800);                          // 等上传完成 / 缩略图出现
+  }
+}
+// 构造视频请求（路径2：图生接口无音频位 → 给本地路径，画面/配音分头生成再对齐合成；prepare 只回计划、不生成）
+function buildVideoRequest(o) {
+  const L = [];
+  L.push('我要做一条【' + (o.image ? '图生' : '文生') + '·口播带货】视频。关键约束：图生视频接口没有音频输入位，无法“图+音色”一次出整条口播，所以请按“画面与配音分头生成、再逐段对齐、合成一条成片”的流水线执行。素材你直接读本地文件即可，我不需要在对话里上传附件。');
+  L.push('');
+  L.push('【本地素材（请直接用绝对路径读取）】');
+  if (o.image) L.push('- 首帧/形象参考图：' + o.image);
+  if (o.audio) L.push('- 音色参考（只克隆声线与说话状态，不要念它原本内容）：' + o.audio);
+  L.push('');
+  L.push('【独立执行参数（以此为准）】');
+  L.push('- 画面模型：' + o.model);
+  L.push('- 画面比例：' + o.ratio);
+  L.push('- 成片总时长：约 ' + o.duration + ' 秒（带货快口播；分段画面与配音都对齐到该总时长）');
+  L.push('- 形式：' + (o.image ? '图生，分段生成画面' : '文生，分段生成画面'));
+  L.push('');
+  L.push('【确认后请按此流水线执行】');
+  L.push('1. ' + (o.image ? '读取首帧图锁定人物外观；' : '') + '按台词语气拐点把画面分成 2 段（时长贴合口播、含余量且合计不超过总时长；具体切点、每段秒数与对应台词分句请在确认清单里给出时间轴）。逐段生成画面：第1段以' + (o.image ? '首帧图' : '提示词') + '为起点，第2段以第1段末尾姿态/画面衔接，保证人物、服装、场景、光线一致，并满足提示词中该段对应的动作、眼神与口型要求。');
+  L.push('2. 用音色参考 + 台词全文生成与画面等长的配音（可按同一切点分段生成再拼接），带货快口播语速，读音准确（“四六级”读 sì-liù-jí、“580”读 wǔ-bā-líng）。');
+  L.push('3. 把配音与分段画面逐段对齐口型和节奏，合成【一条】' + o.ratio + '、约 ' + o.duration + ' 秒的成片：段间承接自然、无跳切/黑帧，响度统一；无字幕、水印、Logo，无 BGM。');
+  L.push('');
+  L.push('【现在停在计划阶段，不要生成、不消耗额度】请只回一份“执行计划确认清单”：');
+  L.push('- 分段时间轴：每段起止秒、对应台词分句、画面动作要点；');
+  L.push('- 每段输入（首帧/上一帧）与配音方式；合成方式与最终规格（模型/比例/总时长）；');
+  L.push('- 预计消耗（点数/积分）：分列画面、配音与合计，并给出重试余量建议。');
+  L.push('等我明确回复“确认”后再开始执行。');
+  L.push('');
+  L.push('——以下是可移植的视频提示词正文（已含画幅与“按台词估算时长”的依据，请原样遵循，不要删改其中的时长/画幅依据）——');
+  L.push(o.prompt);
+  return L.join('\n');
+}
+// 按 sid 找已存在的会话 target 并连接（后台、抗节流）
+async function attachSessionBySid(sid, waitMs = 15000, opts = {}) {
+  const dl = Date.now() + waitMs;
+  while (Date.now() < dl) {
+    const list = await getJson('/json/list');
+    const t = (list || []).find((x) => x.type === 'page'
+      && (x.url || '').includes('/chat/' + sid) && x.webSocketDebuggerUrl);
+    if (t) {
+      const c = new Cdp(t.webSocketDebuggerUrl);
+      await c.connect();
+      await c.send('Runtime.enable');
+      await c.send('Page.enable').catch(() => {});
+      if (!(opts && opts.silent)) await c.send('Page.bringToFront').catch(() => {});
+      await c.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
+      await c.send('Page.setWebLifecycleState', { state: 'active' }).catch(() => {});
+      c.targetId = t.targetId || t.id;
+      return c;
+    }
+    await sleep(700);
+  }
+  return null;
+}
+// 最后一条回复里的视频状态
+const VIDEO_STATE = `(() => {
+  const recvs = [...document.querySelectorAll('[data-testid="receive_message"]')];
+  const last = recvs[recvs.length - 1];
+  const running = !!document.querySelector('[data-testid="chat_input_local_break_button"]');
+  if (!last) return { has: false, running };
+  const v = last.querySelector('video');
+  const text = (last.querySelector('[data-testid="message_text_content"]') || last).innerText.trim();
+  if (v) return { has: true, src: v.currentSrc || v.src, ready: v.readyState, dur: v.duration };
+  return { has: false, running, text: text.slice(-220) };
+})()`;
+// 页面内 fetch 视频 → 分块 base64 读回写盘（兼容 blob: 与 http）
+async function downloadMedia(cdp, srcUrl, outPath) {
+  const meta = await cdp.evalJs(`(async () => {
+    const r = await fetch(${JSON.stringify(srcUrl)});
+    if (!r.ok) return { err: 'HTTP ' + r.status };
+    const b = new Uint8Array(await r.arrayBuffer());
+    let s = ''; for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+    window.__dlv = btoa(s);
+    return { bytes: b.length, b64: window.__dlv.length };
+  })()`, 90000);
+  if (!meta || meta.err) throw new Error('抓取视频失败：' + (meta && meta.err || '?'));
+  const fd = fs.openSync(outPath, 'w');
+  const CH = 120000;
+  try {
+    for (let off = 0; off < meta.b64; off += CH) {
+      const piece = await cdp.evalJs(`window.__dlv.slice(${off},${off + CH})`);
+      fs.writeSync(fd, Buffer.from(piece, 'base64'));
+    }
+  } finally { fs.closeSync(fd); }
+  await cdp.evalJs('delete window.__dlv').catch(() => {});
+  return meta.bytes;
+}
 
 function stateRead() {
   try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch { return {}; }
@@ -459,13 +652,39 @@ async function launchApp() {
   if (!EXE) return { ok: false, why: '没找到 DoubaoWork.exe（用 --exe 指定，或设 HERONBO_DOUBAO_EXE）' };
   PORT = await pickPort();
   step('正在带调试端口启动豆包工作：端口 ' + PORT);
-  const args = ['--remote-debugging-port=' + PORT, '--remote-allow-origins=*'];
+  // 抗节流/挂起开关：让后台、遮挡、最小化的页面不被 Electron 降速或冻结（配合后台标签页方案）。
+  // --disable-notifications 去系统通知弹窗；--window-position 离屏让初始窗口不挡屏（CDP 再最小化兜底）。
+  const args = ['--remote-debugging-port=' + PORT, '--remote-allow-origins=*',
+    '--disable-background-timer-throttling', '--disable-renderer-backgrounding',
+    '--disable-backgrounding-occluded-windows', '--disable-features=CalculateNativeWinOcclusion',
+    '--disable-hang-monitor', '--disable-notifications',
+    '--window-position=-32000,-32000', '--window-size=1000,700'];
   spawn(EXE, args, { detached: true, stdio: 'ignore' }).unref();
   for (let i = 0; i < 30; i++) {
     await sleep(1000);
-    if (await cdpReady()) return { ok: true };
+    if (await cdpReady()) { await hideLaunchedWindow().catch(() => {}); return { ok: true }; }
   }
   return { ok: false, why: '起了但调试端口没通（客户端可能屏蔽了该开关）' };
+}
+
+/** 把"我们刚拉起"的客户端窗口移出视野并最小化（绝不动用户已在看的窗口）：
+ *  命令行已给离屏坐标，这里再用 CDP 强制最小化兜底。配合抗节流开关，后台仍正常工作。 */
+async function hideLaunchedWindow() {
+  const ver = await getJson('/json/version');
+  if (!ver || !ver.webSocketDebuggerUrl) return;
+  const list = await getJson('/json/list');
+  const page = (list || []).find((x) => x.type === 'page' && x.webSocketDebuggerUrl);
+  if (!page) return;
+  const b = new Cdp(ver.webSocketDebuggerUrl);
+  await b.connect();
+  try {
+    const tid = page.targetId || page.id;
+    const w = await b.send('Browser.getWindowForTarget', { targetId: tid }).catch(() => null);
+    if (w && w.windowId !== undefined) {
+      await b.send('Browser.setWindowBounds',
+        { windowId: w.windowId, bounds: { windowState: 'minimized' } }).catch(() => {});
+    }
+  } finally { b.close(); }
 }
 
 /** 等到"能连上 CDP"；连不上时按需拉起，且在"已在跑但没端口"时明确报错而不是瞎点。 */
@@ -620,23 +839,27 @@ async function actAsk() {
   if (!at.ok) { log('✗ ' + at.why); return at.code || 2; }
 
   const t0 = Date.now();
-  const t = await pickChatTarget();
-  if (!t) { log('✗ 没有可用的页面目标'); return 5; }
-  step('接管页面：' + clip(t.title, 40));
-
-  const cdp = new Cdp(t.webSocketDebuggerUrl);
-  await cdp.connect();
+  let cdp = null;
+  // 优先在**独立窗口**建空白会话（独立 webContents，别的会话提前回消息也不会被顶掉）；
+  // 建不成再退回"当前窗口新建"的旧路径。
+  try {
+    step('正在后台打开空白会话（不弹窗）…');
+    cdp = await createIsolatedChat();
+    step('后台会话已就绪');
+  } catch (e) {
+    step('后台会话没成（' + ((e && e.message) || e) + '），退回当前窗口新建…');
+    const t = await pickChatTarget();
+    if (!t) { log('✗ 没有可用的页面目标'); return 5; }
+    cdp = new Cdp(t.webSocketDebuggerUrl);
+    await cdp.connect();
+    await cdp.send('Runtime.enable');
+    await cdp.send('Page.enable').catch(() => {});
+    await ensureFreshChat(cdp);
+  }
   let answer = '';
   let sid = '';
   let readCdp = null;
   try {
-    await cdp.send('Runtime.enable');
-    await cdp.send('Page.enable').catch(() => {});
-    // 不 bringToFront：豆包工作在后台被静默驱动，避免抢占用户正在看的会话视图
-
-    // 自动进入空白新会话（工作台一键、不污染旧会话）；没成则退回当前会话
-    await ensureFreshChat(cdp);
-
     const foc = await cdp.evalJs(FOCUS_COMPOSER);
     if (!foc) { log('✗ 没找到输入框（可能停在登录页/主页——先在豆包工作里进到对话页再试）'); return 5; }
     step('输入框：<' + foc.tag + '> ' + clip(foc.cls, 40));
@@ -667,42 +890,49 @@ async function actAsk() {
     step('已填入 ' + String(typed || '').length + ' 字');
     if (!String(typed || '').trim()) { log('✗ 文字塞不进输入框'); return 5; }
 
-    // 提交：优先点发送按钮（页面内等它启用再点，最稳）；不成再用回车
+    // 提交：点发送按钮，发送后**直接用 locateSentTarget 轮询锁定**（它内部容错、会等消息真正出现，
+    // 高峰期排队、以及 chat→local_xxx→正式 sid 两段路由都能覆盖）；按钮没成或锁不到再用回车兜底。
     const marker = String(prompt).trim().replace(/\s+/g, ' ').slice(0, 24);
-    const mineIn = (s) => !!s && String(s.lastSend || '').replace(/\s+/g, ' ').includes(marker.slice(0, 12));
-    const isSent = async () => {
-      const s = await cdp.evalJs(MSG_STATE);
-      return !!(s && ((s.sends || 0) > (st0.sends || 0) || mineIn(s)));
-    };
-    let sent = false;
-    const sr = await cdp.evalJs(CLICK_SEND_WAIT, 20000);
-    if (sr && sr.ok) {
-      step('点了发送按钮（' + sr.how + '）');
-      for (let i = 0; i < 8; i++) { await sleep(1000); if (await isSent()) { sent = true; break; } }
-    } else { step('没点到发送按钮，改用回车'); }
-    if (!sent) {
+    const pressEnter = async () => {
       const key = (type) => cdp.send('Input.dispatchKeyEvent',
-        { type, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, text: type === 'char' ? '\r' : undefined });
+        { type, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13,
+          text: type === 'char' ? '\r' : undefined });
       await cdp.evalJs(FOCUS_COMPOSER);          // 回车前重新聚焦
       await key('keyDown'); await key('char'); await key('keyUp');
-      for (let i = 0; i < 8; i++) { await sleep(1000); if (await isSent()) { sent = true; break; } }
-    }
-    if (!sent) { log('✗ 没能把消息发出去（没找到发送按钮，或页面变了）'); return 5; }
-    step('已发送，正在定位承载本次任务的会话…');
+    };
 
-    // 发送后**重新扫描所有聊天页**，用 prompt 指纹锁定真正承载本次消息的 target（视图可能被切走），
-    // 从锁定的连接读答复；扫不到才退回原连接。
-    const located = await locateSentTarget(marker);
-    if (located) {
+    // 提交：点发送按钮。后台页已开焦点模拟 + active（见 createIsolatedChat），无需拉前台、不抢焦点。
+    await sleep(400);
+    const sr = await cdp.evalJs(CLICK_SEND_WAIT, 20000);
+    if (sr && sr.ok) step('点了发送按钮（' + sr.how + '）');
+    else { step('没点到发送按钮，改用回车'); await pressEnter(); }
+
+    if (cdp.targetId) {
+      // ★ 独立窗口：webContents/target id 全程不变，**只锁定这一个连接**等消息落地，绝不扫描其它窗口。
+      // 成功判据：本窗口 sends 增加，或最后一条自己发的消息含本次 marker（覆盖高峰期前 2~3 秒 sends=0 的排队）。
+      let sent = false;
+      // 点一次后耐心等：消息正常 2~4 秒才 sends=1（点击→提交→气泡渲染），高峰期排队更久；
+      // 这段窗口绝不能再点发送按钮——重复点击会干扰/取消首次提交（2026-09-28 实测反而发不出去）。
+      for (let i = 0; i < 30; i++) {
+        const s = await cdp.evalJs(MSG_STATE).catch(() => null);
+        if (s && (s.sends > st0.sends || (s.lastSend && s.lastSend.includes(marker.slice(0, 10))))) { sent = true; break; }
+        await sleep(1000);
+      }
+      if (!sent) { log('✗ 没能把消息发出去（高峰期排队过久或页面变了，可稍后重试）'); return 5; }
+      readCdp = cdp;                                        // 同一个连接，后续只从它读答复
+      sid = String(await cdp.evalJs('location.href') || '').split('/').pop();
+      step('已锁定这个后台会话');
+    } else {
+      // 兜底旧路径（当前窗口新建，可能跨 target 路由）：才用 locateSentTarget 多 target 扫描锁定。
+      let located = await locateSentTarget(marker, 20000);
+      if (!located) { step('还没确认发出，回车再等一轮…'); await pressEnter().catch(() => {}); located = await locateSentTarget(marker, 18000); }
+      if (!located) { log('✗ 没能把消息发出去（高峰期排队过久或页面变了，可稍后重试）'); return 5; }
       readCdp = located.cdp;
       sid = located.sid || sid;
-    } else {
-      readCdp = cdp;
-      sid = String(await cdp.evalJs(PAGE_SID) || '');
-      step('没扫到带本次消息标记的会话，退回当前连接读取');
+      step('已锁定任务会话' + (sid ? '：' + sid : ''));
     }
-    // 认准会话落哪个 profile（多 profile 时 Default 常是旧壳）
-    if (sid) {
+    // 认准会话落哪个 profile（多 profile 时 Default 常是旧壳）；仅在拿到数字 sid 时。
+    if (sid && /^\d+$/.test(String(sid))) {
       const sd = sessionDirFor(sid);
       if (sd) {
         const root = path.dirname(sd);                 // <…>\workspace\.sessions
@@ -712,17 +942,39 @@ async function actAsk() {
     step('等它答复…');
 
     // 取答复：**以界面为准**（这一版不写 trajectory 的 assistant 行）。
-    // 判定写完：出现"消耗 N 点"标记，或文本连续 STABLE_MS 不再变长。
+    // 判定写完：出现"消耗 N 点"，或**实质答复**（非排队/思考提示）连续 STABLE_MS 不再变长。
     const STABLE_MS = Math.min(6000, Math.max(2500, (IDLE || 8) * 400));   // --idle 调"静了多久算写完"
+    // 高峰期排队 / 正在思考 等"还没真正开始答"的提示：不计入答复，也不能触发写完
+    const TRANSIENT = /^(高峰期[\s\S]*优先通道[\s\S]*|正在思考|思考中|排队中?|正在准备|请稍候|正在生成|生成中|加载中)[。.\s]*$/;
     let last = '';
-    let lastGrow = 0;      // 首次拿到答复文本的时刻（0＝还没拿到）
+    let lastGrow = 0;      // 首次拿到**实质**答复文本的时刻（0＝还没拿到）
     let lastProgress = 0;
+    let lastHeartbeat = 0; // 排队/思考期心跳：每 10 秒报一次，动作流不空白
+    // 答复内容逐段进动作流（粒度＝叙述段整条 + 每个工具步骤单独一条）
+    let reportedLen = 0;      // 已解析到整条消息 innerText 的偏移
+    let pendingSeg = '';      // 还没遇到换行的尾部（半段），下轮拼接
+    const emitSeg = (rawSeg) => {
+      let seg = String(rawSeg || '').replace(/\u00a0/g, ' ').replace(/[·•]\s*/g, '').trim();
+      seg = seg.replace(/^[\s\-—–|]+/, '').trim();
+      if (!seg || seg.length < 2) return;
+      if (seg.length > 300) seg = seg.slice(0, 300) + '…';   // 长正文只留信号，全文看结果区
+      step(seg);                                             // kind 由 server 端按关键词判
+    };
     while (Date.now() - t0 < TIMEOUT * 1000) {
       await sleep(1200);
       let s = null;
       try { s = await readCdp.evalJs(MSG_STATE); } catch { /* target 重绘时偶发，下一轮再读 */ }
       if (!s) continue;
-      const got = String(s.lastRecv || '').trim();
+      const rawRecv = String(s.lastRecv || '').trim();
+      const got = TRANSIENT.test(rawRecv) ? '' : rawRecv;   // 排队/思考提示当空，不污染答复
+      if (s.busy) lastGrow = Date.now();                    // 还在忙：持续延后"写完"基线，绝不误判
+      // 还没拿到实质答复：每 10 秒报心跳（带上排队/思考提示），让动作流看到它还活着
+      if (!last && Date.now() - lastHeartbeat >= 10000) {
+        lastHeartbeat = Date.now();
+        const waited = Math.round((Date.now() - t0) / 1000);
+        const hint = rawRecv ? rawRecv.replace(/[。.\s]+$/, '') : '等豆包答复';
+        step(hint + '…已等待 ' + waited + 's');
+      }
       if (got && !last) step('它开始答了');
       if (got && got !== last) {
         last = got;
@@ -732,13 +984,27 @@ async function actAsk() {
           step('正在写…（' + got.length + ' 字）');
         }
       }
-      if (got && got === last && lastGrow && Date.now() - lastGrow > STABLE_MS) break;  // 静了＝写完
-      if (got && s.done) break;                                                         // "消耗 N 点"＝写完
+      // ── 答复新增内容：按换行切出完整段（叙述段整条、工具步骤单独），半段留下轮 ──
+      const full = String(s.fullRecv || '');
+      if (full.length >= reportedLen) {
+        const combined = pendingSeg + full.slice(reportedLen);
+        reportedLen = full.length;
+        const parts = combined.split('\n');
+        pendingSeg = parts.pop() || '';
+        for (const p of parts) emitSeg(p);
+      } else { reportedLen = full.length; pendingSeg = ''; }   // 消息被重渲染（异常）→ 重置防错位
+      // 写完：**不忙** + 实质文本静够 STABLE_MS；或出现“消耗 N 点”
+      if (got && got === last && lastGrow && !s.busy && Date.now() - lastGrow > STABLE_MS) break;
+      if (got && s.done) break;
     }
+    emitSeg(pendingSeg);    // 收尾：把最后没换行的段落/结论补进动作流
+    pendingSeg = '';
     if (last) answer = stripRenderBlock(String(last).replace(/^消耗\s*[\d.]+\s*点\s*/m, ''));
   } finally {
     try { readCdp && readCdp.close(); } catch {}
     try { if (readCdp !== cdp) cdp.close(); } catch {}
+    // 无论成功/失败/超时，独立窗口一律关闭：失败路径遗留的窗口会堆积、干扰后续新窗口（2026-09-28 flaky 根因）
+    try { if (cdp && cdp.targetId) await closeTarget(cdp.targetId); } catch {}
   }
 
   if (!answer) { log('✗ 到时间没拿到答复（看上面的进度判断它卡在哪一步）'); return 4; }
@@ -748,6 +1014,110 @@ async function actAsk() {
             : '答完了（用时 ' + Math.round((Date.now() - t0) / 1000) + 's）');
   process.stdout.write(answer + '\n');             // stdout = 纯答复（工作台 text 模式直接取它）
   return 0;
+}
+
+// ---------- 视频生成动作（prepare / confirm / cancel） ----------
+async function actVideo() {
+  let prompt = PROMPT;
+  if (PROMPT_FILE) {
+    try { prompt = fs.readFileSync(PROMPT_FILE, 'utf8'); }
+    catch (e) { log('✗ 读不到 --prompt-file：' + e.message); return 2; }
+  }
+  const at = await ensureAttached({ launch: !NO_LAUNCH });
+  if (!at.ok) { log('✗ ' + at.why); return at.code || 2; }
+
+  // cancel：按 sid 关闭会话
+  if (VSTAGE === 'cancel') {
+    const c = await attachSessionBySid(VSID, 8000, { silent: true });
+    if (c) { await closeTarget(c.targetId); c.close(); }
+    console.log(JSON.stringify({ state: 'cancelled', sid: VSID }));
+    return 0;
+  }
+
+  // confirm：回"确认" → 轮询成片 → 取回视频
+  if (VSTAGE === 'confirm') {
+    if (!VSID) { log('✗ confirm 需要 --sid'); return 2; }
+    const c = await attachSessionBySid(VSID, 15000, { silent: true });
+    if (!c) { log('✗ 找不到会话 ' + VSID + '（可能已被关闭）'); return 4; }
+    try {
+      const confirmMsg = '确认，按你的执行计划开始执行：分段生成画面 → 用音色生成配音 → 逐段对齐口型、合成【一条】' + VRATIO + '、约' + VDURATION + '秒的成片。全部完成后，只把最终合成的那条成片发给我（中间的分段画面不用单独交付）。';
+      const f = await c.evalJs(FILL_VIA_EDITOR + '(' + JSON.stringify(confirmMsg) + ')');
+      if (!f || !f.ok) await c.send('Input.insertText', { text: confirmMsg });
+      const sr = await c.evalJs(CLICK_SEND_WAIT, 20000);
+      step('已回确认，等待流水线执行（' + (sr && sr.ok ? '已提交' : '提交异常') + '）…');
+      let src = '', candSrc = '', stable = 0, lastBeat = 0;
+      const minDur = Math.max(8, Number(VDURATION) - 4);   // 最终成片时长门槛，过滤 6–8s 中间分段
+      const deadline = Date.now() + Math.min(TIMEOUT, 1500) * 1000;
+      while (Date.now() < deadline) {
+        await sleep(4000);
+        const vs = await c.evalJs(VIDEO_STATE).catch(() => null);
+        if (vs) {
+          if (vs.running) { candSrc = ''; stable = 0; }
+          else if (vs.has && vs.ready >= 2 && vs.dur >= minDur) {
+            if (vs.src === candSrc) stable++;
+            else { candSrc = vs.src; stable = 0; }
+            if (stable >= 2) { src = candSrc; break; }
+          }
+          if (Date.now() - lastBeat > 15000) { lastBeat = Date.now();
+            step('流水线执行中…' + ((vs.text && vs.text.slice(-40)) || (vs.running ? '生成中' : ''))); }
+        }
+      }
+      if (!src) { log('✗ 超时未拿到成片'); return 4; }
+      const out = VOUT || path.join(os.homedir(), 'Desktop', 'heronbo_video_' + VSID + '.mp4');
+      fs.mkdirSync(path.dirname(out), { recursive: true });
+      step('正在取回视频…');
+      const n = await downloadMedia(c, src, out);
+      console.log(JSON.stringify({ state: 'done', sid: VSID, video: out, bytes: n }));
+    } finally { try { await closeTarget(c.targetId); } catch {} c.close(); }
+    return 0;
+  }
+
+  // prepare（默认）：建会话 → 传素材 → 发请求 → 读确认清单（不生成），保留会话等 confirm/cancel
+  if (!prompt || !prompt.trim()) { log('✗ 缺视频提示词'); return 2; }
+  if (!VMODEL || !VRATIO || !VDURATION) { log('✗ prepare 需要 --model --ratio --duration'); return 2; }
+  let c = null;
+  try {
+    // 用后台静默标签（与成功的 ask 一致）：独立窗口 newWindow 会停在 /chat、读不到 recv；
+    // 当前环境后台标签开不了（"no browser is open"，2026-09-29 实测）→ 用新窗口；
+    // 窗口保留给 confirm 复用（attachSessionBySid 按 /chat/<sid> 找），错误/取消才关。
+    c = await createIsolatedChat({ asWindow: true, silent: true });
+    // 路径2：不上传附件，直接给本地绝对路径让豆包自己读；提示词原样带入（保留画幅/时长等可移植依据，不剥离）
+    const req = buildVideoRequest({ prompt, model: VMODEL, ratio: VRATIO, duration: VDURATION,
+      image: VIMAGE ? path.resolve(VIMAGE) : '', audio: VAUDIO ? path.resolve(VAUDIO) : '' });
+    const fill = await c.evalJs(FILL_VIA_EDITOR + '(' + JSON.stringify(req) + ')', 30000);
+    if (!fill || !fill.ok) await c.send('Input.insertText', { text: req });
+    await sleep(300);
+    await c.evalJs(CLICK_SEND_WAIT, 20000);
+    step('已发请求，读取确认清单…');
+    let text = '', idleSince = 0;
+    const readDeadline = Date.now() + Math.min(TIMEOUT, 600) * 1000;
+    while (Date.now() < readDeadline) {
+      await sleep(2500);
+      const s = await c.evalJs(MSG_STATE).catch(() => null);
+      if (!s) continue;
+      const t = String(s.lastRecv || '').trim();
+      // 无论是否在跑，都持续保留最新可见正文（running 期间也更新，避免临近超时抓空）
+      if (t && t !== text) text = t;
+      if (s.running) { idleSince = 0; continue; }
+      // running 持续消失 6 秒（抗工具调用间隙）→ 真正结束
+      if (!idleSince) idleSince = Date.now();
+      if (Date.now() - idleSince >= 6000) break;
+    }
+    // 清掉末尾可能残留的单行状态提示
+    text = (text.replace(/\n[^\n]*(正在思考|思考中|正在执行|执行代码|生成中|正在生成|读取中|分析中|排队|请稍候|加载中)[^\n]*$/, '').trim() || text);
+    const sid = String(await c.evalJs('location.href') || '').split('/').pop();
+    const out = { state: 'await_confirm', sid, confirmText: text,
+      model: VMODEL, ratio: VRATIO, duration: Number(VDURATION),
+      image: VIMAGE ? path.resolve(VIMAGE) : '', audio: VAUDIO ? path.resolve(VAUDIO) : '' };
+    c.close();                          // 仅断开 CDP，保留会话 target，等 confirm/cancel
+    process.stdout.write(JSON.stringify(out, null, 1) + '\n');
+    return 0;
+  } catch (e) {
+    log('✗ prepare 出错：' + ((e && e.message) || e));
+    try { if (c && c.targetId) await closeTarget(c.targetId); } catch {}
+    c && c.close();
+    return 1;
+  }
 }
 
 function killApp() {
@@ -766,6 +1136,7 @@ async function main() {
   if (action === 'status') return actStatus();
   if (action === 'probe') return actProbe();
   if (action === 'ask') return actAsk();
+  if (action === 'video') return actVideo();
   if (action === 'launch') {
     if (await cdpReady()) { log('· 调试端口已在：' + PORT); return 0; }
     if (doubaoRunning()) { log('✗ 豆包工作已在跑（没有调试端口）：先退出它，或用 restart --yes'); return 3; }

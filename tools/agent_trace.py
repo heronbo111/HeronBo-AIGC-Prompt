@@ -68,10 +68,11 @@ TOOL_KIND = {
     "glob": "find", "grep": "find", "search": "find", "list": "find",
 }
 KIND_ICON = {"think": "💡", "term": "⌨", "read": "📖", "write": "✍", "edit": "✏",
-             "todo": "✅", "ask": "❓", "find": "🔍", "say": "💬", "tool": "🔧"}
+             "todo": "✅", "ask": "❓", "find": "🔍", "say": "💬", "tool": "🔧",
+             "done": "✅"}
 KIND_LABEL = {"think": "思考", "term": "终端", "read": "读取", "write": "写入",
               "edit": "修改", "todo": "待办", "ask": "要你确认", "find": "查找",
-              "say": "说明", "tool": "工具"}
+              "say": "说明", "tool": "工具", "done": "完成"}
 
 
 # ── 通道表 ────────────────────────────────────────────────────────────────

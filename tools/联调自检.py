@@ -194,6 +194,47 @@ def main():
               all(after.get(k) == v for k, v in before.items()),
               "before=%s after=%s" % (before, after))
 
+        # ⑦ 指令桥（2026-09-28 融合自妙搭「豆包指令桥」：三通道任务队列）
+        print("\n⑦ 指令桥（三通道：cdp / plugin / mcp）")
+        bridge_py = os.path.join(HERE, "wb_bridge.py")
+        check("wb_bridge.py 在技能目录", os.path.isfile(bridge_py), bridge_py)
+        if os.path.isfile(bridge_py):
+            os.environ["HERONBO_BRIDGE"] = os.path.join(tmp, "桥任务.json")
+            # 配置文件故意指向不存在路径 → plugin 通道必走「未配置」降级，不真调方舟 API
+            os.environ["HERONBO_BRIDGE_CFG"] = os.path.join(tmp, "桥配置.json")
+            import importlib.util as _ilu
+            _spec = _ilu.spec_from_file_location("wb_bridge", bridge_py)
+            wb = _ilu.module_from_spec(_spec)
+            _spec.loader.exec_module(wb)
+            r1 = wb.create("自检指令", "把这句话原样复述一遍", "mcp")
+            check("mcp 任务入队保持 pending",
+                  r1.get("ok") and r1["task"]["status"] == "pending", str(r1))
+            p1 = wb.pull("mcp")
+            check("pull 领取到任务并转 running",
+                  bool(p1.get("task")) and p1["task"]["status"] == "running", str(p1))
+            p2 = wb.pull("mcp")
+            check("队列空：不重复领取", p2.get("task") is None, str(p2))
+            s1 = wb.submit(p1["task"]["id"], True, "复述完成：把这句话原样复述一遍")
+            check("回写成功转 completed",
+                  s1.get("ok") and s1["task"]["status"] == "completed", str(s1))
+            s2 = wb.submit(p1["task"]["id"], True, "再来一次")
+            check("终结后拒绝重复回写", not s2.get("ok"), str(s2))
+            r2 = wb.create("插件通道", "轻任务：润色一句话", "plugin")
+            check("plugin 未配 key → failed 且写明缺什么",
+                  r2.get("ok") and r2["task"]["status"] == "failed"
+                  and "桥配置.json" in (r2["task"].get("errorMessage") or ""),
+                  str(r2))
+            r3 = wb.create("桥通道", "轻任务", "cdp", runner=None)
+            check("cdp 无执行器 → failed 且不抛异常",
+                  r3.get("ok") and r3["task"]["status"] == "failed", str(r3))
+            lst = wb.list_tasks()
+            check("列表 3 条且按时间倒序",
+                  len(lst["items"]) == 3
+                  and lst["items"][0]["createdAt"] >= lst["items"][-1]["createdAt"],
+                  "got %d" % len(lst["items"]))
+            bad = wb.create("", "", "mcp")
+            check("空正文被拒", not bad.get("ok"), str(bad))
+
     finally:
         print("\n" + "=" * 60)
         print("通过 %d 项，失败 %d 项" % (len(_ok), len(_fail)))

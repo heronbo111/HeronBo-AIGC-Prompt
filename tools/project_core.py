@@ -979,12 +979,15 @@ def guess_project_name(paths):
     return ""
 
 
-def auto_plan(paths, root=None, name=None):
+def auto_plan(paths, root=None, name=None, on_log=None):
     """给一批素材做一次"自动规划"：定根目录、定项目名、判每个素材的角色。
 
     返回 dict，可直接拿去执行，也可以先在界面上给用户看/改。
+    on_log（可选）：把"展开文件 / 逐个识别角色"实时报出去（工作台动作流用）。
     """
     files = collect_files(paths)
+    if on_log:
+        on_log("展开待归类文件：%d 个" % len(files))
     root = os.path.normpath(root) if root else (detect_root() or "")
     nm = (name or "").strip() or guess_project_name(paths)
     items = []
@@ -993,8 +996,11 @@ def auto_plan(paths, root=None, name=None):
             meta = meta_of(f)
         except OSError:
             meta = {}
+        role = detect_role(f, meta)
+        if on_log:
+            on_log("识别 %s → 角色：%s" % (os.path.basename(f), role))
         items.append({"src": f, "name": os.path.basename(f),
-                      "type": kind_of(f), "role": detect_role(f, meta), "meta": meta})
+                      "type": kind_of(f), "role": role, "meta": meta})
     by_role = {}
     for it in items:
         by_role.setdefault(it["role"], []).append(it)
@@ -1016,7 +1022,7 @@ def auto_build(paths, root=None, name=None, platform="", register=True, on_log=N
         if on_log:
             on_log(m)
 
-    plan = auto_plan(paths, root=root, name=name)
+    plan = auto_plan(paths, root=root, name=name, on_log=emit)
     if not plan["root"]:
         return None, plan, log + ["还没有样本库根目录，无法自动建框架"]
     if not plan["final_name"]:

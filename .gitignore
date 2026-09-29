@@ -92,3 +92,11 @@ tools/工作台.py
 tools/score-tool.spec
 tools/build_exe.cmd
 tools/打包换位.py
+# 视频生成后端 wb_video.py 与私有 workbench_server 强耦合，同属私有工作台（2026-09-29）
+tools/wb_video.py
+# 改代码时的本机备份与文件框探查脚本（一次性，不进仓库）
+*.bak
+*.bak_*
+tools/diag_file_dialog.ps1
+tools/fill_file_dialog.ps1
+tools/set_file_clipboard.ps1

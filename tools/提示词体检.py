@@ -361,6 +361,70 @@ def check(path, text, pdir=""):
         say("PASS" if per <= 300 else "WARN", "细节密度·神态与微表情",
             "%d 类命中 %d 处（约每 %d 字 1 处）" % (len(expr_words), n_hit, int(per)))
 
+    # ⑧.6 镜头所见三检查（2026-09-29 加；rules 第76条）：均判注意、不阻断交付。
+    #   1 实体类裸否定：「不要+实体/空间」而附近没有镜头实际所见的肯定句 → 否定对实体存在/
+    #     空间位置基本无效，要转写成肯定画面（缺失属性类：字幕/文字/水印/畸变/声音豁免）；
+    #   2 单镜头元素密度：一个镜头里不同实体名词过多 → 同框几何可能不相容，换机位或拆镜；
+    #   3 台词名词未处理：台词里的实体名词在正文既没入画点名、也没隔离句 → 补入画/隔离。
+    neg_re = re.compile(r"(?:不要|不得|不许|不准|禁止|严禁|别)([^，。；！\n]{1,20})")
+    missing_w = ("字幕", "文字", "水印", "logo", "畸变", "音效", "背景音乐", "BGM", "配乐",
+                 "旁白", "声音", "黑块", "马赛克")
+    entity_w = ("学生", "老师", "人物", "角色", "男人", "女人", "男生", "女生", "观众",
+                "第二", "第三", "第四", "书", "盒", "道具", "身后", "背后", "后面", "位置", "镜头")
+    positive_re = re.compile(r"机位|镜头在|前景|中景|画面(?:左|右|前|后|中|远处|正前|里)|越肩|后视|侧视|面朝|朝向")
+    bare = []
+    for _m in neg_re.finditer(text):
+        _seg = _m.group(1)
+        if any(_w in _seg for _w in missing_w):
+            continue
+        if any(_w in _seg for _w in entity_w):
+            _win = text[max(0, _m.start() - 140):_m.end() + 140]
+            if not positive_re.search(_win):
+                bare.append(_m.group(0)[:16])
+    if bare:
+        say("WARN", "镜头所见·实体类裸否定",
+            "这些否定没有镜头实际所见的肯定句兜底（「%s」）——按 rules 第76条，实体/空间类否定基本无效，"
+            "改写为机位实际看到的画面（例：「机位在学生身后越肩，前景是后脑，正前方远处是黑板与老师背影」）；"
+            "字幕/水印/畸变等缺失属性类否定除外" % "、".join(dict.fromkeys(bare))[:3])
+    else:
+        say("PASS", "镜头所见·实体类裸否定")
+
+    noun_re = re.compile(r"学生|老师|人物|角色|男人|女人|男生|女生|观众|顾客|主持人|书本|课本|盒子|礼盒|道具|铅笔|课桌|黑板|讲台|沙发|奖杯")
+    shot_parts = re.split(r"镜头\s*[1-9１-９]|分镜\s*[A-Zａ-ｚ]|【镜头与景别】", text)
+    dense = []
+    if len(shot_parts) > 1:
+        for _p in shot_parts[1:]:
+            _n = len(set(noun_re.findall(_p[:420])))
+            if _n > 6:
+                dense.append(_n)
+    elif para_mode:
+        _n = len(set(noun_re.findall(text)))
+        if _n > 9:
+            dense.append(_n)
+    if dense:
+        say("WARN", "镜头所见·单镜头元素密度",
+            "有镜头一段里不同实体名词达 %s 个——同框元素可能在同一机位下互不可见（模型不渲染机位后方/被遮挡物）："
+            "按 rules 第76条做相容性自问，换机位（越肩/后视/侧视）或拆镜头，每镜只留一组相容元素"
+            % "、".join(str(_n) for _n in dense[:3]))
+    else:
+        say("PASS", "镜头所见·单镜头元素密度")
+
+    _tm = re.search(r"(?m)^\s*台词[:：]\s*(.+)$", head)  # 只认行首元信息行，排除「喊出台词：」正文叙述
+    if _tm and "无台词" not in _tm.group(1):
+        _talk_nouns = set(noun_re.findall(_tm.group(1)))
+        _body_after = text[text.find(_tm.group(0)) + len(_tm.group(0)):]
+        _generic_iso = bool(re.search(r"台词提到[^，。\n]{0,12}(?:不出现|不生成|不入画)|只比划|不凭空生成|不虚拟实物", _body_after))
+        _pending = [_w for _w in _talk_nouns if _w not in _body_after and not _generic_iso]
+        if _pending:
+            say("WARN", "镜头所见·台词名词未处理",
+                "台词里的「%s」在正文既没入画点名、也没隔离句——按 rules 第76条：要入画就在画面节点名"
+                "（「拿起与@图片N一模一样的X」）；仅台词提及的写「台词提到的X不出现在画面中，演员只比划、不凭空生成」"
+                % "、".join(_pending[:5]))
+        else:
+            say("PASS", "镜头所见·台词名词处理", "%d 个名词均已入画或隔离" % len(_talk_nouns))
+    else:
+        say("PASS", "镜头所见·台词名词处理", "（无台词或无台词元信息行）")
+
     # ⑨ 重复句（同一条禁令写三遍 → 噪声，模型会忽略）。**按版本分段比**：
     #    多版本之间"主体锚定""时间轴"本来就该逐字复用，跨版本比会把对的判成错的。
     chunks, cur = [], []
