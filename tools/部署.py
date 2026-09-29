@@ -361,11 +361,12 @@ FF_BIN = os.path.join(VENDOR, "ffmpeg", "bin")
 HEAVY_WHEELS = os.path.join(VENDOR, "wheels-heavy")
 CORE_WHEELS = os.path.join(VENDOR, "wheels")
 MODEL_DIR = os.path.join(VENDOR, "models", "depth-anything-v2-small")
-# 大件**不进仓库归档**（归档只放代码，约 24MB，SkillHub 之类平台导得进来）→ 想要离线全套时
-# 从 Release 拉。**2026-09-22 换到新 tag**：这一版的附件重新拆过（core + 三个能力包，
-# 默认安装 304MB → 约 94MB），清单在 tools\能力包.py 里。老 tag（vendor-2026-09-17）的附件
-# 一个字都没动 → 别人机器上那份旧脚本照旧能装。
-VENDOR_REL = os.environ.get("HERONBO_VENDOR_REL") or     "https://github.com/heronbo111/HeronBo-AIGC-Prompt/releases/download/vendor-2026-09-22/"
+# 大件**不进仓库归档**（归档只放代码）→ 想要离线全套时从 Release 拉。
+# 这里是**能力包（依赖资源）固定通道**，地址统一由 能力包.ASSETS_GH 提供（=ASSETS_TAG）；
+# 产品本体（score-tool / version.json / setup）的"最新版"走 能力包.urls_for 的 releases/latest，不在此列。
+VENDOR_REL = os.environ.get("HERONBO_VENDOR_REL") or (
+    KP.ASSETS_GH if KP is not None
+    else "https://github.com/heronbo111/HeronBo-AIGC-Prompt/releases/download/vendor-2026-09-22/")
 # 国内裸连 GitHub Release 很慢（2026-09-22 用户："别的电脑装的时候太慢"）→ 依次试：
 # 直连 → 镜像前缀。镜像前缀要拼**完整 URL**（https://gh-proxy.com/https://github.com/…）。
 # 一直都能直连的机器不用管；被卡住时脚本会自己换源，也可以用环境变量 HERONBO_VENDOR_REL 指定。

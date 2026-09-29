@@ -26,30 +26,126 @@ import os
 import re
 import sys
 
-# 大件挂在 Release 附件上（仓库只放代码）。换 tag 时改这一处即可；
-# 环境变量 HERONBO_VENDOR_REL 可以覆盖（内网/自建镜像用）。
-DEFAULT_REL = "https://github.com/heronbo111/HeronBo-AIGC-Prompt/releases/download/vendor-2026-09-22/"
-# Gitee 同一套附件（**国内首选**）：2026-09-22 实测本机 GitHub 直连 0 字节（读超时）、
-# Gitee 归档通道 2.4–3.3MB/s；挂上去之后新机按下面 SOURCES 的顺序试，谁先成用谁。
-DEFAULT_GITEE_REL = "https://gitee.com/HeronBo/HeronBo-AIGC-Prompt/releases/download/vendor-2026-09-22/"
+# 大件挂在 Release 附件上（仓库只放代码）。环境变量 HERONBO_VENDOR_REL 可覆盖（内网/自建镜像用）。
+OWNER_GH, OWNER_GEE, REPO = "heronbo111", "HeronBo", "HeronBo-AIGC-Prompt"
+
+# 能力包（依赖资源）固定通道：大文件不随产品版本重复挂，统一放这个 tag 上。
+ASSETS_TAG = "vendor-2026-09-22"
+DEFAULT_REL = ASSETS_GH = ("https://github.com/%s/%s/releases/download/%s/" % (OWNER_GH, REPO, ASSETS_TAG))
+# Gitee 同一套附件（**国内首选**）：实测本机 GitHub 直连 0 字节（读超时）、Gitee 归档通道 2.4–3.3MB/s。
+DEFAULT_GITEE_REL = ASSETS_GEE = ("https://gitee.com/%s/%s/releases/download/%s/" % (OWNER_GEE, REPO, ASSETS_TAG))
 # 裸连 GitHub 慢/不通时依次试这些前缀（拼**完整 URL**）
 DEFAULT_MIRRORS = ["https://gh-proxy.com/", "https://ghproxy.net/"]
 
+# 产品本体走版本化 latest（2026-09-29 改造，替代"固定 tag 覆盖、看不到迭代"）：
+# 每次发版一个不可变 vX.Y.Z release，客户端经平台 releases/latest 自动找最新。
+LATEST_API = [
+    ("gitee", "https://gitee.com/api/v5/repos/%s/%s/releases/latest" % (OWNER_GEE, REPO)),
+    ("github", "https://api.github.com/repos/%s/%s/releases/latest" % (OWNER_GH, REPO)),
+]
+PRODUCT_FILES = {"version.json", "score-tool.exe"}   # 另：任何 .exe（完整 setup）都算产品本体
+LATEST_TTL = 300.0
+_LATEST_CACHE = {"ts": 0.0, "data": None}
 
-def urls_for(rel, rel_base=None, mirrors=None):
-    """这个附件按什么顺序试：**Gitee → GitHub 直连 → gh-proxy → ghproxy.net**。
 
-    为什么 Gitee 排第一（2026-09-22，用户问"把 300MB 放到 gitee 会不会更快"）：实测本机
-    GitHub 直连一个字节都下不来（读超时），gh-proxy 当天 10.9MB/s 但 ghproxy.net 只有 0.36MB/s
-    ——镜像的运气波动太大；Gitee 是国内 CDN、速度稳（归档通道实测 2.4–3.3MB/s），也不受墙影响。
-    脚本每台机器各自试，谁先成用谁；下载器会续传与重试，换源时断点也是接着下的。
+def _http_json(url, timeout=12):
+    import json as _json
+    import urllib.request
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "heronbo-deploy/2", "Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return _json.loads(r.read().decode("utf-8", "replace"))
+
+
+def _norm_latest(d):
+    """平台 release 对象归一：tag/version + {asset 名: 下载 URL}。"""
+    tag = str(d.get("tag_name") or "").strip()
+    assets = {a.get("name"): a.get("browser_download_url")
+              for a in (d.get("assets") or []) if a.get("name") and a.get("browser_download_url")}
+    return {"tag": tag, "version": tag.lstrip("vV"), "name": d.get("name") or "",
+            "notes": d.get("body") or "", "assets": assets}
+
+
+def latest_release(timeout=12, force=False, log=None):
+    """最新产品版本：依次问 Gitee → GitHub 的 releases/latest，返回归一 dict；都失败返回 {}。
+
+    结果缓存 LATEST_TTL 秒（一次检查会取 version.json + score-tool，避免重复打 API）。
+    离线 / 匿名限流不算错误，返回 {}，调用方按"离线"处理。
     """
-    gh = rel_base or os.environ.get("HERONBO_VENDOR_REL") or DEFAULT_REL
+    import time as _time
+    if (not force and _LATEST_CACHE["data"] is not None
+            and (_time.time() - _LATEST_CACHE["ts"]) < LATEST_TTL):
+        return _LATEST_CACHE["data"]
+    err = ""
+    for _who, url in LATEST_API:
+        try:
+            r = _norm_latest(_http_json(url, timeout=timeout))
+            if r["tag"]:
+                _LATEST_CACHE.update(ts=_time.time(), data=r)
+                return r
+        except Exception as e:                          # noqa: BLE001
+            err = str(e)[:80]
+    if log is not None:
+        log("latest 取不到：%s" % err)
+    return {}
+
+
+def _is_product(rel):
+    base = os.path.basename(str(rel))
+    return base in PRODUCT_FILES or base.endswith(".exe")
+
+
+def _gitee_asset(tag, rel):
+    return "https://gitee.com/%s/%s/releases/download/%s/%s" % (
+        OWNER_GEE, REPO, tag, os.path.basename(rel))
+
+
+def _gh_asset(tag, rel):
+    return "https://github.com/%s/%s/releases/download/%s/%s" % (
+        OWNER_GH, REPO, tag, os.path.basename(rel))
+
+
+def _latest_urls_for(rel, timeout=12):
+    """产品本体：解析最新 vX.Y.Z tag，按 Gitee → GitHub 直连 → gh 代理 给出地址。"""
+    r = latest_release(timeout=timeout)
+    tag = r.get("tag")
+    if not tag:
+        return []                                      # 离线，交给 urls_for 兜底
+    base = os.path.basename(str(rel))
+    gh = _gh_asset(tag, base)
+    out = [_gitee_asset(tag, base), gh]
+    out += [(m + gh) for m in DEFAULT_MIRRORS]
+    return out
+
+
+def _fixed_urls_for(rel, rel_base=None, mirrors=None):
+    """能力包依赖：固定 assets 通道（Gitee → GitHub 直连 → gh-proxy → ghproxy.net）。
+
+    Gitee 排第一的理由：实测 GitHub 直连一个字节都下不来（读超时），镜像速度波动大，
+    Gitee 是国内 CDN、速度稳（2.4–3.3MB/s）也不受墙影响；下载器续传重试，换源断点续接。
+    """
+    gh = rel_base or os.environ.get("HERONBO_VENDOR_REL") or ASSETS_GH
     env_mir = [m for m in (os.environ.get("HERONBO_VENDOR_MIRRORS") or "").split(",") if m]
     mir = env_mir or (mirrors if mirrors is not None else DEFAULT_MIRRORS)
-    out = [DEFAULT_GITEE_REL + rel, gh + rel]
+    out = [ASSETS_GEE + rel, gh + rel]
     out += [(m + gh + rel) for m in mir]
     return out
+
+
+def urls_for(rel, rel_base=None, mirrors=None, timeout=12):
+    """这个附件按什么顺序试（Gitee → GitHub 直连 → gh 代理）。
+
+    产品本体（score-tool.exe / version.json / *.exe setup）走**版本化 latest**：
+      先解析最新 vX.Y.Z tag，每个版本在仓库都看得到；
+    能力包依赖（wheels / ffmpeg / cap-*）走**固定 assets 通道**，大文件不随版本重复挂。
+    latest 取不到（离线）时产品文件退回固定通道兜底。
+    """
+    rel = os.path.basename(str(rel))
+    if _is_product(rel):
+        u = _latest_urls_for(rel, timeout=timeout)
+        if u:
+            return u
+    return _fixed_urls_for(rel, rel_base=rel_base, mirrors=mirrors)
 
 # 默认安装就要有的（不在这里 = 默认必装）
 CORE_ASSETS = [
