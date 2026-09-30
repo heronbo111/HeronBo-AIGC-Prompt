@@ -391,11 +391,39 @@ def _probe_doubaowork():
     return True, exe + "（没在跑：点「出提示词」时我会带调试端口把它拉起来）"
 
 
+def _doubaowork_exe_from_registry():
+    """从卸载注册表键找豆包工作（官方安装器必写；比猜路径可靠，2026-09-30 新机场景补）。
+
+    auto_bridge.ps1 早就这么找，Python 探针却一直靠路径猜测——装在非默认位置就漏。
+    """
+    if os.name != "nt":
+        return ""
+    try:
+        import winreg
+    except ImportError:
+        return ""
+    for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        try:
+            with winreg.OpenKey(root, r"SOFTWARE\Microsoft\Windows\CurrentVersion"
+                                     r"\Uninstall\DoubaoWork") as k:
+                us, _t = winreg.QueryValueEx(k, "UninstallString")
+            d = os.path.dirname(us.strip().strip('"').strip())
+            for c in (os.path.join(d, "app", "DoubaoWork.exe"), os.path.join(d, "DoubaoWork.exe")):
+                if os.path.isfile(c):
+                    return c
+        except OSError:
+            continue
+    return ""
+
+
 def doubaowork_exe():
     """找豆包工作客户端（DoubaoWork.exe）。装的位置很自由（本机在 E:\\DoubaoWork\\app\\）。"""
     cfg = _local_cfg().get("doubaowork")
     if cfg and os.path.isfile(cfg):
         return cfg
+    reg = _doubaowork_exe_from_registry()
+    if reg:
+        return reg
     pats = [r"E:\DoubaoWork\app\DoubaoWork.exe", r"F:\DoubaoWork\app\DoubaoWork.exe",
             r"D:\DoubaoWork\app\DoubaoWork.exe", r"C:\DoubaoWork\app\DoubaoWork.exe",
             os.path.join(os.environ.get("ProgramFiles", ""), "DoubaoWork", "app", "DoubaoWork.exe"),
@@ -437,13 +465,33 @@ def doubao_js():
 
 
 def node_exe():
-    """找 node：显式配置 → PATH → 常见安装位置（含 winget / nvm / volta / scoop / 各盘）。"""
+    """找 node：显式配置 → PATH → 安装包布局 → 常见安装位置（含 winget / nvm / volta / scoop / 各盘）。"""
     cfg = _local_cfg().get("node")
     if cfg and os.path.isfile(cfg):
         return cfg
     hit = shutil.which("node")
     if hit:
         return hit
+    # 安装包布局兜底（2026-09-30，"新机只装豆包工作"场景）：{app}\skill\tools\dist\score-tool.exe
+    # → 便携 Node 在 {app}\runtime\node\node.exe。启动器会把 nodeDir 加进 PATH，但用户
+    # **直接双击 exe** 时没有那层 PATH——不兜底的话豆包桥静默起不来（探针只说"跑不了"）。
+    roots = []
+    if getattr(sys, "frozen", False):
+        try:
+            roots.append(os.path.dirname(os.path.abspath(sys.executable)))
+        except (OSError, ValueError):
+            pass
+    roots.append(HERE)
+    for st in roots:
+        p = st
+        for _ in range(5):
+            np = os.path.dirname(p)
+            if np == p:
+                break
+            p = np
+            c = os.path.join(p, "runtime", "node", "node.exe")
+            if os.path.isfile(c):
+                return c
     pats = [r"C:\Program Files\nodejs\node.exe", r"C:\Program Files (x86)\nodejs\node.exe",
             os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "nodejs", "node.exe"),
             os.path.join(os.environ.get("ProgramData", ""), "chocolatey", "bin", "node.exe"),

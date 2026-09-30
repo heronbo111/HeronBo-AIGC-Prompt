@@ -104,6 +104,17 @@ def gh_tag_exists(tag, tok):
     return st == 200
 
 
+def gh_asset_name(name):
+    """GitHub 资产名只允许 ASCII 字母数字和 -_.，中文会被替换成 ._ 之类的乱码。
+    上传前统一清洗为 ASCII（非合法字符替换为 -），保证下载文件名可读。"""
+    base, ext = os.path.splitext(name)
+    safe = "".join(c if (c.isascii() and (c.isalnum() or c in "-_.")) else "-" for c in base)
+    safe = safe.strip("-.") or "asset"
+    while "--" in safe:
+        safe = safe.replace("--", "-")
+    return safe + (ext.lower() if ext.isascii() else ".bin")
+
+
 def gh_publish(tag, target, body, files, force):
     tok = credential("github.com")
     if not tok:
@@ -125,7 +136,7 @@ def gh_publish(tag, target, body, files, force):
         rid = rel["id"]
         log("  [GitHub] 已创建 release id=%s" % rid)
     for path in files:
-        name = os.path.basename(path)
+        name = gh_asset_name(os.path.basename(path))
         # 同名旧附件先删（幂等；不可变版本正常不会有）
         st, rel = gh_request("%s/repos/%s/%s/releases/%s" % (GH_API, OWNER_GH, REPO, "tags/"+tag), tok)
         for a in (rel.get("assets") or []) if isinstance(rel, dict) else []:
@@ -137,10 +148,21 @@ def gh_publish(tag, target, body, files, force):
         url = "https://uploads.github.com/repos/%s/%s/releases/%s/assets?name=%s" % (
             OWNER_GH, REPO, rid, urllib.parse.quote(name))
         log("  [GitHub] 上传 %s（%.1f MB）…" % (name, os.path.getsize(path) / 1048576.0))
-        st, b = gh_request(url, tok, method="POST", data=blob,
-                           ctype="application/octet-stream", timeout=1800)
-        if st not in (200, 201):
-            return "GitHub 上传 %s 失败 HTTP%s %s" % (name, st, b)
+        last_err = ""
+        ok = False
+        for attempt in (1, 2, 3):                              # 大文件上传易被网络中断，重试兜底
+            try:
+                st, b = gh_request(url, tok, method="POST", data=blob,
+                                   ctype="application/octet-stream", timeout=1800)
+                if st in (200, 201):
+                    ok = True
+                    break
+                last_err = "HTTP%s %s" % (st, str(b)[:150])
+            except Exception as e:                              # noqa: BLE001
+                last_err = str(e)[:200]
+            log("    上传第%d次失败（%s），重试…" % (attempt, last_err))
+        if not ok:
+            return "GitHub 上传 %s 失败 %s" % (name, last_err)
     return ""
 
 
@@ -270,7 +292,7 @@ def main():
     # 1) 本地元数据（dry-run 也生成，便于核对；与将发布一致）
     meta, vj = prepare_local(version, a.notes)
     body = make_body(version, meta.get("notes") or "", bool(setup),
-                     os.path.basename(setup) if setup else "")
+                     gh_asset_name(os.path.basename(setup)) if setup else "")
 
     # 2) 上传清单（产品本体）
     files = [SCORE, vj]

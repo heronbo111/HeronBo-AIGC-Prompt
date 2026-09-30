@@ -114,6 +114,14 @@ python tools/deploy.py defender --yes    # 提权把工作台目录加进白名�
 `python tools\部署.py check` 会报出来，`python tools\部署.py wx --yes` 一条命令修好；工作台现在还会
 **自动退到 Edge 窗口**，不会再晾你一个白窗。整条新机流程见 `docs/新机部署.md`。
 
+### 让工作台调得动本机 agent（搭桥）
+
+工作台「出提示词 / 评价反哺」需要一个能被**无头调用**的 agent 通道（WorkBuddy / ZCode / 豆包工作 /
+Claude Code / Codex / DSH，装哪个用哪个；**个人版豆包没有无头通道**，接不了）。
+新机上把 `docs/新机部署.md` **5.5 节「搭桥任务提示词」整段复制给本机 agent**，它照步骤做即可；
+装好的工作台里，「agent 通道」弹窗（零可用时）也有同款「复制搭桥任务」按钮。
+逐机探测与优先级规则见 `docs/新机部署.md` 第 5 节。
+
 ### 换机四件套（必做，约 5 分钟）
 
 0. **环境检查（第一件事）**：`python tools\环境检查.py` —— 逐项自检 python≥3.9 / ffmpeg / ffprobe / WebView2 / pywebview，以及**按需**的 numpy / opencv / faster-whisper（拆解转写）/ onnxruntime（深度视频）/ Yunet 人脸模型 / 系统 OCR / Depth 模型，缺什么就打印该装什么。
