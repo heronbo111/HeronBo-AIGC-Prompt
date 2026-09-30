@@ -47,6 +47,45 @@ MUST_HAVE = [
 MUST_RUNTIME = [r"runtime\node\node.exe", r"runtime\python\python.exe"]
 
 
+def version_gate(pkg, dst, dry=False):
+    """版本口径守卫（2026-09-30 加）。
+
+    起因：v0.4.5 只升了安装包壳的号（setup.iss/文件名=0.4.5），没重打内核，
+    载荷镜像进去的 _version.json 还是 v0.4.4 构建留下的 → 新机装完界面显示 0.4.4。
+    界面版本号唯一来源是 skill\\tools\\_version.json（重打 score-tool.exe 时才重写），
+    所以同步完必须和 setup.iss 的 AppVersion 对一遍，不一致直接失败。
+    """
+    import json
+    import re
+    iss = os.path.join(pkg, "setup.iss")
+    vj = os.path.join(dst, "tools", "_version.json")
+    if not os.path.isfile(iss):
+        print("[!] 载荷里没有 setup.iss，版本口径校验跳过（编包前记得人工核一遍）")
+        return 0
+    if not os.path.isfile(vj):
+        print("[X] 载荷缺 tools\\_version.json：界面将没有版本号（版本.py write 生成）")
+        return 3
+    try:
+        payload_ver = str((json.load(open(vj, encoding="utf-8")) or {}).get("version") or "")
+    except (OSError, ValueError) as e:
+        print("[X] _version.json 读不出来：%s" % e)
+        return 3
+    t = open(iss, encoding="utf-8", errors="ignore").read()
+    m = (re.search(r'#define\s+MyAppVersion\s+"([^"]+)"', t)
+         or re.search(r'(?m)^\s*AppVersion\s*=\s*(\S+)', t))
+    iss_ver = m.group(1) if m else ""
+    if not iss_ver:
+        print("[!] setup.iss 里没解析到版本号（#define MyAppVersion / AppVersion=），校验跳过")
+        return 0
+    if payload_ver != iss_ver:
+        print("[X] 版本口径不一致：安装包壳=%s，载荷内核=%s —— 装出来界面会显示旧号"
+              "（v0.4.5 事故）。先 `版本.py write --version %s`＋重打 score-tool.exe 再同步。"
+              % (iss_ver, payload_ver or "?", iss_ver))
+        return 3
+    print("[OK] 版本口径一致：%s（setup.iss = 载荷 _version.json）" % payload_ver)
+    return 0
+
+
 def mib(path):
     total = 0
     for dp, _dn, fn in os.walk(path):
@@ -161,6 +200,11 @@ def main():
         print("[X] 关键文件缺失：%s" % "; ".join(bad))
         return 3
     print("[OK] 关键文件核对通过（exe / 桥 / 版本 / 前端 / 双运行时）")
+
+    # 4.5) 版本口径守卫：安装包壳的号 vs 载荷内核的号（v0.4.5 事故）
+    rc = version_gate(pkg, dst, dry)
+    if rc:
+        return rc
 
     # 5) 隐私泄漏守卫：本机特征串扫描（_vendor/dist 是第三方与产物，跳过）
     leaks_hard, leaks_soft = [], []
