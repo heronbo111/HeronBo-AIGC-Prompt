@@ -583,6 +583,32 @@ async function uploadAttachments(cdp, files) {
     await sleep(2800);                          // 等上传完成 / 缩略图出现
   }
 }
+// 从台词里挑出"必须注音"的词：阿拉伯数字、字母数字混写、常见缩写。
+// 为什么自动挑而不是写死：2026-09-30 用户打回——台词"28 考研"被读成"二十八考研"，
+// 原因是我们只把"四六级/580"写死在指令里，**新台词的易错词根本没进去**。
+// rules 第 15/258 条本来就要求"易错词逐个注音"，这里把它接成默认动作（rules 72）。
+const PRON_HINTS = [
+  [/\d+\s*考研/g, '「28 考研」这类"数字+考研"必须按**逐位读法**念：28 读 èr-shí-bā（2028 的 28），不是"二十八"'],
+  [/\d+\s*级/g, '「四六级」读 sì-liù-jí，绝不读成"四立级/四留级"'],
+  [/\d{2,}/g, '多位数按**逐位**读（如 580 读 wǔ-bā-líng），不读"五百八十"'],
+  [/[A-Za-z]{2,}/g, '英文缩写/字母按**字母拼读**（如 CET-4 读 C-E-T-four），不臆造中文谐音'],
+];
+/** 从提示词正文里抠出「台词改成：」那一句（工作台与 skill 的输出口径一致） */
+function extractSpokenLine(prompt) {
+  const m = String(prompt || '').match(/台词改成[：:]\s*([^\n]+)/);
+  return m ? m[1].trim() : '';
+}
+/** 台词里有数字/缩写就返回注音要求，没有就返回 ''（不给豆包塞无关读音指令） */
+function pronFor(prompt) {
+  const line = extractSpokenLine(prompt);
+  if (!line) return '';
+  const hits = [];
+  for (const [re, note] of PRON_HINTS) {
+    if (re.test(line) && !hits.includes(note)) hits.push(note);
+  }
+  return hits.join('；');
+}
+
 // 构造视频请求（路径2：图生接口无音频位 → 给本地路径，画面/配音分头生成再对齐合成；prepare 只回计划、不生成）
 function buildVideoRequest(o) {
   const L = [];
@@ -617,7 +643,8 @@ function buildVideoRequest(o) {
   } else {
     L.push('1. ' + lockSrc + '；按台词语气拐点把画面分成 2-3 段（每段 4-8 秒、贴合口播、含余量且合计不超过总时长；具体切点、每段秒数与对应台词分句请在确认清单里给出时间轴）。逐段生成画面：第1段以' + segStart + '为起点，后续每段以上一段末尾姿态/画面衔接，保证人物、服装、场景、光线一致，并满足提示词中该段对应的动作、眼神与口型要求。');
   }
-  L.push('2. 用音色参考 + 台词全文生成与画面等长的配音（可按同一切点分段生成再拼接），带货快口播语速，读音准确（“四六级”读 sì-liù-jí、“580”读 wǔ-bā-líng）。');
+  L.push('2. 用音色参考 + 台词全文生成与画面等长的配音（可按同一切点分段生成再拼接），带货快口播语速，读音准确'
+    + (o.pron ? ('（本条台词的读音要求：' + o.pron + '）') : '') + '。');
   L.push('3. 把配音与画面' + (shortJob ? '' : '逐段') + '对齐口型和节奏，合成【一条】' + o.ratio + '、约 ' + o.duration + ' 秒的成片'
     + (shortJob ? '' : '：段间承接自然、无跳切/黑帧，响度统一') + '；无字幕、水印、Logo，无 BGM。');
   L.push('4. 交付口径：**不要输出自检/质检报告**（分辨率、帧率、LUFS 响度、口型逐项核对那类都省掉），'
@@ -630,7 +657,15 @@ function buildVideoRequest(o) {
   L.push('- 预计消耗（点数/积分）：分列画面、配音与合计，并给出重试余量建议。');
   L.push('等我明确回复“确认”后再开始执行。');
   L.push('');
+  L.push('【回话纪律（重要，直接影响成片质量）】');
+  L.push('- 清单里**只写这份任务真正要执行的内容**：时间轴、分段输入、配音方式、合成方式、最终规格、预计消耗。');
+  L.push('- **不要复述本指令里的约束与说明文字**（例如“不要分段”“一次性生成”“无字幕水印”“以你给的…为准”、'
+    + '“本次台词里某组读音不在本条中”这类）——它们是执行要求，不是要交付的内容，写进清单只是噪音。'
+    + '本次台词用不到的要求，直接不提。');
+  L.push('- 不要输出质检/自检结论，也不要解释你怎么理解任务。');
+  L.push('');
   L.push('——以下是可移植的视频提示词正文（已含画幅与“按台词估算时长”的依据，请原样遵循，不要删改其中的时长/画幅依据）——');
+  L.push('（这份正文是最终下发给视频模型的指令：不要改动、不要加注释、不要在前后附加任何说明文字。）');
   L.push(o.prompt);
   return L.join('\n');
 }
@@ -1221,7 +1256,7 @@ async function actVideo() {
     // 路径2：不上传附件，直接给本地绝对路径让豆包自己读；提示词原样带入（保留画幅/时长等可移植依据，不剥离）
     const req = buildVideoRequest({ prompt, model: VMODEL, ratio: VRATIO, duration: VDURATION,
       image: VIMAGE ? path.resolve(VIMAGE) : '', audio: VAUDIO ? path.resolve(VAUDIO) : '',
-      video: VVIDEO ? path.resolve(VVIDEO) : '' });
+      video: VVIDEO ? path.resolve(VVIDEO) : '', pron: pronFor(prompt) });
     const fill = await c.evalJs(FILL_VIA_EDITOR + '(' + JSON.stringify(req) + ')', 30000);
     if (!fill || !fill.ok) await c.send('Input.insertText', { text: req });
     await sleep(300);
