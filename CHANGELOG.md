@@ -5,6 +5,13 @@
 > 分发口径：普通用户下载 Release 的**完整安装包**（v0.4.1 起双击即装、依赖全封装）；仓库只放代码。
 > [Release 页面](https://github.com/heronbo111/HeronBo-AIGC-Prompt/releases/tag/v0.4.1)
 
+## v0.4.6 · 2026-09-30（新机搭桥崩溃）
+
+**🐞 修（新机卡在「esm dirname」）**
+- **`doubao_cdp.mjs` 在新机上必崩**：找豆包工作客户端的那一档读了 `__dirname`，但这个文件是 **ESM（.mjs）**，**模块作用域里没有 `__dirname`** → 抛 `ReferenceError: __dirname is not defined in ES module scope`，**整个模块起不来**，连搭桥要用的 `status` 都跑不出来，卡在第一步。
+  只在「豆包工作装在默认位置之外」的新机上暴露（默认位置会先命中固定候选、短路过去）。改用 `fileURLToPath(import.meta.url)` 取本文件目录。
+  实测：强制「固定候选全落空」后，修复前 ReferenceError → 修复后正常；`agent_bridge.local.json` 写在 `tools\` 或 exe 同级 `dist\` 两种布局都能解析出 exe 路径（破环那条路也一起验了）。
+
 ## v0.4.5 · 2026-09-30
 
 **装完工作台起不来 · 根因修复**

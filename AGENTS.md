@@ -115,6 +115,7 @@ python tools/发布exe附件.py                   # 把大件/exe 发到 Release
 
 | agent | 文件范围 | 开始时间 |
 |---|---|---|
+| ZCode | **新机搭桥 ESM 崩溃**（用户 2026-09-30 报：新机卡在 esm dirname）：只动 `tools/doubao_cdp.mjs` —— `cfgDoubaoworkExe()` 用了 `__dirname`，但本文件是 ESM(.mjs)，**模块里没有 `__dirname`**；豆包工作装在固定候选表之外的位置时就会崩整个模块（连 status 都跑不起来）。本机没暴露是因为 E:\DoubaoWork 命中固定候选短路了。改用 `fileURLToPath(import.meta.url)`。**已完成**：对照实验（强制固定候选全落空）修复前 ReferenceError → 修复后正常；再验 local.json 在 `tools\` 与 `dist\` 两种布局都能解析出 exe；真机 status/probe 回归通过 | 2026-09-30 16:12 |
 | DSH（WorkBuddy） | 「ZCode 交班清单」收尾（已完成：`references/paths.md`、`references/samples-db.md`、`tools/联调说明.md`、`README.md`、`.gitignore`）＋ **版本＝一套完整快照（rules 71）**。**已改完、未提交、未推**：`references/rules.md`（新增第 71 条 + 索引）、`CHANGELOG.md`(v2.9)、`SKILL.md`(2.9)、`tools/project_core.py`（骨架加 `current`/`versions`）、私有工作台的 `tools/workbench_server.py` / `workbench/app.js` / `workbench/index.html` / `workbench/app.css`。**去冗已收口**：`workbench_server.py` 全量字面量替换经评估风险大于收益（3909 行、ZCode 也在改），只做口径一致性修复（4 处），不再做常量化 | 2026-09-21 16:40 |
 
 ## 分工建议（减少撞车）

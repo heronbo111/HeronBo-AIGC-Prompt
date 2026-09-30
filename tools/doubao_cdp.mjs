@@ -46,6 +46,14 @@ import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
 import net from 'node:net';
+import { fileURLToPath } from 'node:url';
+
+// ⚠️ 本文件是 **ESM**（.mjs），模块作用域里**没有 __dirname**。2026-09-30 新机搭桥卡死就是这个：
+// 豆包工作装在固定候选表之外的位置时，`EXE` 解析会落到 cfgDoubaoworkExe()，它一碰 __dirname
+// 就抛 `ReferenceError: __dirname is not defined in ES module scope`——**整个模块崩掉**，
+// 连 status / 搭桥验证都跑不起来（本机没暴露：E:\DoubaoWork\app\ 命中固定候选，短路了）。
+// ESM 里取本文件所在目录用 fileURLToPath(import.meta.url)。
+const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 const argv = process.argv.slice(2);
 const action = argv[0] && !argv[0].startsWith('--') ? argv[0] : 'status';
@@ -95,8 +103,8 @@ const EXE_CANDIDATES = [
 function cfgDoubaoworkExe() {
   const la = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
   const cands = [
-    path.join(__dirname, 'agent_bridge.local.json'),
-    path.join(__dirname, 'dist', 'agent_bridge.local.json'),   // 打包后 exe 旁（cfg_dir 的真身）
+    path.join(HERE, 'agent_bridge.local.json'),
+    path.join(HERE, 'dist', 'agent_bridge.local.json'),   // 打包后 exe 旁（cfg_dir 的真身）
     path.join(la, 'HeronBoScoreTool', 'agent_bridge.local.json'),
   ];
   for (const p of cands) {
