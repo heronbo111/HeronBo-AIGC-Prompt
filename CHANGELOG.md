@@ -5,6 +5,22 @@
 > 分发口径：普通用户下载 Release 的**完整安装包**（v0.4.1 起双击即装、依赖全封装）；仓库只放代码。
 > [Release 页面](https://github.com/heronbo111/HeronBo-AIGC-Prompt/releases/tag/v0.4.1)
 
+## v0.4.5 · 2026-09-30
+
+**装完工作台起不来 · 根因修复**
+- **载荷补回 node.exe**：v0.4.4 安装包的 `runtime\node\` 里只有 npm/corepack、**唯独没有 node.exe**，
+  新机装完启动器自检不过直接弹错（「没找到便携 Node」）——与杀软无关，是载荷缺陷。
+  node.exe 已补回，并在 `tools/_vendor/node/` 存了主本；新增 `tools/载荷同步.py` 把
+  「node.exe 守卫 + 关键文件核对」固化成同步步骤，这类缺失以后同步时就会当场报出来。
+- **启动器缺 Node 不再硬拦**（launcher.cs）：Node 只影响豆包桥，工作台本体不需要它——
+  缺失时跳过桥准备照常拉起工作台（弹窗品牌同步改为 HeronBo Workbench）。
+
+**更名与瘦身**
+- 安装包改名 **HeronBo Workbench**：应用名 / 默认安装目录 / 快捷方式 / 向导文案统一；
+  安装包文件名改纯 ASCII `HeronBo-Workbench-Setup-vX.Y.Z.exe`（GitHub 附件不再出现 `._` 乱码）。
+- 载荷瘦身约 390MB：剔 `tools/_release`（253MB 旧发布暂存，被误镜像进包）、`_vendor/wheels*`
+  （120MB 离线修理包，依赖已全装进便携 Python，修理走网络）、`ffplay.exe`（18MB，从不调用）。
+
 ## v0.4.4 · 2026-09-30
 
 **✨ 新功能（新机搭桥一键化）**
