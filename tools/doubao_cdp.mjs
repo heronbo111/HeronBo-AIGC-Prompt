@@ -88,7 +88,54 @@ const EXE_CANDIDATES = [
   path.join(os.homedir(), 'AppData', 'Roaming', 'DoubaoWork', 'app', 'DoubaoWork.exe'),
   'C:\Program Files\DoubaoWork\app\DoubaoWork.exe',
 ].filter(Boolean);
-const EXE = opt('exe') || EXE_CANDIDATES.find((p) => { try { return fs.existsSync(p); } catch { return false; } });
+
+// 本机配置：agent_bridge.local.json 的 "doubaowork" 字段（exe 完整路径）。
+// 2026-09-30 加：新机豆包工作装在自由位置时固定候选全会落空 → 死环（启动器找不到它，
+// 豆包又不能重启自己）。豆包自己知道装在哪，让它把路径写进 local.json 即可破环。
+function cfgDoubaoworkExe() {
+  const la = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+  const cands = [
+    path.join(__dirname, 'agent_bridge.local.json'),
+    path.join(__dirname, 'dist', 'agent_bridge.local.json'),   // 打包后 exe 旁（cfg_dir 的真身）
+    path.join(la, 'HeronBoScoreTool', 'agent_bridge.local.json'),
+  ];
+  for (const p of cands) {
+    try {
+      const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+      if (j && typeof j.doubaowork === 'string' && j.doubaowork.trim()) return j.doubaowork.trim();
+    } catch {}
+  }
+  return null;
+}
+
+// 注册表兜底：官方卸载键的 DisplayIcon 通常就是 exe 完整路径（安装位置自由时的最后防线）
+function findExeViaRegistry() {
+  const keys = [
+    'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+    'HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+    'HKLM\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+  ];
+  for (const k of keys) {
+    let out = '';
+    try {
+      out = execSync(`reg query "${k}" /s /v DisplayIcon`,
+                     { encoding: 'utf8', timeout: 20000, stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch { continue; }
+    for (const line of String(out).split(/\r?\n/)) {
+      const m = line.match(/REG_SZ\s+"?(.+DoubaoWork\.exe)/i);
+      if (!m) continue;
+      const p = m[1].trim().replace(/,0\s*$/, '').replace(/^"|"$/g, '');
+      try { if (fs.existsSync(p)) return p; } catch {}
+    }
+  }
+  return null;
+}
+
+const EXE = opt('exe')
+  || EXE_CANDIDATES.find((p) => { try { return fs.existsSync(p); } catch { return false; } })
+  || cfgDoubaoworkExe()
+  || findExeViaRegistry()
+  || null;
 
 const SESS_REL = ['.doubaowork', 'agent_mode', 'workspace', '.sessions'];
 
@@ -719,7 +766,7 @@ async function findLivePort() {
 }
 
 async function launchApp() {
-  if (!EXE) return { ok: false, why: '没找到 DoubaoWork.exe（用 --exe 指定，或设 HERONBO_DOUBAO_EXE）' };
+  if (!EXE) return { ok: false, why: '没找到 DoubaoWork.exe——破环三选一：①agent_bridge.local.json 加 "doubaowork":"exe完整路径"；②setx HERONBO_DOUBAO_EXE "exe完整路径"；③--exe 参数' };
   PORT = await pickPort();
   step('正在带调试端口启动豆包工作：端口 ' + PORT);
   // 抗节流/挂起开关：让后台、遮挡、最小化的页面不被 Electron 降速或冻结（配合后台标签页方案）。
