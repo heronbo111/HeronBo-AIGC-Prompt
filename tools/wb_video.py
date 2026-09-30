@@ -35,7 +35,8 @@ try:
 except Exception:  # noqa: BLE001
     pcore_mod = None
 
-MODEL_LIMIT = {"Seedance 2.5": 30, "Seedance 2.0": 15, "Seedance 2.0 Fast": 15}
+# (最短秒, 最长秒)：Seedance 2.5 = 5–30；2.0 / 2.0 Fast = 4–15
+MODEL_LIMIT = {"Seedance 2.5": (5, 30), "Seedance 2.0 Fast": (4, 15), "Seedance 2.0": (4, 15)}
 DEFAULT_MODEL = "Seedance 2.0 Fast（720p）"
 DEFAULT_RATIO = "9:16"
 
@@ -48,6 +49,17 @@ _STATE = {
 
 
 # ---------------- 状态 ----------------
+def _flow(msg, kind=None):
+    """把视频过程也推一份到工作台全局动作流；独立运行/无 server 时静默跳过。"""
+    try:
+        import workbench_server as _ws
+        if kind is None:
+            kind = _ws._kind_of_seg(msg) if hasattr(_ws, "_kind_of_seg") else "think"
+        _ws._push_event(kind, msg)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _log(msg):
     s = str(msg).strip()
     if not s:
@@ -56,6 +68,7 @@ def _log(msg):
         _STATE["events"].append({"t": round(time.time(), 1), "msg": s})
         if len(_STATE["events"]) > 400:
             del _STATE["events"][:-400]
+    _flow(s)
 
 
 def _set(**kw):
@@ -119,11 +132,24 @@ def estimate(script, mode="sell"):
             "hi": round(hi, 1), "suggest": math.ceil(hi), "rate": rate, "mode": mode}
 
 
-def model_limit(model):
+def model_range(model):
     for k, v in MODEL_LIMIT.items():
         if k in (model or ""):
-            return v
+            return v                       # (min, max)
     return None
+
+
+def model_limit(model):
+    r = model_range(model)
+    return r[1] if r else None             # 上限（兼容旧调用）
+
+
+def clamp_duration(model, sec):
+    r = model_range(model)
+    if not r:
+        return int(sec)
+    lo, hi = r
+    return max(lo, min(int(sec), hi))
 
 
 # ---------------- 素材解析 ----------------
@@ -164,30 +190,35 @@ def _speech_text(pdir):
 
 
 def _pick_in_dir(d):
-    image = audio = ""
+    image = audio = video = ""
     for root, _ds, fs in os.walk(d):
         for f in fs:
             lf = f.lower()
+            if not video and lf.endswith((".mp4", ".mov", ".mkv", ".webm")) and (
+                    "参考视频" in f or "口播展示" in f or re.match(r"视频1", f)):
+                video = os.path.join(root, f)
             if not image and lf.endswith((".png", ".jpg", ".jpeg", ".webp")) and (
                     "形象" in f or "首帧" in f or re.match(r"图片1", f)):
                 image = os.path.join(root, f)
             if not audio and lf.endswith((".mp3", ".wav", ".m4a")) and (
                     "音色" in f or re.match(r"音频1", f)):
                 audio = os.path.join(root, f)
-    if not image or not audio:  # 兜底任意 png/mp3
+    if not image or not audio or not video:  # 兜底任意 png/mp3/mp4
         for root, _ds, fs in os.walk(d):
             for f in sorted(fs):
                 lf = f.lower()
+                if not video and lf.endswith((".mp4", ".mov", ".mkv", ".webm")):
+                    video = os.path.join(root, f)
                 if not image and lf.endswith((".png", ".jpg", ".jpeg", ".webp")):
                     image = os.path.join(root, f)
                 if not audio and lf.endswith((".mp3", ".wav", ".m4a")):
                     audio = os.path.join(root, f)
-    return image, audio
+    return image, audio, video
 
 
 def resolve_inputs(pdir):
     """解析当前版首帧/音色/提示词；form 图生/文生按有无形象图判定。"""
-    out = {"image": "", "audio": "", "promptPath": "", "speech": "", "form": "文生"}
+    out = {"image": "", "audio": "", "video": "", "promptPath": "", "speech": "", "form": "文生"}
     if not (pdir and os.path.isdir(pdir)):
         return out
     pf = _prompt_file(pdir)
@@ -203,10 +234,10 @@ def resolve_inputs(pdir):
             if os.path.isdir(d):
                 dirs.append(d)
     cur_no = _current_ver_no(pdir)
-    best = None  # (score, mtime, image, audio)
+    best = None  # (score, mtime, image, audio, video)
     for d in dirs:
-        image, audio = _pick_in_dir(d)
-        score = (1 if image else 0) + (1 if audio else 0)
+        image, audio, video = _pick_in_dir(d)
+        score = (1 if image else 0) + (1 if audio else 0) + (1 if video else 0)
         dno = re.search(r"(?:v|版本)\s*(\d+)", os.path.basename(d), re.I)
         if cur_no and dno and dno.group(1) == cur_no:
             score += 3
@@ -220,10 +251,11 @@ def resolve_inputs(pdir):
         mt = max(mts or [0])
         cand = (score, mt)
         if best is None or cand > (best[0], best[1]):
-            best = (score, mt, image, audio)
+            best = (score, mt, image, audio, video)
     if best:
-        out["image"], out["audio"] = best[2], best[3]
-    out["form"] = "图生" if out["image"] else "文生"
+        out["image"], out["audio"], out["video"] = best[2], best[3], best[4]
+    out["form"] = ("视频参考" if out["video"] else
+                   ("图生" if out["image"] else "文生"))
     return out
 
 
@@ -296,6 +328,7 @@ def start_prepare(p):
         return {"ok": False, "error": "已有视频任务在跑，等它结束"}
     p = dict(p or {})
     _reset("prepare", p)
+    _flow("开始让豆包准备视频方案（只读、不生成、不扣点）", "tool")
 
     def _job():
         try:
@@ -308,17 +341,22 @@ def start_prepare(p):
                 args += ["--image", p["image"]]
             if p.get("audio"):
                 args += ["--audio", p["audio"]]
+            if p.get("video"):
+                args += ["--video", p["video"]]
             r = _run_video(args)
             if r.get("state") == "await_confirm" and r.get("confirmText"):
                 _set(running=False, stage="await_confirm", sid=r.get("sid", ""),
                      confirmText=r.get("confirmText", ""), result=r,
                      finished=round(time.time(), 1))
+                _flow("方案已准备好，等待你确认（未确认不会生成、不扣点）", "done")
             else:
                 _set(running=False, stage="error",
                      error=r.get("error") or "prepare 没拿到确认清单", result=r,
                      finished=round(time.time(), 1))
+                _flow("准备失败：" + (r.get("error") or "没拿到确认清单"), "think")
         except Exception as e:  # noqa: BLE001
             _set(running=False, stage="error", error=str(e), finished=round(time.time(), 1))
+            _flow("准备失败：" + str(e), "think")
 
     threading.Thread(target=_job, daemon=True).start()
     return {"ok": True, "stage": "prepare"}
@@ -332,6 +370,7 @@ def start_confirm(p):
         return {"ok": False, "error": "confirm 缺 sid"}
     _reset("confirm", p)
     _set(sid=p["sid"])
+    _flow("已确认，开始生成成片（画面+配音+合成，扣豆包企业套餐点）", "tool")
 
     def _job():
         try:
@@ -345,12 +384,15 @@ def start_confirm(p):
             if r.get("state") == "done" and r.get("video"):
                 _set(running=False, stage="done", video=r.get("video"), result=r,
                      finished=round(time.time(), 1))
+                _flow("成片已生成：" + r.get("video", ""), "done")
             else:
                 _set(running=False, stage="error",
                      error=r.get("error") or "confirm 没拿到成片（可能超时）", result=r,
                      finished=round(time.time(), 1))
+                _flow("生成失败：" + (r.get("error") or "没拿到成片（可能超时）"), "think")
         except Exception as e:  # noqa: BLE001
             _set(running=False, stage="error", error=str(e), finished=round(time.time(), 1))
+            _flow("生成失败：" + str(e), "think")
 
     threading.Thread(target=_job, daemon=True).start()
     return {"ok": True, "stage": "confirm"}
@@ -362,6 +404,7 @@ def cancel_now(sid):
     except Exception as e:  # noqa: BLE001
         r = {"ok": False, "error": str(e)}
     _set(running=False, stage="cancelled", error="", finished=round(time.time(), 1))
+    _flow("已取消视频任务", "think")
     return {"ok": True, "state": "cancelled", "sid": sid, "result": r}
 
 
@@ -379,10 +422,11 @@ def api_prepare(pdir, b):
     model = b.get("model") or DEFAULT_MODEL
     ratio = b.get("ratio") or DEFAULT_RATIO
     est = estimate(inp.get("speech") or "", "sell")
-    duration = int(b["duration"]) if b.get("duration") else min(
-        est["suggest"], model_limit(model) or 15)
+    duration = clamp_duration(
+        model, b["duration"] if b.get("duration") else est["suggest"])
     return start_prepare({
         "project": pdir, "image": inp.get("image") or "", "audio": inp.get("audio") or "",
+        "video": inp.get("video") or "",
         "promptPath": inp.get("promptPath"), "model": model, "ratio": ratio,
         "duration": duration, "form": inp.get("form"), "estimate": est,
         "timeout": int(b.get("timeout") or 500)})
@@ -395,8 +439,10 @@ def api_confirm(pdir, b):
     if not sid:
         return {"ok": False, "error": "缺 sid（先 prepare）"}
     params = st.get("params") or {}
+    model = params.get("model") or b.get("model") or DEFAULT_MODEL
     ratio = b.get("ratio") or params.get("ratio") or DEFAULT_RATIO
-    duration = int(b.get("duration") or params.get("duration") or 15)
+    duration = clamp_duration(
+        model, b.get("duration") or params.get("duration") or 15)
     out = os.path.join(pdir, "成片", "heronbo_%s.mp4" % sid)
     os.makedirs(os.path.dirname(out), exist_ok=True)
     return start_confirm({"project": pdir, "sid": sid, "ratio": ratio,

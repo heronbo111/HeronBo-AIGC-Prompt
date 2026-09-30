@@ -70,6 +70,7 @@ const PROMPT = opt('prompt');
 const VSTAGE = opt('stage', 'prepare');
 const VIMAGE = opt('image');
 const VAUDIO = opt('audio');
+const VVIDEO = opt('video');
 const VMODEL = opt('model');
 const VRATIO = opt('ratio');
 const VDURATION = opt('duration');
@@ -471,12 +472,14 @@ async function createIsolatedChat(opts = {}) {
     await cdp.send('Page.bringToFront').catch(() => {});
   }
   if (asWindow && silent) {
-    // 静默：不置前、立即最小化到任务栏（不挡屏不抢焦），页面仍 active；失败/取消由调用方关窗
+    // 静默：不置前、移到屏外（normal + 正常尺寸）。⚠️ 不能最小化——最小化窗口会被 Electron/Windows
+    // 冻结（occluded/background），豆包不处理、Runtime.evaluate 也不返回（2026-09-29 实测，7分22秒）。
+    // 离屏 normal 窗口用户看不见、但保持 active 正常渲染；配合 setFocusEmulation / setWebLifecycleState。
     for (let i = 0; i < 8; i++) {
       try {
         const w = await cdp.send('Browser.getWindowForTarget', { targetId: newId });
         await cdp.send('Browser.setWindowBounds',
-          { windowId: w.windowId, bounds: { windowState: 'minimized' } });
+          { windowId: w.windowId, bounds: { windowState: 'normal', left: -3200, top: -3200, width: 1000, height: 720 } });
         break;
       } catch { await sleep(250); }
     }
@@ -528,26 +531,47 @@ async function uploadAttachments(cdp, files) {
 // 构造视频请求（路径2：图生接口无音频位 → 给本地路径，画面/配音分头生成再对齐合成；prepare 只回计划、不生成）
 function buildVideoRequest(o) {
   const L = [];
-  L.push('我要做一条【' + (o.image ? '图生' : '文生') + '·口播带货】视频。关键约束：图生视频接口没有音频输入位，无法“图+音色”一次出整条口播，所以请按“画面与配音分头生成、再逐段对齐、合成一条成片”的流水线执行。素材你直接读本地文件即可，我不需要在对话里上传附件。');
+  // 短片（≤6s）不分段：2026-09-30 实测 4s 的活也被切成两段+锚点衔接，纯浪费还引入拼接风险
+  const shortJob = Number(o.duration) <= 6;
+  const formName = o.video ? '视频参考' : (o.image ? '图生' : '文生');
+  const lockSrc = o.video
+    ? '先读取参考视频，锁定人物外观、服装、场景与镜头，并参考其口型、动作与眼神节奏'
+    : (o.image ? '先读取首帧图锁定人物外观' : '');
+  const segStart = o.video ? '参考视频对应片段（抽其首帧并参考运动/口型）'
+    : (o.image ? '首帧图' : '提示词');
+  L.push('我要做一条【' + formName + '·口播带货】视频。关键约束：视频生成接口没有“参考视频+音色”一次出整条口播的输入位，所以请按“画面与配音分头生成、再逐段对齐、合成一条成片”的流水线执行。素材你直接读本地文件即可，我不需要在对话里上传附件。');
   L.push('');
   L.push('【本地素材（请直接用绝对路径读取）】');
+  if (o.video) L.push('- 参考视频（人物形象/动作/口型节奏/场景的示范，静音；务必识别为“视频参考”，不要当成文生）：' + o.video);
   if (o.image) L.push('- 首帧/形象参考图：' + o.image);
   if (o.audio) L.push('- 音色参考（只克隆声线与说话状态，不要念它原本内容）：' + o.audio);
   L.push('');
   L.push('【独立执行参数（以此为准）】');
   L.push('- 画面模型：' + o.model);
   L.push('- 画面比例：' + o.ratio);
-  L.push('- 成片总时长：约 ' + o.duration + ' 秒（带货快口播；分段画面与配音都对齐到该总时长）');
-  L.push('- 形式：' + (o.image ? '图生，分段生成画面' : '文生，分段生成画面'));
+  L.push('- 成片总时长：约 ' + o.duration + ' 秒（带货快口播；'
+    + (shortJob ? '一次性生成，不切分' : '分段画面与配音都对齐到该总时长') + '）');
+  L.push('- 形式：' + (o.video
+      ? '视频参考：以参考视频锁定人物外观与口型/动作节奏，按新台词生成画面（不是文生）'
+      : (o.image ? '图生，分段生成画面' : '文生，分段生成画面')));
   L.push('');
   L.push('【确认后请按此流水线执行】');
-  L.push('1. ' + (o.image ? '读取首帧图锁定人物外观；' : '') + '按台词语气拐点把画面分成 2 段（时长贴合口播、含余量且合计不超过总时长；具体切点、每段秒数与对应台词分句请在确认清单里给出时间轴）。逐段生成画面：第1段以' + (o.image ? '首帧图' : '提示词') + '为起点，第2段以第1段末尾姿态/画面衔接，保证人物、服装、场景、光线一致，并满足提示词中该段对应的动作、眼神与口型要求。');
+  if (shortJob) {
+    L.push('1. ' + lockSrc + '；总时长只有 ' + o.duration + ' 秒——**不要分段**，一次性生成整条画面：以'
+      + segStart + '为起点（接口若支持首尾帧，把参考视频对应片段的末帧一并作为锚点），保证人物、服装、场景、光线一致，并满足提示词中的动作、眼神与口型要求。');
+  } else {
+    L.push('1. ' + lockSrc + '；按台词语气拐点把画面分成 2-3 段（每段 4-8 秒、贴合口播、含余量且合计不超过总时长；具体切点、每段秒数与对应台词分句请在确认清单里给出时间轴）。逐段生成画面：第1段以' + segStart + '为起点，后续每段以上一段末尾姿态/画面衔接，保证人物、服装、场景、光线一致，并满足提示词中该段对应的动作、眼神与口型要求。');
+  }
   L.push('2. 用音色参考 + 台词全文生成与画面等长的配音（可按同一切点分段生成再拼接），带货快口播语速，读音准确（“四六级”读 sì-liù-jí、“580”读 wǔ-bā-líng）。');
-  L.push('3. 把配音与分段画面逐段对齐口型和节奏，合成【一条】' + o.ratio + '、约 ' + o.duration + ' 秒的成片：段间承接自然、无跳切/黑帧，响度统一；无字幕、水印、Logo，无 BGM。');
+  L.push('3. 把配音与画面' + (shortJob ? '' : '逐段') + '对齐口型和节奏，合成【一条】' + o.ratio + '、约 ' + o.duration + ' 秒的成片'
+    + (shortJob ? '' : '：段间承接自然、无跳切/黑帧，响度统一') + '；无字幕、水印、Logo，无 BGM。');
+  L.push('4. 交付口径：**不要输出自检/质检报告**（分辨率、帧率、LUFS 响度、口型逐项核对那类都省掉），'
+    + '也不要把中间分段画面单独发我；' + (shortJob ? '生成完直接把成片发我' : '全部合成完只发最终成片')
+    + '。上传/转码等服务偶发异常自己重试一次即可，不要停下来写解释。');
   L.push('');
   L.push('【现在停在计划阶段，不要生成、不消耗额度】请只回一份“执行计划确认清单”：');
   L.push('- 分段时间轴：每段起止秒、对应台词分句、画面动作要点；');
-  L.push('- 每段输入（首帧/上一帧）与配音方式；合成方式与最终规格（模型/比例/总时长）；');
+  L.push('- 每段输入（参考视频/首帧/上一帧）与配音方式；合成方式与最终规格（模型/比例/总时长）；');
   L.push('- 预计消耗（点数/积分）：分列画面、配音与合计，并给出重试余量建议。');
   L.push('等我明确回复“确认”后再开始执行。');
   L.push('');
@@ -577,6 +601,52 @@ async function attachSessionBySid(sid, waitMs = 15000, opts = {}) {
   }
   return null;
 }
+// 按 targetId 复用已存在的视频会话（静默、不置前；找不到返回 null）
+async function attachSessionByTarget(targetId) {
+  if (!targetId) return null;
+  const list = await getJson('/json/list');
+  const t = (list || []).find((x) => (x.targetId || x.id) === targetId && x.webSocketDebuggerUrl);
+  if (!t) return null;
+  const cdp = new Cdp(t.webSocketDebuggerUrl);
+  await cdp.connect();
+  await cdp.send('Runtime.enable');
+  await cdp.send('Page.enable').catch(() => {});
+  await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
+  await cdp.send('Page.setWebLifecycleState', { state: 'active' }).catch(() => {});
+  cdp.targetId = t.targetId || t.id;
+  return cdp;
+}
+
+/* 统一获取固定会话（kind: 'ask' 出提示词 / 'video' 视频）：
+   ① 复用 state 里锁定的 target；② 失效则从 /json/list 回收同类旧会话；
+   ③ 都没有才新建隐藏离屏窗口。杜绝每次自动化都新建/弹新窗、上下文连续不幻觉。 */
+async function acquireSession(kind) {
+  const key = kind === 'video' ? 'videoTarget' : 'askTarget';
+  const st0 = stateRead();
+  if (st0[key]) {
+    const c = await attachSessionByTarget(st0[key]).catch(() => null);
+    if (c) return c;
+  }
+  const list = await getJson('/json/list');
+  const RE_KW = kind === 'video'
+    ? /视频参考|执行计划|口播|视频/
+    : /提示词|口播|视频|参考|prompt/i;
+  // 只回收自动化产生的正式 chat 会话：排除主对话（标题「开发与调试」）、排除空白/非 chat 页
+  const cands = (list || []).filter((x) => x.type === 'page' && x.webSocketDebuggerUrl
+    && /doubaowork-chat\/chat\/\d+/.test(x.url || '')
+    && !/开发与调试/.test(x.title || '')
+    && RE_KW.test(x.title || ''));
+  if (cands.length) {
+    const t = cands[cands.length - 1];     // 列表顺序≈创建顺序，取最近一个
+    const tid = t.targetId || t.id;
+    const c = await attachSessionByTarget(tid).catch(() => null);
+    if (c) { stateWrite(Object.assign(stateRead(), { [key]: tid })); return c; }
+  }
+  const c = await createIsolatedChat({ asWindow: true, silent: true });
+  stateWrite(Object.assign(stateRead(), { [key]: c.targetId }));
+  return c;
+}
+
 // 最后一条回复里的视频状态
 const VIDEO_STATE = `(() => {
   const recvs = [...document.querySelectorAll('[data-testid="receive_message"]')];
@@ -840,21 +910,14 @@ async function actAsk() {
 
   const t0 = Date.now();
   let cdp = null;
-  // 优先在**独立窗口**建空白会话（独立 webContents，别的会话提前回消息也不会被顶掉）；
-  // 建不成再退回"当前窗口新建"的旧路径。
+  // 固定会话：复用锁定的 ask 会话（→回收同类→才新建隐藏窗），不再每次新建/弹新窗
   try {
-    step('正在后台打开空白会话（不弹窗）…');
-    cdp = await createIsolatedChat();
-    step('后台会话已就绪');
+    step('正在接入固定会话（不弹窗）…');
+    cdp = await acquireSession('ask');
+    step('固定会话已就绪');
   } catch (e) {
-    step('后台会话没成（' + ((e && e.message) || e) + '），退回当前窗口新建…');
-    const t = await pickChatTarget();
-    if (!t) { log('✗ 没有可用的页面目标'); return 5; }
-    cdp = new Cdp(t.webSocketDebuggerUrl);
-    await cdp.connect();
-    await cdp.send('Runtime.enable');
-    await cdp.send('Page.enable').catch(() => {});
-    await ensureFreshChat(cdp);
+    log('✗ 固定会话接不上：' + ((e && e.message) || e));
+    return 5;
   }
   let answer = '';
   let sid = '';
@@ -906,6 +969,18 @@ async function actAsk() {
     const sr = await cdp.evalJs(CLICK_SEND_WAIT, 20000);
     if (sr && sr.ok) step('点了发送按钮（' + sr.how + '）');
     else { step('没点到发送按钮，改用回车'); await pressEnter(); }
+
+    // 新建的空白会话首条消息后会导航到正式 /chat/<sid>、renderer 被替换、旧 ws 失效：
+    // 循环重连直到落到正式 sid；复用会话（已有 sid、不导航）第一轮即跳过。
+    const _tid = cdp.targetId;
+    for (let k = 0; k < 24; k++) {
+      const href = await cdp.evalJs('location.href').catch(() => null);
+      if (href && /\/chat\/\d+/.test(String(href))) break;
+      await sleep(600);
+      try { cdp.close(); } catch {}
+      const rc = await attachSessionByTarget(_tid).catch(() => null);
+      if (rc) cdp = rc;
+    }
 
     if (cdp.targetId) {
       // ★ 独立窗口：webContents/target id 全程不变，**只锁定这一个连接**等消息落地，绝不扫描其它窗口。
@@ -1001,10 +1076,9 @@ async function actAsk() {
     pendingSeg = '';
     if (last) answer = stripRenderBlock(String(last).replace(/^消耗\s*[\d.]+\s*点\s*/m, ''));
   } finally {
+    // 固定会话保留（下次复用、上下文连续）：只断 CDP 连接、不关窗
     try { readCdp && readCdp.close(); } catch {}
     try { if (readCdp !== cdp) cdp.close(); } catch {}
-    // 无论成功/失败/超时，独立窗口一律关闭：失败路径遗留的窗口会堆积、干扰后续新窗口（2026-09-28 flaky 根因）
-    try { if (cdp && cdp.targetId) await closeTarget(cdp.targetId); } catch {}
   }
 
   if (!answer) { log('✗ 到时间没拿到答复（看上面的进度判断它卡在哪一步）'); return 4; }
@@ -1029,7 +1103,8 @@ async function actVideo() {
   // cancel：按 sid 关闭会话
   if (VSTAGE === 'cancel') {
     const c = await attachSessionBySid(VSID, 8000, { silent: true });
-    if (c) { await closeTarget(c.targetId); c.close(); }
+    // 同一上下文：cancel 也保留会话（仅断 CDP、不关窗、不清 target），下次 prepare 直接复用
+    if (c) c.close();
     console.log(JSON.stringify({ state: 'cancelled', sid: VSID }));
     return 0;
   }
@@ -1040,7 +1115,10 @@ async function actVideo() {
     const c = await attachSessionBySid(VSID, 15000, { silent: true });
     if (!c) { log('✗ 找不到会话 ' + VSID + '（可能已被关闭）'); return 4; }
     try {
-      const confirmMsg = '确认，按你的执行计划开始执行：分段生成画面 → 用音色生成配音 → 逐段对齐口型、合成【一条】' + VRATIO + '、约' + VDURATION + '秒的成片。全部完成后，只把最终合成的那条成片发给我（中间的分段画面不用单独交付）。';
+      const shortJob = Number(VDURATION) <= 6;   // 与 buildVideoRequest 的分段口径一致
+      const confirmMsg = shortJob
+        ? '确认，开始执行：一次性生成整条画面 → 用音色生成配音 → 对齐合成【一条】' + VRATIO + '、约' + VDURATION + '秒的成片。完成后直接把最终成片发给我（不要自检/质检报告，不用交付中间分段）。'
+        : '确认，按你的执行计划开始执行：分段生成画面 → 用音色生成配音 → 逐段对齐口型、合成【一条】' + VRATIO + '、约' + VDURATION + '秒的成片。全部完成后，只把最终合成的那条成片发给我（中间的分段画面不用单独交付，也不要自检/质检报告）。';
       const f = await c.evalJs(FILL_VIA_EDITOR + '(' + JSON.stringify(confirmMsg) + ')');
       if (!f || !f.ok) await c.send('Input.insertText', { text: confirmMsg });
       const sr = await c.evalJs(CLICK_SEND_WAIT, 20000);
@@ -1068,7 +1146,10 @@ async function actVideo() {
       step('正在取回视频…');
       const n = await downloadMedia(c, src, out);
       console.log(JSON.stringify({ state: 'done', sid: VSID, video: out, bytes: n }));
-    } finally { try { await closeTarget(c.targetId); } catch {} c.close(); }
+    } finally {
+      // 同一上下文：成片后保留会话（仅断 CDP、不关窗、不清 target），下次 prepare 复用、上下文连续
+      c.close();
+    }
     return 0;
   }
 
@@ -1077,23 +1158,36 @@ async function actVideo() {
   if (!VMODEL || !VRATIO || !VDURATION) { log('✗ prepare 需要 --model --ratio --duration'); return 2; }
   let c = null;
   try {
-    // 用后台静默标签（与成功的 ask 一致）：独立窗口 newWindow 会停在 /chat、读不到 recv；
-    // 当前环境后台标签开不了（"no browser is open"，2026-09-29 实测）→ 用新窗口；
-    // 窗口保留给 confirm 复用（attachSessionBySid 按 /chat/<sid> 找），错误/取消才关。
-    c = await createIsolatedChat({ asWindow: true, silent: true });
+    // 同一上下文：统一走固定会话（复用锁定 target → 回收同类 → 才新建隐藏窗），不弹新窗
+    const _before = stateRead().videoTarget;
+    c = await acquireSession('video');
+    step(stateRead().videoTarget === _before ? '复用同一视频会话（上下文连续、加载快）'
+                                            : '已锁定视频会话（之后都复用、不弹新窗）');
     // 路径2：不上传附件，直接给本地绝对路径让豆包自己读；提示词原样带入（保留画幅/时长等可移植依据，不剥离）
     const req = buildVideoRequest({ prompt, model: VMODEL, ratio: VRATIO, duration: VDURATION,
-      image: VIMAGE ? path.resolve(VIMAGE) : '', audio: VAUDIO ? path.resolve(VAUDIO) : '' });
+      image: VIMAGE ? path.resolve(VIMAGE) : '', audio: VAUDIO ? path.resolve(VAUDIO) : '',
+      video: VVIDEO ? path.resolve(VVIDEO) : '' });
     const fill = await c.evalJs(FILL_VIA_EDITOR + '(' + JSON.stringify(req) + ')', 30000);
     if (!fill || !fill.ok) await c.send('Input.insertText', { text: req });
     await sleep(300);
     await c.evalJs(CLICK_SEND_WAIT, 20000);
     step('已发请求，读取确认清单…');
-    let text = '', idleSince = 0;
+    const TID = c.targetId;
+    try { c.close(); } catch {}     // 断开"导航前"的旧连接：首条消息后空白 chat 会导航到正式 /chat/sid、
+    // renderer/document 被替换，旧 ws 停在导航前文档、MSG_STATE 永远读不到回复（2026-09-29 实测两次）。
+    let text = '', idleSince = 0, sid = '';
     const readDeadline = Date.now() + Math.min(TIMEOUT, 600) * 1000;
     while (Date.now() < readDeadline) {
       await sleep(2500);
-      const s = await c.evalJs(MSG_STATE).catch(() => null);
+      // 每轮按 targetId 从 /json/list 重新解析最新 ws（targetId 不变、ws 指向导航后的新 renderer）
+      const rc = await attachSessionByTarget(TID);
+      if (!rc) continue;
+      let s = null;
+      try {
+        s = await rc.evalJs(MSG_STATE);
+        sid = String(await rc.evalJs('location.href') || '').split('/').pop();
+      } catch { rc.close(); continue; }
+      rc.close();
       if (!s) continue;
       const t = String(s.lastRecv || '').trim();
       // 无论是否在跑，都持续保留最新可见正文（running 期间也更新，避免临近超时抓空）
@@ -1105,12 +1199,15 @@ async function actVideo() {
     }
     // 清掉末尾可能残留的单行状态提示
     text = (text.replace(/\n[^\n]*(正在思考|思考中|正在执行|执行代码|生成中|正在生成|读取中|分析中|排队|请稍候|加载中)[^\n]*$/, '').trim() || text);
-    const sid = String(await c.evalJs('location.href') || '').split('/').pop();
     const out = { state: 'await_confirm', sid, confirmText: text,
       model: VMODEL, ratio: VRATIO, duration: Number(VDURATION),
-      image: VIMAGE ? path.resolve(VIMAGE) : '', audio: VAUDIO ? path.resolve(VAUDIO) : '' };
-    c.close();                          // 仅断开 CDP，保留会话 target，等 confirm/cancel
-    process.stdout.write(JSON.stringify(out, null, 1) + '\n');
+      image: VIMAGE ? path.resolve(VIMAGE) : '', audio: VAUDIO ? path.resolve(VAUDIO) : '',
+      video: VVIDEO ? path.resolve(VVIDEO) : '',
+      form: VVIDEO ? '视频参考' : (VIMAGE ? '图生' : '文生') };
+    try { c.close(); } catch {}         // 仅断开 CDP，保留会话 target，等 confirm/cancel
+    const jsonOut = JSON.stringify(out, null, 1);
+    if (opt('result-file')) { try { fs.writeFileSync(opt('result-file'), jsonOut, 'utf8'); } catch (e) { log('写结果文件失败：' + e.message); } }
+    process.stdout.write(jsonOut + '\n');
     return 0;
   } catch (e) {
     log('✗ prepare 出错：' + ((e && e.message) || e));
