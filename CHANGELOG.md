@@ -5,6 +5,14 @@
 > 分发口径：普通用户下载 Release 的**完整安装包**（v0.4.1 起双击即装、依赖全封装）；仓库只放代码。
 > [Release 页面](https://github.com/heronbo111/HeronBo-AIGC-Prompt/releases/tag/v0.4.1)
 
+## v0.4.7 · 2026-09-30（安装器界面借鉴 DSH）
+
+**✨ 界面（参照 DeepSeek Harness 安装器取样：底 #FFFFFF + 近黑 #0F1115 + 深灰带 #2D3139，单色极简）**
+- 新增向导图：左侧大图（白底圆角标记 + HeronBo Workbench 字样 + 深色横带「AI 视频创作工作台」）与右上角小 logo，配色与 DSH 同款单色。⚠️ 本机这版 Inno **只在欢迎页画左图**（最小复现实证），所以欢迎页必须留着——它就是 DSH 第一屏的对位物。
+- 减页：去掉准备页与任务页 → 「品牌欢迎 → 选位置 → 安装 → 完成」；桌面快捷方式改为默认必建，开机自启任务删除（原本就备注“一般不需要”）。
+- 补齐中文消息：此前安装位置页有四行一直是英文（SelectDirDesc / SelectDirLabel3 / DiskSpaceGBLabel / 浏览按钮真名是 ButtonWizardBrowse 而非 ButtonBrowse）——全部改成中文。
+- 本机装机实测备忘：**360 安全卫士会拦安装器对 `HeronBo.exe` 的改名写入（MoveFile code 5）、并在启动器执行后删除它**；装机前请在 360 信任区放行安装目录（本次是手动覆盖载荷修复的）。
+
 ## v0.4.6 · 2026-09-30（新机搭桥崩溃 + 素材归类不落框架）
 
 **🐞 修（素材拖进工作台，agent 却说"没有素材"）**
