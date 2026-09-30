@@ -24,7 +24,14 @@ REPO = os.path.dirname(HERE)                               # 仓库根
 
 EXCLUDE_DIRS = {".git", "__pycache__", "build", "_stage", "_release",
                 "wheels", "wheels-heavy", "wheels-stt", "wheels-depth"}
-EXCLUDE_FILES = {"*.local.json", "*.pyc"}
+EXCLUDE_FILES = {"*.local.json", "*.local.md", "*.pyc"}
+
+# 隐私泄漏守卫（2026-09-30 加；起因：v0.4.5 之前 paths.local.md 把本机样本库根
+# F:\AI创作\... 带进了安装包，新机界面直接显示开发机的目录）。
+# ① 载荷里任何 *.local.* 都是本机文件，一律清掉；
+# ② 非代码文本（md/txt/json）命中本机特征串 → 直接报错退出；
+# ③ 代码文件（py/js/mjs）命中 → 打印警告（多为功能性探测候选，人工判断）。
+LOCAL_MARKERS = ("WUK" + "ONG",)  # 拼开写，避免本文件自命中
 
 # 载荷里必须存在的关键文件（相对 skill\\）
 MUST_HAVE = [
@@ -71,6 +78,20 @@ def main():
                                            mib(d), os.path.relpath(d, pkg)))
             if not dry:
                 shutil.rmtree(d)
+
+    # 1.5) 隐私预清理：本机 .local 文件不许进安装包（/MIR+XF 不会删目的侧已有文件）
+    for dp, _dn, fn in os.walk(dst):
+        for f in fn:
+            if f.endswith((".local.json", ".local.md")):
+                p = os.path.join(dp, f)
+                print("[清] %-5s 本机配置  %s" % ("(dry)" if dry else "已删",
+                                                 os.path.relpath(p, pkg)))
+                if not dry:
+                    try:
+                        os.remove(p)
+                    except OSError as e:
+                        print("[X] 删不掉 %s：%s" % (p, e))
+                        return 3
 
     # 2) 镜像 skill
     xd = [" ".join("/XD " + os.path.join(dst, "tools", d) for d in
@@ -121,6 +142,31 @@ def main():
         print("[X] 关键文件缺失：%s" % "; ".join(bad))
         return 3
     print("[OK] 关键文件核对通过（exe / 桥 / 版本 / 前端 / 双运行时）")
+
+    # 5) 隐私泄漏守卫：本机特征串扫描（_vendor/dist 是第三方与产物，跳过）
+    leaks_hard, leaks_soft = [], []
+    skip_dirs = {"_vendor", "dist", "__pycache__", ".git", "node_modules"}
+    for dp, dn, fn in os.walk(dst):
+        dn[:] = [d for d in dn if d not in skip_dirs]
+        for f in fn:
+            if not f.endswith((".md", ".txt", ".json", ".py", ".js", ".mjs",
+                               ".html", ".css", ".cmd", ".ps1", ".bat")):
+                continue
+            p = os.path.join(dp, f)
+            rel = os.path.relpath(p, pkg)
+            try:
+                t = open(p, encoding="utf-8", errors="ignore").read()
+            except OSError:
+                continue
+            if any(m in t for m in LOCAL_MARKERS):
+                (leaks_hard if f.endswith((".md", ".txt", ".json")) else leaks_soft).append(rel)
+    if leaks_hard:
+        print("[X] 载荷文档里发现本机特征串（会泄漏给新机用户）：%s" % "; ".join(leaks_hard))
+        return 3
+    for rel in leaks_soft:
+        print("[!] 代码含本机特征串（多为探测候选，请人工确认）：%s" % rel)
+    if not leaks_hard and not leaks_soft:
+        print("[OK] 隐私守卫：载荷无本机特征串")
     print("---- 体积摘要 ----")
     print("载荷总计      %7.0f MB" % mib(pkg))
     print("  skill       %7.0f MB" % mib(dst))

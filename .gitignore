@@ -98,3 +98,8 @@ tools/打包换位.py
 tools/diag_file_dialog.ps1
 tools/fill_file_dialog.ps1
 tools/set_file_clipboard.ps1
+
+# 历史发布工具：硬编码本机路径，只留本地（已被 tools/发布版本.py 取代）
+tools/发布完整setup.py
+tools/同步Gitee发行版.py
+tools/重建GitHub v0.4.0.py
