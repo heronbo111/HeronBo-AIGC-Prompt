@@ -24,7 +24,9 @@ REPO = os.path.dirname(HERE)                               # 仓库根
 
 EXCLUDE_DIRS = {".git", "__pycache__", "build", "_stage", "_release",
                 "wheels", "wheels-heavy", "wheels-stt", "wheels-depth"}
-EXCLUDE_FILES = {"*.local.json", "*.local.md", "*.pyc"}
+EXCLUDE_FILES = {"*.local.json", "*.local.md", "*.pyc",
+                 # 历史发布工具：硬编码本机路径，已移出公开仓，新机也用不上
+                 "发布完整setup.py", "同步Gitee发行版.py", "重建GitHub v0.4.0.py"}
 
 # 隐私泄漏守卫（2026-09-30 加；起因：v0.4.5 之前 paths.local.md 把本机样本库根
 # F:\AI创作\... 带进了安装包，新机界面直接显示开发机的目录）。
@@ -78,6 +80,23 @@ def main():
                                            mib(d), os.path.relpath(d, pkg)))
             if not dry:
                 shutil.rmtree(d)
+
+    # 1.5) 排除名单里的**旧文件**也要从载荷里清掉（/XF 只挡源侧复制，
+    #      挡不住上一轮已经拷进来的——2026-09-30 三个历史发布工具就赖着不走）
+    import fnmatch
+    cleaned = 0
+    for dp, dn, fn in os.walk(dst):
+        dn[:] = [x for x in dn if x not in (".git", "__pycache__")]
+        for f in fn:
+            if any(fnmatch.fnmatch(f, pat) for pat in EXCLUDE_FILES):
+                fp = os.path.join(dp, f)
+                cleaned += 1
+                print("[清] 已删 %s" % os.path.relpath(fp, pkg))
+                if not dry:
+                    try:
+                        os.remove(fp)
+                    except OSError as e:
+                        print("[!] 删不掉 %s：%s" % (f, e))
 
     # 1.5) 隐私预清理：本机 .local 文件不许进安装包（/MIR+XF 不会删目的侧已有文件）
     for dp, _dn, fn in os.walk(dst):

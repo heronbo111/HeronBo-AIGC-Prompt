@@ -103,3 +103,6 @@ tools/set_file_clipboard.ps1
 tools/发布完整setup.py
 tools/同步Gitee发行版.py
 tools/重建GitHub v0.4.0.py
+
+# 便携 Node 主本（86MB 二进制，不进 git；载荷同步.py 会取它守卫）
+tools/_vendor/node/
