@@ -137,30 +137,57 @@ def gh_publish(tag, target, body, files, force):
         log("  [GitHub] 已创建 release id=%s" % rid)
     for path in files:
         name = gh_asset_name(os.path.basename(path))
+        # ⚠️ 消费端（版本.py remote()）拉的是 `version.json`，本地文件却叫 `_version.json`——
+        # 不改名的话 Release 上永远只有错名附件、检查更新 404 拿不到远端版本
+        # （2026-10-03 实锤：v0.4.0~0.4.9 全系列中招，界面永远显示"已是最新"）。
+        if name == "_version.json":
+            name = "version.json"
         # 同名旧附件先删（幂等；不可变版本正常不会有）
         st, rel = gh_request("%s/repos/%s/%s/releases/%s" % (GH_API, OWNER_GH, REPO, "tags/"+tag), tok)
         for a in (rel.get("assets") or []) if isinstance(rel, dict) else []:
             if a.get("name") == name:
                 gh_request("%s/repos/%s/%s/releases/assets/%s" % (GH_API, OWNER_GH, REPO, a["id"]),
                            tok, method="DELETE", timeout=60)
-        with open(path, "rb") as f:
-            blob = f.read()
         url = "https://uploads.github.com/repos/%s/%s/releases/%s/assets?name=%s" % (
             OWNER_GH, REPO, rid, urllib.parse.quote(name))
         log("  [GitHub] 上传 %s（%.1f MB）…" % (name, os.path.getsize(path) / 1048576.0))
         last_err = ""
         ok = False
-        for attempt in (1, 2, 3):                              # 大文件上传易被网络中断，重试兜底
-            try:
-                st, b = gh_request(url, tok, method="POST", data=blob,
-                                   ctype="application/octet-stream", timeout=1800)
-                if st in (200, 201):
-                    ok = True
-                    break
-                last_err = "HTTP%s %s" % (st, str(b)[:150])
-            except Exception as e:                              # noqa: BLE001
-                last_err = str(e)[:200]
-            log("    上传第%d次失败（%s），重试…" % (attempt, last_err))
+        if os.path.getsize(path) > 50 * 1048576:
+            # ⚠️ 大件必须走 curl 流式上传：urllib 整块 sendall 传 694MB 必中途停摆
+            # （2026-10-03 实测：直连/代理都 30 分钟写超时重试全灭；同一文件 curl
+            #  108 秒、6.7MB/s 直接过）。token 走 -K -（stdin 配置），不进 argv 不外显。
+            for attempt in (1, 2, 3):
+                cfg = ('url = "%s"\nheader = "Authorization: token %s"\n'
+                       'header = "Content-Type: application/octet-stream"\n'
+                       'data-binary = "@%s"\n' % (url, tok, path))
+                try:
+                    r = subprocess.run(
+                        ["curl", "-sS", "-o", os.devnull, "-w", "%{http_code}",
+                         "--max-time", "1700", "--retry", "2", "--retry-delay", "10", "-K", "-"],
+                        input=cfg, capture_output=True, text=True, timeout=1800)
+                    code = (r.stdout or "").strip()[-3:]
+                    if code in ("200", "201"):
+                        ok = True
+                        break
+                    last_err = "curl HTTP%s %s" % (code, (r.stderr or "")[:150])
+                except Exception as e:                              # noqa: BLE001
+                    last_err = str(e)[:200]
+                log("    上传第%d次失败（%s），重试…" % (attempt, last_err))
+        else:
+            with open(path, "rb") as f:
+                blob = f.read()
+            for attempt in (1, 2, 3):                              # 大文件上传易被网络中断，重试兜底
+                try:
+                    st, b = gh_request(url, tok, method="POST", data=blob,
+                                       ctype="application/octet-stream", timeout=1800)
+                    if st in (200, 201):
+                        ok = True
+                        break
+                    last_err = "HTTP%s %s" % (st, str(b)[:150])
+                except Exception as e:                              # noqa: BLE001
+                    last_err = str(e)[:200]
+                log("    上传第%d次失败（%s），重试…" % (attempt, last_err))
         if not ok:
             return "GitHub 上传 %s 失败 %s" % (name, last_err)
     return ""
@@ -224,6 +251,8 @@ def gee_publish(tag, target, body, files, force):
     have = {a.get("name") for a in (detail.get("assets") or [])}
     for path in files:
         name = os.path.basename(path)
+        if name == "_version.json":        # 与消费端对齐（见 gh_publish 同名注释）
+            name = "version.json"
         if os.path.getsize(path) > 100 * 1048576:
             log("  [Gitee] 跳过 %s（%.1f MB 超单附件 100MB 上限；请到 GitHub 取）"
                 % (name, os.path.getsize(path) / 1048576.0))
@@ -244,6 +273,8 @@ def verify_links(tag, files):
     ok = True
     for path in files:
         name = os.path.basename(path)
+        if name == "_version.json":        # 远端实际叫 version.json（见 gh_publish）
+            name = "version.json"
         if os.path.getsize(path) > 100 * 1048576:
             continue
         for url in ("https://gitee.com/%s/%s/releases/download/%s/%s" % (OWNER_GEE, REPO, tag, name),
