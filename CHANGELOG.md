@@ -5,6 +5,14 @@
 > 分发口径：普通用户下载 Release 的**完整安装包**（v0.4.1 起双击即装、依赖全封装）；仓库只放代码。
 > [Release 页面](https://github.com/heronbo111/HeronBo-AIGC-Prompt/releases/tag/v0.4.1)
 
+## v0.4.8 · 2026-10-03（侧栏体验与固定会话）
+
+**🐞 修**
+- **侧栏展开时「出提示词」按钮被挤成两行**（用户截图打回）：规矩改成标题先省略 → agent 徽章再缩 → 主按钮永不折行不缩。
+- **更新弹窗一开就报「Cannot access 'stopPoll' before initialization」**：const 声明在使用之后（TDZ）→ 提前到 openModal 之前。
+- **豆包桥固定会话跨重启**：以前只锁窗口句柄，App 一重启就全失效、每轮新建对话（侧栏堆几十条）→ 实测 `doubaowork://doubaowork-chat/chat/<sid>` 可用 Target.createTarget 原样重开，五级回退（锁定 target → 按 sid 找回 → 按 sid 重开 → 回收同类 → 才新建），prepare/ask 拿到 sid 后写回 state。
+- **文生成片取不回**：文生流程的成片不内嵌 video（图生+配音才内嵌），confirm 加文件交接回退——让豆包把成片复制到约定目录再从盘取。实测：新机形态（便携 Node+自带 skill）全链路跑通，文生 4s/720p/9:16 成片 h264+aac 整 4.000s，实耗 110.65 点。3 分 37 秒。
+
 ## v0.4.7 · 2026-09-30（安装器界面借鉴 DSH）
 
 **✨ 界面（参照 DeepSeek Harness 安装器取样：底 #FFFFFF + 近黑 #0F1115 + 深灰带 #2D3139，单色极简）**
