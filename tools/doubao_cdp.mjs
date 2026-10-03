@@ -1263,7 +1263,7 @@ async function actVideo() {
       if (!f || !f.ok) await c.send('Input.insertText', { text: confirmMsg });
       const sr = await c.evalJs(CLICK_SEND_WAIT, 20000);
       step('已回确认，等待流水线执行（' + (sr && sr.ok ? '已提交' : '提交异常') + '）…');
-      let src = '', candSrc = '', stable = 0, lastBeat = 0;
+      let src = '', candSrc = '', stable = 0, lastBeat = 0, srcIsLocalFile = false;
       const minDur = Math.max(8, Number(VDURATION) - 4);   // 最终成片时长门槛，过滤 6–8s 中间分段
       const deadline = Date.now() + Math.min(TIMEOUT, 1500) * 1000;
       while (Date.now() < deadline) {
@@ -1280,11 +1280,44 @@ async function actVideo() {
             step('流水线执行中…' + ((vs.text && vs.text.slice(-40)) || (vs.running ? '生成中' : ''))); }
         }
       }
+      if (!src) {
+        // 文生/文件型交付：豆包可能把成片写成**会话工作区文件**而不内嵌 <video>
+        //（2026-10-02 实测：文生 4s 片"成片已生成交付"但全文档扫不到 video/mp4 链接；
+        //  图生+配音流程才是内嵌 video）。让它把文件复制到约定目录，从盘上取。
+        step('界面里没有内嵌视频，改走文件交接…');
+        const hdir = path.join(os.tmpdir(), 'heronbo_out', String(VSID));
+        const startedAt = Date.now() - TIMEOUT * 1000;
+        try { fs.mkdirSync(hdir, { recursive: true }); } catch {}
+        const handoverMsg = '把最终成片视频文件复制到 ' + hdir + ' 目录（目录不存在就创建），'
+          + '然后只回复该文件的完整绝对路径，不要做别的事。';
+        await cdp.evalJs(FOCUS_COMPOSER).catch(() => {});
+        await cdp.send('Input.insertText', { text: handoverMsg }).catch(() => {});
+        await sleep(400);
+        await cdp.evalJs(CLICK_SEND_WAIT, 20000).catch(() => {});
+        const dl = Date.now() + 240000;
+        while (Date.now() < dl && !src) {
+          await sleep(4000);
+          try {
+            for (const f of fs.readdirSync(hdir)) {
+              if (!/\.mp4$/i.test(f)) continue;
+              const p = path.join(hdir, f);
+              if (fs.statSync(p).mtimeMs >= startedAt) { src = p; break; }   // 只要这一轮新出现的
+            }
+          } catch {}
+        }
+        if (src) srcIsLocalFile = true;
+      }
       if (!src) { log('✗ 超时未拿到成片'); return 4; }
       const out = VOUT || path.join(os.homedir(), 'Desktop', 'heronbo_video_' + VSID + '.mp4');
       fs.mkdirSync(path.dirname(out), { recursive: true });
-      step('正在取回视频…');
-      const n = await downloadMedia(c, src, out);
+      let n = 0;
+      if (srcIsLocalFile) {
+        try { fs.copyFileSync(src, out); } catch (e) { log('✗ 成片复制失败：' + e.message); return 4; }
+        n = fs.statSync(out).size;
+      } else {
+        step('正在取回视频…');
+        n = await downloadMedia(c, src, out);
+      }
       console.log(JSON.stringify({ state: 'done', sid: VSID, video: out, bytes: n }));
     } finally {
       // 同一上下文：成片后保留会话（仅断 CDP、不关窗、不清 target），下次 prepare 复用、上下文连续
