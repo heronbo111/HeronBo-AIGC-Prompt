@@ -710,15 +710,52 @@ async function attachSessionByTarget(targetId) {
   return cdp;
 }
 
-/* 统一获取固定会话（kind: 'ask' 出提示词 / 'video' 视频）：
-   ① 复用 state 里锁定的 target；② 失效则从 /json/list 回收同类旧会话；
-   ③ 都没有才新建隐藏离屏窗口。杜绝每次自动化都新建/弹新窗、上下文连续不幻觉。 */
-async function acquireSession(kind) {
-  const key = kind === 'video' ? 'videoTarget' : 'askTarget';
-  const st0 = stateRead();
-  if (st0[key]) {
-    const c = await attachSessionByTarget(st0[key]).catch(() => null);
+// 按 sid **重开**一段历史对话——固定会话的关键拼图（2026-10-02 实测）：
+// App 重启 / 会话窗口被关后，target 必然失效；doubaowork:// 协议支持带 /chat/<sid> 直接定位，
+// Target.createTarget(background 标签) 就能把**同一段对话**原样拉回来，不再新建、侧栏不再堆积。
+async function openSessionBySid(sid) {
+  if (!sid) return null;
+  const ver = await getJson('/json/version');
+  if (!ver || !ver.webSocketDebuggerUrl) return null;
+  const b = new Cdp(ver.webSocketDebuggerUrl);
+  let newId = '';
+  try {
+    await b.connect();
+    const r = await b.send('Target.createTarget',
+      { url: 'doubaowork://doubaowork-chat/chat/' + sid, newWindow: false, background: true }, 15000);
+    newId = r.targetId;
+  } catch { return null; } finally { try { b.close(); } catch {} }
+  if (!newId) return null;
+  for (let i = 0; i < 30; i++) {
+    await sleep(400);
+    const c = await attachSessionByTarget(newId).catch(() => null);
     if (c) return c;
+  }
+  return null;
+}
+
+/* 统一获取固定会话（kind: 'ask' 出提示词 / 'video' 视频）。
+   五级回退，目标都是**回到同一段对话**而不是开新的：
+   ① state 里锁定的 target 还活着 → 直接用（最快）
+   ② 会话正以标签页开着 → 按 sid 找回
+   ③ 都不在 → **按 sid 重开历史会话**（后台标签，不弹窗）——跨重启的连续性靠这一级
+   ④ 回收同类旧会话（没记过 sid 时的兜底；找到顺手把 sid 也记下）
+   ⑤ 实在没有才新建隐藏离屏窗（sid 要等第一句话发出去才有，由调用方回填 state） */
+async function acquireSession(kind) {
+  const keyT = kind === 'video' ? 'videoTarget' : 'askTarget';
+  const keyS = kind === 'video' ? 'videoSid' : 'askSid';
+  const st0 = stateRead();
+  if (st0[keyT]) {
+    const c = await attachSessionByTarget(st0[keyT]).catch(() => null);
+    if (c) return c;
+  }
+  if (st0[keyS]) {
+    const c = await attachSessionBySid(st0[keyS], 4000, { silent: true }).catch(() => null);
+    if (c) { stateWrite(Object.assign(stateRead(), { [keyT]: c.targetId })); return c; }
+  }
+  if (st0[keyS]) {
+    const c = await openSessionBySid(st0[keyS]).catch(() => null);
+    if (c) { stateWrite(Object.assign(stateRead(), { [keyT]: c.targetId })); return c; }
   }
   const list = await getJson('/json/list');
   const RE_KW = kind === 'video'
@@ -733,7 +770,13 @@ async function acquireSession(kind) {
     const t = cands[cands.length - 1];     // 列表顺序≈创建顺序，取最近一个
     const tid = t.targetId || t.id;
     const c = await attachSessionByTarget(tid).catch(() => null);
-    if (c) { stateWrite(Object.assign(stateRead(), { [key]: tid })); return c; }
+    if (c) {
+      const m = String(t.url || '').match(/chat\/(\d+)/);
+      const patch = { [keyT]: tid };
+      if (m) patch[keyS] = m[1];           // 顺手把 sid 也记住，下次重启就能按 sid 重开
+      stateWrite(Object.assign(stateRead(), patch));
+      return c;
+    }
   }
   const c = await createIsolatedChat({ asWindow: true, silent: true });
   stateWrite(Object.assign(stateRead(), { [key]: c.targetId }));
@@ -1099,6 +1142,10 @@ async function actAsk() {
       sid = located.sid || sid;
       step('已锁定任务会话' + (sid ? '：' + sid : ''));
     }
+    // 固定会话：拿到真实 sid 就记进 state——App 重启后靠它按 sid 重开同一段对话（ask 通道）
+    if (sid && /^\d+$/.test(String(sid))) {
+      stateWrite(Object.assign(stateRead(), { askSid: String(sid) }));
+    }
     // 认准会话落哪个 profile（多 profile 时 Default 常是旧壳）；仅在拿到数字 sid 时。
     if (sid && /^\d+$/.test(String(sid))) {
       const sd = sessionDirFor(sid);
@@ -1279,6 +1326,8 @@ async function actVideo() {
       try {
         s = await rc.evalJs(MSG_STATE);
         sid = String(await rc.evalJs('location.href') || '').split('/').pop();
+        // 固定会话：拿到真实 sid 就记进 state——App 重启后靠它按 sid 重开同一段对话
+        if (/^\d+$/.test(sid)) stateWrite(Object.assign(stateRead(), { videoSid: sid }));
       } catch { rc.close(); continue; }
       rc.close();
       if (!s) continue;

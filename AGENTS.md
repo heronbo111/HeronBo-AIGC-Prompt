@@ -115,6 +115,7 @@ python tools/发布exe附件.py                   # 把大件/exe 发到 Release
 
 | agent | 文件范围 | 开始时间 |
 |---|---|---|
+| ZCode | **固定会话 + UI 三修 + v0.4.8 打包**（用户 2026-10-02 指派）：doubao_cdp.mjs 的 acquireSession 加「按 sid 重开历史会话」（Target.createTarget doubaowork://…/chat/<sid> 实测可重开）＋ prepare/ask 抓到 sid 后写回 state（askSid/videoSid），跨重启不再新建会话；workbench/app.js 修 stopPoll TDZ（私有仓同步）；app.css 修「出提示词」挤压折行（侧栏展开时）；然后 载荷同步→0.4.8→ISCC→推 Release→本机静默装 | 2026-10-03 16:37 |
 | DSH（WorkBuddy） | 「ZCode 交班清单」收尾（已完成：`references/paths.md`、`references/samples-db.md`、`tools/联调说明.md`、`README.md`、`.gitignore`）＋ **版本＝一套完整快照（rules 71）**。**已改完、未提交、未推**：`references/rules.md`（新增第 71 条 + 索引）、`CHANGELOG.md`(v2.9)、`SKILL.md`(2.9)、`tools/project_core.py`（骨架加 `current`/`versions`）、私有工作台的 `tools/workbench_server.py` / `workbench/app.js` / `workbench/index.html` / `workbench/app.css`。**去冗已收口**：`workbench_server.py` 全量字面量替换经评估风险大于收益（3909 行、ZCode 也在改），只做口径一致性修复（4 处），不再做常量化 | 2026-09-21 16:40 |
 
 ## 分工建议（减少撞车）
