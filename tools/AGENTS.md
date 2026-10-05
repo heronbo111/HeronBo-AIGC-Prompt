@@ -20,6 +20,7 @@
 
 ```bash
 python 首次配置.py                       # 自检：已配置 exit 0；未配置 exit 1 并打印要问用户的话
+python 找工作台.py                       # 认对工作台装在哪（进程→端口→扫盘→快捷方式/注册表；--json 给 agent 读）
 python 联调自检.py                       # 全流程自检（35 项）
 python 提示词体检.py --project "<项目>"    # 提示词体检（0 不合格才算交付）
 python 打包换位.py                        # 开发者重打/换位 exe（普通用户下载完整安装包）

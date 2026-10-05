@@ -47,6 +47,33 @@ MUST_HAVE = [
 MUST_RUNTIME = [r"runtime\node\node.exe", r"runtime\python\python.exe"]
 
 
+def installed_runtime_file(rel):
+    """从「本机已装的安装副本」里取一个运行时文件（位置无关）。取不到返回 ""。
+
+    2026-10-05 修：node.exe 守卫原来只认 `%LOCALAPPDATA%\\Programs\\HeronBo\\runtime\\node\\node.exe`
+    —— 那是**默认安装位置**；Inno Setup 允许自选目录（本机装在 `D:\\HeronBo Workbench\\`），
+    位置一不对这条兜底就形同不存在，于是打包时只能报「找不到可补的 node.exe！载荷将缺 Node」。
+    这里改成位置无关：复用 `tools\\找工作台.py`（进程 → 端口 → 扫盘 → 快捷方式/注册表）。
+    """
+    env = os.environ.get("HERONBO_INSTALL_ROOT")
+    if env and os.path.isfile(os.path.join(env, rel)):
+        return os.path.join(env, rel)
+    try:
+        import importlib.util
+        p = os.path.join(HERE, "找工作台.py")
+        if not os.path.isfile(p):
+            return ""
+        spec = importlib.util.spec_from_file_location("heronbo_find_workbench", p)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        hit = mod.detect(scan=True) or {}
+    except Exception:                                              # noqa: BLE001
+        return ""
+    app = hit.get("appDir") or ""
+    cand = os.path.join(app, rel) if app else ""
+    return cand if cand and os.path.isfile(cand) else ""
+
+
 def version_gate(pkg, dst, dry=False):
     """版本口径守卫（2026-09-30 加）。
 
@@ -179,8 +206,7 @@ def main():
     node_dst = os.path.join(pkg, "runtime", "node", "node.exe")
     if not os.path.isfile(node_dst):
         for cand in (os.path.join(HERE, "_vendor", "node", "node.exe"),
-                     os.path.join(os.environ.get("LOCALAPPDATA", ""),
-                                  "Programs", "HeronBo", "runtime", "node", "node.exe")):
+                     installed_runtime_file(os.path.join("runtime", "node", "node.exe"))):
             if cand and os.path.isfile(cand):
                 print("[补] runtime\\node\\node.exe 不在 ← %s" % cand)
                 if not dry:
