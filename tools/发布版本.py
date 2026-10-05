@@ -158,15 +158,18 @@ def gh_publish(tag, target, body, files, force):
             # （2026-10-03 实测：直连/代理都 30 分钟写超时重试全灭；同一文件 curl
             #  108 秒、6.7MB/s 直接过）。token 走 -K -（stdin 配置），不进 argv 不外显。
             for attempt in (1, 2, 3):
+                # ⚠️ 路径要用正斜杠（curl 配置里反斜杠是转义符，"D:\工作台..." 会被吃成
+                #    "D:工作台..."）；配置按 UTF-8 字节喂 stdin（text 模式走 GBK 会把中文路径喂坏）。
+                upath = path.replace("\\", "/")
                 cfg = ('url = "%s"\nheader = "Authorization: token %s"\n'
                        'header = "Content-Type: application/octet-stream"\n'
-                       'data-binary = "@%s"\n' % (url, tok, path))
+                       'data-binary = "@%s"\n' % (url, tok, upath))
                 try:
                     r = subprocess.run(
                         ["curl", "-sS", "-o", os.devnull, "-w", "%{http_code}",
                          "--max-time", "1700", "--retry", "2", "--retry-delay", "10", "-K", "-"],
-                        input=cfg, capture_output=True, text=True, timeout=1800)
-                    code = (r.stdout or "").strip()[-3:]
+                        input=cfg.encode("utf-8"), capture_output=True, timeout=1800)
+                    code = (r.stdout or b"").decode("utf-8", "replace").strip()[-3:]
                     if code in ("200", "201"):
                         ok = True
                         break
