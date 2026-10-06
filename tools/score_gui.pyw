@@ -31,6 +31,7 @@ except Exception:                                     # noqa: BLE001
     _TkDnD = None
 import struct
 import sys
+import time
 import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -425,9 +426,43 @@ def _load_core(fname, modname):
     return None
 
 
-core = _load_core("score_core.py", "score_core")
+def _load_core_patient(fname, modname, tries=20, step=0.5):
+    """按名字加载核心模块；**一时找不到就等**（2026-10-06 加）。
+
+    为什么不能像原来那样"找一次没有就 raise"：更新换位后的**第一次自启动**，
+    杀软实时扫描可能正踩着刚解包出来的文件（实测：_MEI 里只有 20 个基础 DLL、
+    score_core.py 没解出来，直接弹 PyInstaller 的白屏异常框）。多数情况几秒内
+    就会放行，所以这里每 step 秒再看一次，最多等 tries×step 秒。
+    """
+    for i in range(max(1, tries)):
+        m = _load_core(fname, modname)
+        if m is not None:
+            if i:
+                sys.stderr.write("load %s ok after %d retries\n" % (fname, i))
+            return m
+        time.sleep(step)
+    return None
+
+
+def _die_friendly(title, text):
+    """启动失败要**说人话**（中文弹窗），不能只留一个英文异常框给用户猜。"""
+    sys.stderr.write("%s: %s\n" % (title, text))
+    try:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(0, text, title, 0x00000010)   # MB_ICONERROR
+    except Exception:                                                 # noqa: BLE001
+        pass
+    sys.exit(1)
+
+
+core = _load_core_patient("score_core.py", "score_core")
 if core is None:
-    raise RuntimeError("找不到 score_core.py（应与本脚本同在 tools\\ 目录）")
+    _die_friendly(
+        "工作台没有起来",
+        "工作台的程序文件没有加载齐（多半是安全软件拦截了刚更新/刚安装的文件）。\n\n"
+        "请再打开一次试试；若每次都这样：\n"
+        "  1. 把工作台的安装目录加入安全软件的白名单；\n"
+        "  2. 或重新运行安装包修复一遍。")
 
 # 项目框架 / 素材投放核心（缺了不影响评分功能，只是「素材/框架」不可用）
 pcore = _load_core("project_core.py", "project_core")

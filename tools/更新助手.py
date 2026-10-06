@@ -21,6 +21,7 @@ import argparse
 import ctypes
 import glob
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -126,18 +127,59 @@ def swap(d, src, keep=KEEP_DEFAULT, ts=None):
 
 
 def start(d, exe=None):
-    """把新工作台启起来（脱离本进程，用户看到窗口自己回来）。"""
+    """把新工作台启起来（脱离本进程，用户看到窗口自己回来）。返回启动的 pid（失败 0）。"""
     exe = exe or os.path.join(d, "score-tool.exe")
     kw = {}
     if os.name == "nt":
         kw["creationflags"] = 0x00000008 | 0x00000200     # DETACHED | NEW_PROCESS_GROUP
     try:
-        subprocess.Popen([exe], cwd=d, **kw)
-        log(d, "started %s" % os.path.basename(exe))
-        return True
+        p = subprocess.Popen([exe], cwd=d, **kw)
+        log(d, "started %s (pid=%d)" % (os.path.basename(exe), p.pid))
+        return p.pid
     except OSError as e:
         log(d, "start failed: %s" % e)
+        return 0
+
+
+def alive(pid, timeout=3.0):
+    """等 timeout 秒再看进程还活着吗——活着=True（第一次自启动能不能站住，就在这判断）。"""
+    if pid <= 0:
         return False
+    if os.name != "nt":
+        return True
+    SYNCHRONIZE = 0x00100000
+    k = ctypes.windll.kernel32
+    time.sleep(timeout)
+    h = k.OpenProcess(SYNCHRONIZE, False, int(pid))
+    if not h:
+        return False
+    try:
+        k.CloseHandle(h)
+        return True
+    except OSError:
+        return False
+
+
+def clean_stale_mei(max_age_hours=24.0):
+    """把 %TEMP% 里断头解包留下的 _MEI* 清掉（2026-10-06 加）。
+
+    来源：工作台被 taskkill（「暂停」按钮）/ 更新换位等异常退出时，PyInstaller 的
+    onefile 解包目录删不掉，一次就漏一个（新机上实测一晚上攒了 8 个）。只动
+    **24 小时前**的目录——正在跑的实例最多也就开几个钟头，不会误删活人的解包。
+    """
+    tmp = os.environ.get("TEMP") or os.environ.get("TMP")
+    if not tmp or not os.path.isdir(tmp):
+        return 0
+    n = 0
+    cutoff = time.time() - max_age_hours * 3600
+    for p in glob.glob(os.path.join(tmp, "_MEI*")):
+        try:
+            if os.path.isdir(p) and os.path.getmtime(p) < cutoff:
+                shutil.rmtree(p, ignore_errors=True)
+                n += 1
+        except OSError:
+            pass
+    return n
 
 
 def main(argv=None):
@@ -165,7 +207,19 @@ def main(argv=None):
     if not ok:
         log(d, "swap failed: %s" % why)
         return 2
-    start(d)
+    # 换位后**稍等再启动**：新 exe 刚落盘，杀软的实时扫描经常正踩在它上面——
+    # 2026-10-06 实测（本机更新 v0.5.1）：秒启动的那次解包被打断（_MEI 里只有 20 个
+    # 基础 DLL、score_core.py 没解出来），弹"找不到 score_core.py"的白屏报错；
+    # 手动再开就正常。所以：先静置 1.5s，启动后 3s 确认还活着，死了自动再拉一次。
+    clean_stale_mei()
+    time.sleep(1.5)
+    pid = start(d)
+    if not alive(pid, timeout=3.0):
+        log(d, "first start died (pid=%s), retrying once" % pid)
+        time.sleep(1.0)
+        pid2 = start(d)
+        if not alive(pid2, timeout=3.0):
+            log(d, "second start died too (pid=%s) - user will start it manually" % pid2)
     return 0
 
 
