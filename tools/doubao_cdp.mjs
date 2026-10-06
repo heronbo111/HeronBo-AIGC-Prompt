@@ -85,8 +85,10 @@ const VDURATION = opt('duration');
 const VSID = opt('sid');
 const VOUT = opt('out');
 
+// 固定候选表**只作最后的兜底**（2026-10-06 降级）：它只覆盖 E:\ / F:\ / Program Files 这些
+// 老位置，新机装在 D:\DoubaoWork 这类自由位置全落空 → 搭桥死环。真找法按 EXE 的解析顺序：
+//   --exe / 环境变量 > 本机配置 local.json > **运行中进程的路径** > 注册表 > 全盘扫描 > 本表
 const EXE_CANDIDATES = [
-  process.env.HERONBO_DOUBAO_EXE,
   'E:\\DoubaoWork\\app\\DoubaoWork.exe',
   'F:\\DoubaoWork\\app\\DoubaoWork.exe',
   path.join(process.env['ProgramFiles'] || 'C:\\Program Files', 'DoubaoWork', 'app', 'DoubaoWork.exe'),
@@ -94,20 +96,24 @@ const EXE_CANDIDATES = [
   path.join(os.homedir(), 'AppData', 'Local', 'DoubaoWork', 'app', 'DoubaoWork.exe'),
   path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'DoubaoWork', 'DoubaoWork.exe'),
   path.join(os.homedir(), 'AppData', 'Roaming', 'DoubaoWork', 'app', 'DoubaoWork.exe'),
-  'C:\Program Files\DoubaoWork\app\DoubaoWork.exe',
-].filter(Boolean);
+];
 
 // 本机配置：agent_bridge.local.json 的 "doubaowork" 字段（exe 完整路径）。
 // 2026-09-30 加：新机豆包工作装在自由位置时固定候选全会落空 → 死环（启动器找不到它，
 // 豆包又不能重启自己）。豆包自己知道装在哪，让它把路径写进 local.json 即可破环。
-function cfgDoubaoworkExe() {
+// 2026-10-06 升级：**解析顺序改为配置优先于固定候选**（agent 写的路径最准，别让
+// 过时的候选表把它压住），并且桥自己找到 exe 后会自动写回这里（自愈，下次秒查）。
+const CFG_FILES = (() => {
   const la = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
-  const cands = [
+  return [
     path.join(HERE, 'agent_bridge.local.json'),
     path.join(HERE, 'dist', 'agent_bridge.local.json'),   // 打包后 exe 旁（cfg_dir 的真身）
     path.join(la, 'HeronBoScoreTool', 'agent_bridge.local.json'),
   ];
-  for (const p of cands) {
+})();
+
+function cfgDoubaoworkExe() {
+  for (const p of CFG_FILES) {
     try {
       const j = JSON.parse(fs.readFileSync(p, 'utf8'));
       if (j && typeof j.doubaowork === 'string' && j.doubaowork.trim()) return j.doubaowork.trim();
@@ -116,7 +122,27 @@ function cfgDoubaoworkExe() {
   return null;
 }
 
-// 注册表兜底：官方卸载键的 DisplayIcon 通常就是 exe 完整路径（安装位置自由时的最后防线）
+function cfgWriteDoubaowork(exePath) {
+  // 写到**已经存在**的那个配置文件里（保留 agent 选择等其它字段）；都不存在时按
+  // dist 目录在不在挑一处——exe 旁优先（工作台更新换位不会动它旁边的配置）。
+  let target = CFG_FILES.find((p) => { try { return fs.existsSync(p); } catch { return false; } });
+  if (!target) {
+    const distDir = path.join(HERE, 'dist');
+    target = (fs.existsSync(distDir))
+      ? path.join(distDir, 'agent_bridge.local.json')
+      : CFG_FILES[CFG_FILES.length - 1];
+  }
+  try {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    let j = {};
+    try { j = JSON.parse(fs.readFileSync(target, 'utf8')) || {}; } catch {}
+    j.doubaowork = exePath;
+    fs.writeFileSync(target, JSON.stringify(j, null, 2), 'utf8');
+    return target;
+  } catch { return null; }
+}
+
+// 注册表兜底：官方卸载键的 DisplayIcon 通常就是 exe 完整路径（安装位置自由时的防线之一）
 function findExeViaRegistry() {
   const keys = [
     'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
@@ -139,11 +165,76 @@ function findExeViaRegistry() {
   return null;
 }
 
-const EXE = opt('exe')
-  || EXE_CANDIDATES.find((p) => { try { return fs.existsSync(p); } catch { return false; } })
-  || cfgDoubaoworkExe()
-  || findExeViaRegistry()
-  || null;
+// 2026-10-06 加：**问正在跑的进程**——豆包开着的时候这是最诚实的一手
+//（绿色版没注册表键、装在自由盘固定候选也不认，但进程的 Path 一定是真的）。
+function findExeViaProcess() {
+  try {
+    const out = execSync(
+      'powershell -NoProfile -Command "(Get-Process DoubaoWork -ErrorAction SilentlyContinue | Select-Object -First 1).Path"',
+      { encoding: 'utf8', timeout: 20000, stdio: ['ignore', 'pipe', 'ignore'] });
+    const p = String(out).trim();
+    return (p && /\.exe$/i.test(p)) ? p : null;
+  } catch { return null; }
+}
+
+// 2026-10-06 加：**扫盘**（对齐 v0.5.1 找工作台的做法）：每个固定盘先试根目录两形态，
+// 再下探一层目录找 DoubaoWork\app\DoubaoWork.exe——覆盖 D:\DoubaoWork、D:\xxx\DoubaoWork
+// 这类自由安装；再深的交给注册表/配置/进程路径，不做全盘递归（太慢）。
+function findExeViaDiskScan() {
+  let drives = [];
+  try {
+    const out = execSync(
+      'powershell -NoProfile -Command "Get-PSDrive -PSProvider FileSystem | ForEach-Object { $_.Root }"',
+      { encoding: 'utf8', timeout: 20000, stdio: ['ignore', 'pipe', 'ignore'] });
+    for (const line of String(out).split(/\r?\n/)) {
+      const d = line.trim();
+      if (/^[A-Za-z]:\\$/.test(d)) drives.push(d);
+    }
+  } catch {}
+  if (!drives.length) drives = ['C:\\', 'D:\\', 'E:\\', 'F:\\'];
+  const tails = ['DoubaoWork\\app\\DoubaoWork.exe', 'DoubaoWork\\DoubaoWork.exe'];
+  const hit = (p) => { try { return fs.existsSync(p) ? p : null; } catch { return null; } };
+  for (const root of drives) {
+    for (const t of tails) { const p = hit(path.join(root, t)); if (p) return p; }
+    let level1 = [];
+    try {
+      level1 = fs.readdirSync(root, { withFileTypes: true })
+        .filter((d) => d.isDirectory()).map((d) => d.name);
+    } catch {}
+    for (const dir of level1) {
+      for (const t of tails) { const p = hit(path.join(root, dir, t)); if (p) return p; }
+    }
+  }
+  return null;
+}
+
+let EXE_FROM = '';
+const EXE = (function resolveExe() {
+  const chain = [
+    ['--exe 参数', () => opt('exe')],
+    ['环境变量 HERONBO_DOUBAO_EXE', () => process.env.HERONBO_DOUBAO_EXE],
+    ['本机配置 agent_bridge.local.json', () => cfgDoubaoworkExe()],
+    ['正在运行的豆包进程', findExeViaProcess],
+    ['注册表卸载键', findExeViaRegistry],
+    ['本机扫盘', findExeViaDiskScan],
+    ['固定候选路径', () => EXE_CANDIDATES.find((p) => { try { return fs.existsSync(p); } catch { return false; } })],
+  ];
+  for (const [label, fn] of chain) {
+    try {
+      const p = fn();
+      if (p && fs.existsSync(p)) { EXE_FROM = label; return p; }
+    } catch {}
+  }
+  EXE_FROM = '没找到';
+  return null;
+})();
+
+// 自愈：靠"进程路径/注册表/扫盘"这些**慢手**找到的路径，顺手写回 local.json，
+// 下次启动直接命中配置，不再每次付一遍探测开销（也免去 agent 手工写配置那一步）。
+if (EXE && ['正在运行的豆包进程', '注册表卸载键', '本机扫盘'].includes(EXE_FROM)) {
+  const wrote = cfgWriteDoubaowork(EXE);
+  if (wrote) log('· 已把豆包路径写进 ' + wrote + '（下次直接用，不再重新找）');
+}
 
 const SESS_REL = ['.doubaowork', 'agent_mode', 'workspace', '.sessions'];
 
@@ -855,7 +946,7 @@ async function findLivePort() {
 }
 
 async function launchApp() {
-  if (!EXE) return { ok: false, why: '没找到 DoubaoWork.exe——破环三选一：①agent_bridge.local.json 加 "doubaowork":"exe完整路径"；②setx HERONBO_DOUBAO_EXE "exe完整路径"；③--exe 参数' };
+  if (!EXE) return { ok: false, why: '没找到 DoubaoWork.exe（配置 / 运行中进程 / 注册表 / 扫盘全都落空）——把 exe 完整路径写进 agent_bridge.local.json 的 "doubaowork" 字段，或用 --exe / 环境变量 HERONBO_DOUBAO_EXE 指定' };
   PORT = await pickPort();
   step('正在带调试端口启动豆包工作：端口 ' + PORT);
   // 抗节流/挂起开关：让后台、遮挡、最小化的页面不被 Electron 降速或冻结（配合后台标签页方案）。
@@ -1004,7 +1095,7 @@ async function actStatus() {
   const info = attach ? await getJson('/json/version') : null;
   const tr = newestTrajectory();
   const out = {
-    ok: attach, running, cdp: attach, port: PORT, exe: EXE || '',
+    ok: attach, running, cdp: attach, port: PORT, exe: EXE || '', exeFrom: EXE_FROM,
     browser: info ? info.Browser : '', sessions: SESSIONS,
     sessionsDirExists: fs.existsSync(SESSIONS),
     newestTrajectory: tr ? tr.path : '',
@@ -1404,6 +1495,51 @@ function killApp() {
   return !doubaoRunning();
 }
 
+/** 重启的"守场员"：**换爹之后再动手**（2026-10-06 修"关掉自己好几次、一次都没自己回来"）。
+ *
+ *  为什么必须这样：这份脚本经常是被豆包工作**自己**拉起来的 agent 跑的——
+ *  `taskkill /IM DoubaoWork.exe /F /T` 按进程树连坐，把"正在跑脚本的那个豆包"一起带走，
+ *  脚本死在半路，后面的 launchApp 永远执行不到 → 用户只能每次手动开豆包。
+ *  修法：用 WMI（Win32_Process.Create）起一个**爹是 WmiPrvSE 的独立小进程**，
+ *  它不在豆包的进程树里，taskkill 连坐不到；由它执行 launch-after-kill：
+ *  等豆包退干净 → 带调试端口拉起。谁调的 restart 都安全（终端/工作台/豆包自己）。 */
+function spawnLaunchAfterKillViaWmi() {
+  const node = process.execPath;
+  const self = fs.realpathSync(process.argv[1] || '');
+  // 守场员的 env 不继承我们的（爹是 WmiPrvSE）：本脚本若跑在 Electron 包装的 node 上
+  //（ZCode/WorkBuddy 自带的 node 就是这种），必须显式带上开关，否则守场员会把
+  // "客户端"整个拉起来而不是跑脚本。纯 node.exe 上这个变量多余但无害。
+  const envLead = process.env.ELECTRON_RUN_AS_NODE ? 'set ELECTRON_RUN_AS_NODE=1&& ' : '';
+  const inner = `cmd /c "${envLead}""${node}" "${self}" launch-after-kill"`;
+  // 经 -EncodedCommand 传（base64 of UTF-16LE）：路径里 Chinese/空格/引号都不用再操心
+  //（2026-10-06 实测：直接拼 -Command 会被 powershell 的外层引号嵌套咬碎；
+  //  另外哈希表后面只能有一个 }，多写一个就是 ParserError——也实测踩过）。
+  const script = `Invoke-CimMethod -ClassName Win32_Process -MethodName Create`
+    + ` -Arguments @{CommandLine='${inner.replace(/'/g, "''")}'}`;
+  const b64 = Buffer.from(script, 'utf16le').toString('base64');
+  try {
+    execSync(`powershell -NoProfile -EncodedCommand ${b64}`,
+             { encoding: 'utf8', timeout: 30000, stdio: ['ignore', 'pipe', 'ignore'] });
+    return true;
+  } catch (e) {
+    log('✗ WMI 起守场员没成（' + ((e && e.message) || e) + '）');
+    return false;
+  }
+}
+
+async function actRestart() {
+  step('重启豆包工作：先安排一个"独立守场员"（不在豆包进程树里），由它关旧进程、带调试端口拉起新进程');
+  if (spawnLaunchAfterKillViaWmi()) {
+    log('· 已安排：豆包工作将在几秒后自动重启（带调试端口 ' + PORT + '）。'
+        + '这段对话如果跟着客户端退了，客户端回来后从历史里能接着用。');
+    return 0;
+  }
+  // 守场员起不来（WMI 被策略挡了之类）：只有当"我们不在豆包进程树里"时才敢就地重启；
+  // 分不清就老实失败，别再把用户的豆包关掉一次。
+  log('✗ 没能安排自动重启。请手动退出豆包工作后，跑 node doubao_cdp.mjs launch 带端口拉起。');
+  return 3;
+}
+
 async function main() {
   if (action === 'status') return actStatus();
   if (action === 'probe') return actProbe();
@@ -1416,14 +1552,17 @@ async function main() {
     log(r.ok ? '· 起来了，端口 ' + PORT : '✗ ' + r.why);
     return r.ok ? 0 : 2;
   }
-  if (action === 'restart') {
-    if (!has('yes')) { log('✗ restart 会关掉你正在用的豆包工作，要显式加 --yes'); return 2; }
-    const gone = killApp();
-    if (!gone) { log('✗ 等了 40 秒它还在跑（可能被别的进程看护着）——手动退出它再试'); return 3; }
+  if (action === 'launch-after-kill') {
+    // 内部动作（restart 经 WMI 守场员调用，不进 usage）：爹不在豆包进程树里，随便杀
+    killApp();
     step('已完全退出，正在带端口重起…');
     const r = await launchApp();
-    log(r.ok ? '· 已用调试端口重启（端口 ' + PORT + '）' : '✗ ' + r.why);
+    log(r.ok ? '· 守场员：已用调试端口重启（端口 ' + PORT + '）' : '✗ ' + r.why);
     return r.ok ? 0 : 2;
+  }
+  if (action === 'restart') {
+    if (!has('yes')) { log('✗ restart 会关掉你正在用的豆包工作，要显式加 --yes'); return 2; }
+    return actRestart();
   }
   log('用法：status | probe | launch | ask --prompt-file <f> | restart --yes');
   return 2;
