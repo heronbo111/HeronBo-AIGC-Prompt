@@ -48,10 +48,17 @@ def log(m):
 
 
 # ---------------- 令牌（不打印） ----------------
-def credential(host):
+def credential(host, username=""):
+    """git credential fill 取令牌。
+
+    username 参数用于 Gitee 这类**一个 host 存了多条凭据**的场合（2026-10-07 实踩）：
+    本机 gitee.com 有两条 —— `18354149223`（旧、API 401）和 `HeronBo`（有效 PAT）。
+    不带 username 提示时 git 默认返回第一条（失效的），API 一直 401；
+    带 `username=HeronBo` 提示行才会取到有效那条。
+    """
     p = subprocess.run(
         ["git", "credential", "fill"], capture_output=True, text=True,
-        input="protocol=https\nhost=%s\n\n" % host,
+        input="protocol=https\nhost=%s\n%s\n" % (host, ("username=%s" % username) if username else ""),
         encoding="utf-8", errors="replace", timeout=30)
     for line in (p.stdout or "").splitlines():
         if line.startswith("password="):
@@ -230,7 +237,7 @@ def gee_attach(url, tok, name, path):
 
 
 def gee_publish(tag, target, body, files, force):
-    tok = credential("gitee.com")
+    tok = credential("gitee.com", username="HeronBo")   # 指定有效凭据条目（默认条目 401，见 credential 注释）
     if not tok:
         return "拿不到 Gitee 令牌（git credential fill）"
     base = "%s/repos/%s/%s" % (GEE_API, OWNER_GEE, REPO)
