@@ -870,7 +870,7 @@ async function acquireSession(kind) {
     }
   }
   const c = await createIsolatedChat({ asWindow: true, silent: true });
-  stateWrite(Object.assign(stateRead(), { [key]: c.targetId }));
+  stateWrite(Object.assign(stateRead(), { [keyT]: c.targetId }));
   return c;
 }
 
