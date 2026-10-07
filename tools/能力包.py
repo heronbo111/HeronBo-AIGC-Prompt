@@ -246,8 +246,10 @@ def missing_mods(py=None, cap=None):
     code = ";".join("import %s" % m for m in mods)
     py = py or sys.executable
     try:
+        # GUI 宿主没控制台：python/pip 子进程不加 CREATE_NO_WINDOW 会闪/挂黑窗（2026-10-07 黑窗修复）
         p = subprocess.run([py, "-c", code], capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=120)
+                           encoding="utf-8", errors="replace", timeout=120,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if os.name == "nt" else 0)
     except (OSError, subprocess.SubprocessError):
         return mods
     return [] if p.returncode == 0 else mods
@@ -360,8 +362,10 @@ def _pip(cap, tools_dir, py, log):
         cmd += ["--find-links", d]
     cmd += CAPS[cap]["mods"]
     log("  装 %s…" % "、".join(CAPS[cap]["mods"]))
+    # 同 missing()：pip 要跑几十秒，不隐藏就是挂一个几十秒的黑窗（2026-10-07 黑窗修复）
     p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
-                       errors="replace", timeout=1800)
+                       errors="replace", timeout=1800,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if os.name == "nt" else 0)
     if p.returncode != 0:
         log("  pip 没装成：%s" % ((p.stderr or p.stdout or "")[-300:]))
         return False
@@ -383,8 +387,10 @@ FFMPEG_MIN = (4, 4)
 def _run(cmd, timeout=25):
     import subprocess
     try:
+        # GUI 宿主没控制台：ffmpeg/ffprobe 等控制台程序要隐藏（2026-10-07 黑窗修复）
         return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
-                              errors="replace", timeout=timeout)
+                              errors="replace", timeout=timeout,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if os.name == "nt" else 0)
     except (OSError, subprocess.SubprocessError):
         return None
 

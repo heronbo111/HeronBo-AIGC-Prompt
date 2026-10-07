@@ -37,8 +37,12 @@ def _doubao_pids():
     import subprocess
     out = set()
     try:
+        # GUI 宿主（score-tool.exe/pythonw）没有控制台：tasklist 这种控制台程序
+        # 每 3 秒被托盘 tick 调一次，不带 CREATE_NO_WINDOW 就会频繁闪黑窗
+        #（2026-10-07 黑窗诊断报告的漏网缺口，与 agent_bridge.no_window_kwargs 同理）。
         p = subprocess.run(["tasklist", "/FI", "IMAGENAME eq " + _EXE, "/FO", "CSV", "/NH"],
-                           capture_output=True, text=True, timeout=10)
+                           capture_output=True, text=True, timeout=10,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
         for ln in (p.stdout or "").splitlines():
             if _EXE.lower() not in ln.lower():
                 continue

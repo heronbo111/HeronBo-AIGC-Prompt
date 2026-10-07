@@ -21,6 +21,10 @@ references/*.local.json
 tools/*.local.md
 # 联调通道的本机覆盖（node / CLI 路径），不写进仓库
 tools/agent_bridge.local.json
+# 反馈 SMTP 直发的凭据（2026-10-07）：授权码是机密，绝不进公开仓库；
+# 打包时经 score-tool.spec datas 进 exe（tools/dist/ 那份是打包拷贝，同样忽略）
+tools/feedback.local.json
+tools/dist/feedback.local.json
 # 打包后这份配置就写在 exe 旁边（本机私有：选了哪个 agent）
 tools/dist/agent_bridge.local.json
 # 工作台的界面偏好（项目列表排序/名次），本机私有

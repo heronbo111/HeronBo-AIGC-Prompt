@@ -101,9 +101,11 @@ def git_commit(tools_dir=None):
     """短 hash；不是 git 工作树（别人解压的 zip）就返回 ""。"""
     cwd = skill_root(tools_dir) or os.path.dirname(os.path.abspath(tools_dir or HERE))
     try:
+        # GUI 宿主没控制台：git 是控制台程序，不加 CREATE_NO_WINDOW 会闪黑窗（2026-10-07 黑窗修复）
         r = subprocess.run(["git", "-C", cwd, "rev-parse", "--short", "HEAD"],
                            capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=15)
+                           errors="replace", timeout=15,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if os.name == "nt" else 0)
         return r.stdout.strip() if r.returncode == 0 else ""
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -301,8 +303,10 @@ def repo_behind(tools_dir=None, timeout=25):
     if not (root and os.path.isdir(os.path.join(root, ".git"))):
         return None, "不是 git 工作树"
     def _g(*args):
+        # 同 git_commit：控制台子进程在 GUI 宿主里必须隐藏（2026-10-07 黑窗修复）
         return subprocess.run(["git", "-C", root] + list(args), capture_output=True,
-                              text=True, encoding="utf-8", errors="replace", timeout=timeout)
+                              text=True, encoding="utf-8", errors="replace", timeout=timeout,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if os.name == "nt" else 0)
     try:
         remotes = (_g("remote").stdout or "").split()
         rem = next((r for r in ("origin", "gitee", "github") if r in remotes), "")

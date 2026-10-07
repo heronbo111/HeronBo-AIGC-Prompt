@@ -40,13 +40,24 @@
  *
  * 退出码：0 成功 ｜ 2 参数/环境不对 ｜ 3 客户端在跑但没有调试端口（需先退出）｜ 4 超时 ｜ 5 输入框没找到
  */
-import { spawn, execSync } from 'node:child_process';
+import { spawn as _spawn, execSync as _execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
+
+// ── 黑窗修复（v0.5.5，2026-10-07）────────────────────────────────────────────
+// score-tool.exe 是 GUI 子系统进程（无控制台），它经 node 调任何控制台程序时
+// Windows 必然新建控制台窗口＝用户看到的「频繁弹黑窗」。本文件 7 处
+// execSync/spawn（reg query / powershell / tasklist / taskkill / ping / spawn 豆包）
+// 原先都没设 windowsHide（Node 默认 false），且 doubaoRunning()、注册表探测这类
+// 调用会被反复触发——这正是「频繁」的来源。这里做统一封装：默认强制
+// windowsHide:true（调用方可显式覆盖），新增调用点天然安全，不必逐个记得补。
+const HIDE = { windowsHide: true };
+const execSync = (cmd, opt = {}) => _execSync(cmd, { ...HIDE, ...opt });
+const spawn = (exe, args, opt = {}) => _spawn(exe, args, { ...HIDE, ...opt });
 
 // ⚠️ 本文件是 **ESM**（.mjs），模块作用域里**没有 __dirname**。2026-09-30 新机搭桥卡死就是这个：
 // 豆包工作装在固定候选表之外的位置时，`EXE` 解析会落到 cfgDoubaoworkExe()，它一碰 __dirname
