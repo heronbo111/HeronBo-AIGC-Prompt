@@ -1365,6 +1365,14 @@ def build_cmd_for(key, prompt, session_id=None, cwd=None, permission_mode=None,
     if key == "doubaowork":
         # 豆包工作没有 CLI：走 CDP 桥（起客户端 → 灌 prompt → 从会话轨迹读答复）。
         # prompt 可能好几千字，**走临时文件**别塞 argv（Windows 命令行有长度上限，DSH 那条踩过引号被吃）。
+        try:      # 豆包窗口收进托盘（2026-10-07：任务栏不再挂窗，托盘图标可唤回）；缺模块就退化离屏
+            _d = os.path.dirname(os.path.abspath(__file__))
+            if _d not in sys.path:
+                sys.path.insert(0, _d)
+            import doubao_tray as _dtray
+            _dtray.hide_async(doubaowork_exe() or "")
+        except Exception:  # noqa: BLE001
+            pass
         js = doubao_js()
         runner, _renv = lib_runner(js) if js else (None, None)
         if not (js and runner):

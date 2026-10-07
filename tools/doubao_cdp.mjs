@@ -77,6 +77,14 @@ const PROMPT = opt('prompt');
 // 视频生成（action=video）相关参数
 const VSTAGE = opt('stage', 'prepare');
 const VIMAGE = opt('image');
+const VIMAGES = (() => {   // --image 可重复：除首帧外的参考图（如广告牌牌面）也一并带给豆包（2026-10-07）
+  const out = [];
+  for (let i = 0; i < argv.length - 1; i++) {
+    if (argv[i] === '--image' && argv[i + 1] && !argv[i + 1].startsWith('--')) out.push(argv[i + 1]);
+  }
+  return out.length ? out : (VIMAGE ? [VIMAGE] : []);
+})();
+const VVISIBLE = has('visible');   // 非豆包通道：跳转豆包工作界面（可见新窗口），由用户在界面手动确认
 const VAUDIO = opt('audio');
 const VVIDEO = opt('video');
 const VMODEL = opt('model');
@@ -708,17 +716,25 @@ function buildVideoRequest(o) {
   const L = [];
   // 短片（≤6s）不分段：2026-09-30 实测 4s 的活也被切成两段+锚点衔接，纯浪费还引入拼接风险
   const shortJob = Number(o.duration) <= 6;
-  const formName = o.video ? '视频参考' : (o.image ? '图生' : '文生');
+  const imgs = (o.images && o.images.length ? o.images : (o.image ? [o.image] : []));
+  const formName = o.video ? '视频参考' : (imgs.length ? '图生' : '文生');
   const lockSrc = o.video
     ? '先读取参考视频，锁定人物外观、服装、场景与镜头，并参考其口型、动作与眼神节奏'
-    : (o.image ? '先读取首帧图锁定人物外观' : '');
+    : (imgs.length ? '先读取首帧图锁定人物外观' : '');
   const segStart = o.video ? '参考视频对应片段（抽其首帧并参考运动/口型）'
-    : (o.image ? '首帧图' : '提示词');
+    : (imgs.length ? '首帧图' : '提示词');
   L.push('我要做一条【' + formName + '·口播带货】视频。关键约束：视频生成接口没有“参考视频+音色”一次出整条口播的输入位，所以请按“画面与配音分头生成、再逐段对齐、合成一条成片”的流水线执行。素材你直接读本地文件即可，我不需要在对话里上传附件。');
   L.push('');
   L.push('【本地素材（请直接用绝对路径读取）】');
   if (o.video) L.push('- 参考视频（人物形象/动作/口型节奏/场景的示范，静音；务必识别为“视频参考”，不要当成文生）：' + o.video);
-  if (o.image) L.push('- 首帧/形象参考图：' + o.image);
+  if (imgs.length) L.push('- 首帧/形象参考图：' + imgs[0]);
+  imgs.slice(1).forEach((p2, i) => {   // 其余参考图：每张都给路径并点名要读（2026-10-07：之前只传首帧，图片2 牌面进不了请求）
+    const b2 = path.basename(p2).replace(/\.[a-z0-9]+$/i, '');
+    const m2 = b2.match(/^图片\d+_(?:[^_]+)_(.+)$/) || b2.match(/^图片\d+_(.+)$/);
+    const role = m2 ? m2[1].replace(/_/g, '·') : '';
+    L.push('- 参考图' + (i + 2) + (role ? '（' + role + '）' : '') + '：' + p2
+      + ' —— 也务必读取；画面涉及它的内容时严格以它为准');
+  });
   if (o.audio) L.push('- 音色参考（只克隆声线与说话状态，不要念它原本内容）：' + o.audio);
   L.push('');
   L.push('【独立执行参数（以此为准）】');
@@ -728,7 +744,7 @@ function buildVideoRequest(o) {
     + (shortJob ? '一次性生成，不切分' : '分段画面与配音都对齐到该总时长') + '）');
   L.push('- 形式：' + (o.video
       ? '视频参考：以参考视频锁定人物外观与口型/动作节奏，按新台词生成画面（不是文生）'
-      : (o.image ? '图生，分段生成画面' : '文生，分段生成画面')));
+      : (imgs.length ? '图生，分段生成画面' : '文生，分段生成画面')));
   L.push('');
   L.push('【确认后请按此流水线执行】');
   if (shortJob) {
@@ -832,7 +848,7 @@ async function openSessionBySid(sid) {
    ③ 都不在 → **按 sid 重开历史会话**（后台标签，不弹窗）——跨重启的连续性靠这一级
    ④ 回收同类旧会话（没记过 sid 时的兜底；找到顺手把 sid 也记下）
    ⑤ 实在没有才新建隐藏离屏窗（sid 要等第一句话发出去才有，由调用方回填 state） */
-async function acquireSession(kind) {
+async function acquireSession(kind, opts = {}) {
   const keyT = kind === 'video' ? 'videoTarget' : 'askTarget';
   const keyS = kind === 'video' ? 'videoSid' : 'askSid';
   const st0 = stateRead();
@@ -869,7 +885,7 @@ async function acquireSession(kind) {
       return c;
     }
   }
-  const c = await createIsolatedChat({ asWindow: true, silent: true });
+  const c = await createIsolatedChat({ asWindow: true, silent: !opts.visible });
   stateWrite(Object.assign(stateRead(), { [keyT]: c.targetId }));
   return c;
 }
@@ -1354,7 +1370,7 @@ async function actVideo() {
       if (!f || !f.ok) await c.send('Input.insertText', { text: confirmMsg });
       const sr = await c.evalJs(CLICK_SEND_WAIT, 20000);
       step('已回确认，等待流水线执行（' + (sr && sr.ok ? '已提交' : '提交异常') + '）…');
-      let src = '', candSrc = '', stable = 0, lastBeat = 0, srcIsLocalFile = false;
+      let src = '', candSrc = '', stable = 0, lastBeat = 0, prevTxt = '', srcIsLocalFile = false;
       const minDur = Math.max(8, Number(VDURATION) - 4);   // 最终成片时长门槛，过滤 6–8s 中间分段
       const deadline = Date.now() + Math.min(TIMEOUT, 1500) * 1000;
       while (Date.now() < deadline) {
@@ -1367,8 +1383,16 @@ async function actVideo() {
             else { candSrc = vs.src; stable = 0; }
             if (stable >= 2) { src = candSrc; break; }
           }
+          const vt = String(vs.text || '');
+          if (vt && vt !== prevTxt) {           // 豆包写了新正文 → 实时进动作流（截尾去换行）
+            prevTxt = vt;
+            if (Date.now() - lastBeat > 2500) {
+              lastBeat = Date.now();
+              step('豆包：' + vt.slice(-60).replace(/\s+/g, ' ').trim());
+            }
+          }
           if (Date.now() - lastBeat > 15000) { lastBeat = Date.now();
-            step('流水线执行中…' + ((vs.text && vs.text.slice(-40)) || (vs.running ? '生成中' : ''))); }
+            step('流水线执行中…' + ((vt && vt.slice(-40)) || (vs.running ? '生成中' : ''))); }
         }
       }
       if (!src) {
@@ -1422,24 +1446,44 @@ async function actVideo() {
   if (!VMODEL || !VRATIO || !VDURATION) { log('✗ prepare 需要 --model --ratio --duration'); return 2; }
   let c = null;
   try {
-    // 同一上下文：统一走固定会话（复用锁定 target → 回收同类 → 才新建隐藏窗），不弹新窗
+    // 同一上下文：统一走固定会话（复用锁定 target → 回收同类 → 才新建窗）；--visible 时新窗可见置前（非豆包通道跳转用）
     const _before = stateRead().videoTarget;
-    c = await acquireSession('video');
+    c = await acquireSession('video', { visible: VVISIBLE });
     step(stateRead().videoTarget === _before ? '复用同一视频会话（上下文连续、加载快）'
-                                            : '已锁定视频会话（之后都复用、不弹新窗）');
+                                            : (VVISIBLE ? '已打开豆包工作窗口（可见）' : '已锁定视频会话（之后都复用、不弹新窗）'));
     // 路径2：不上传附件，直接给本地绝对路径让豆包自己读；提示词原样带入（保留画幅/时长等可移植依据，不剥离）
     const req = buildVideoRequest({ prompt, model: VMODEL, ratio: VRATIO, duration: VDURATION,
-      image: VIMAGE ? path.resolve(VIMAGE) : '', audio: VAUDIO ? path.resolve(VAUDIO) : '',
+      images: VIMAGES.map((p) => path.resolve(p)), audio: VAUDIO ? path.resolve(VAUDIO) : '',
       video: VVIDEO ? path.resolve(VVIDEO) : '', pron: pronFor(prompt) });
     const fill = await c.evalJs(FILL_VIA_EDITOR + '(' + JSON.stringify(req) + ')', 30000);
     if (!fill || !fill.ok) await c.send('Input.insertText', { text: req });
     await sleep(300);
     await c.evalJs(CLICK_SEND_WAIT, 20000);
     step('已发请求，读取确认清单…');
+    if (VVISIBLE) {
+      // 非豆包通道：可见窗口交给用户在豆包里手动确认，桥不守着（等出 sid 便于下次找回这段对话就撤）
+      const VTID = c.targetId;
+      try { c.close(); } catch {}
+      let sid2 = '';
+      for (let i = 0; i < 20; i++) {
+        await sleep(1500);
+        const rc = await attachSessionByTarget(VTID).catch(() => null);
+        if (!rc) continue;
+        const h = String(await rc.evalJs('location.href').catch(() => '') || '');
+        rc.close();
+        const m2 = h.match(/chat\/(\d+)/);
+        if (m2) { sid2 = m2[1]; break; }
+      }
+      if (/^\d+$/.test(sid2)) stateWrite(Object.assign(stateRead(), { videoSid: sid2 }));
+      console.log(JSON.stringify({ state: 'manual', sid: sid2, model: VMODEL, ratio: VRATIO,
+        duration: Number(VDURATION), images: VIMAGES.map((p) => path.resolve(p)),
+        form: VVIDEO ? '视频参考' : (VIMAGES.length ? '图生' : '文生') }, null, 1));
+      return 0;
+    }
     const TID = c.targetId;
     try { c.close(); } catch {}     // 断开"导航前"的旧连接：首条消息后空白 chat 会导航到正式 /chat/sid、
     // renderer/document 被替换，旧 ws 停在导航前文档、MSG_STATE 永远读不到回复（2026-09-29 实测两次）。
-    let text = '', idleSince = 0, sid = '';
+    let text = '', idleSince = 0, sid = '', lastBeat = Date.now();
     const readDeadline = Date.now() + Math.min(TIMEOUT, 600) * 1000;
     while (Date.now() < readDeadline) {
       await sleep(2500);
@@ -1457,7 +1501,15 @@ async function actVideo() {
       if (!s) continue;
       const t = String(s.lastRecv || '').trim();
       // 无论是否在跑，都持续保留最新可见正文（running 期间也更新，避免临近超时抓空）
-      if (t && t !== text) text = t;
+      if (t && t !== text) {
+        text = t;
+        // 实时反馈：豆包每写出一段新正文就报一次（2026-10-07：之前 prepare 全程只有一句"已发请求"，面板像死机）
+        const tail = (text.split('\n').filter((x) => x.trim()).pop() || '').trim();
+        if (tail && Date.now() - lastBeat > 2500) {
+          lastBeat = Date.now();
+          step('豆包：' + tail.slice(0, 80));
+        }
+      }
       if (s.running) { idleSince = 0; continue; }
       // running 持续消失 6 秒（抗工具调用间隙）→ 真正结束
       if (!idleSince) idleSince = Date.now();
@@ -1467,7 +1519,9 @@ async function actVideo() {
     text = (text.replace(/\n[^\n]*(正在思考|思考中|正在执行|执行代码|生成中|正在生成|读取中|分析中|排队|请稍候|加载中)[^\n]*$/, '').trim() || text);
     const out = { state: 'await_confirm', sid, confirmText: text,
       model: VMODEL, ratio: VRATIO, duration: Number(VDURATION),
-      image: VIMAGE ? path.resolve(VIMAGE) : '', audio: VAUDIO ? path.resolve(VAUDIO) : '',
+      image: VIMAGES.length ? path.resolve(VIMAGES[0]) : '',
+      images: VIMAGES.map((p) => path.resolve(p)),
+      audio: VAUDIO ? path.resolve(VAUDIO) : '',
       video: VVIDEO ? path.resolve(VVIDEO) : '',
       form: VVIDEO ? '视频参考' : (VIMAGE ? '图生' : '文生') };
     try { c.close(); } catch {}         // 仅断开 CDP，保留会话 target，等 confirm/cancel

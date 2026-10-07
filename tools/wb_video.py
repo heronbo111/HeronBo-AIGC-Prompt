@@ -34,6 +34,10 @@ try:
     import project_core as pcore_mod
 except Exception:  # noqa: BLE001
     pcore_mod = None
+try:
+    import doubao_tray as _tray     # 豆包窗口收进托盘（2026-10-07，缺了就退化为离屏不藏）
+except Exception:  # noqa: BLE001
+    _tray = None
 
 # (最短秒, 最长秒)：Seedance 2.5 = 5–30；2.0 / 2.0 Fast = 4–15
 MODEL_LIMIT = {"Seedance 2.5": (5, 30), "Seedance 2.0 Fast": (4, 15), "Seedance 2.0": (4, 15)}
@@ -190,16 +194,25 @@ def _speech_text(pdir):
 
 
 def _pick_in_dir(d):
+    """返回 (主参考图, 音色, 参考视频, 全部参考图[])。
+
+    全部参考图（2026-10-07）：平台上传夹里 staged 的每张图（图片1_首帧形象_…、图片2_广告牌牌面_…）
+    都要带给豆包——之前只挑一张，牌面/分镜图根本进不了生成请求。主图仍按 形象/首帧/图片1 优先。
+    """
     image = audio = video = ""
+    images = []
     for root, _ds, fs in os.walk(d):
-        for f in fs:
+        for f in sorted(fs):
             lf = f.lower()
             if not video and lf.endswith((".mp4", ".mov", ".mkv", ".webm")) and (
                     "参考视频" in f or "口播展示" in f or re.match(r"视频1", f)):
                 video = os.path.join(root, f)
-            if not image and lf.endswith((".png", ".jpg", ".jpeg", ".webp")) and (
-                    "形象" in f or "首帧" in f or re.match(r"图片1", f)):
-                image = os.path.join(root, f)
+            if lf.endswith((".png", ".jpg", ".jpeg", ".webp")):
+                p = os.path.join(root, f)
+                if p not in images:
+                    images.append(p)
+                if not image and ("形象" in f or "首帧" in f or re.match(r"图片1", f)):
+                    image = p
             if not audio and lf.endswith((".mp3", ".wav", ".m4a")) and (
                     "音色" in f or re.match(r"音频1", f)):
                 audio = os.path.join(root, f)
@@ -211,14 +224,25 @@ def _pick_in_dir(d):
                     video = os.path.join(root, f)
                 if not image and lf.endswith((".png", ".jpg", ".jpeg", ".webp")):
                     image = os.path.join(root, f)
+                    if image not in images:
+                        images.append(image)
                 if not audio and lf.endswith((".mp3", ".wav", ".m4a")):
                     audio = os.path.join(root, f)
-    return image, audio, video
+
+    def _img_no(p):
+        m = re.match(r"图片(\d+)", os.path.basename(p))
+        return int(m.group(1)) if m else 999
+
+    images.sort(key=lambda q: (_img_no(q), q))
+    if image and image in images:            # 主图排最前（首帧槽位）
+        images.remove(image)
+        images.insert(0, image)
+    return image, audio, video, images
 
 
 def resolve_inputs(pdir):
-    """解析当前版首帧/音色/提示词；form 图生/文生按有无形象图判定。"""
-    out = {"image": "", "audio": "", "video": "", "promptPath": "", "speech": "", "form": "文生"}
+    """解析当前版参考图（全部）/音色/提示词；form 图生/文生按有无形象图判定。"""
+    out = {"image": "", "images": [], "audio": "", "video": "", "promptPath": "", "speech": "", "form": "文生"}
     if not (pdir and os.path.isdir(pdir)):
         return out
     pf = _prompt_file(pdir)
@@ -234,9 +258,9 @@ def resolve_inputs(pdir):
             if os.path.isdir(d):
                 dirs.append(d)
     cur_no = _current_ver_no(pdir)
-    best = None  # (score, mtime, image, audio, video)
+    best = None  # (score, mtime, image, audio, video, images)
     for d in dirs:
-        image, audio, video = _pick_in_dir(d)
+        image, audio, video, images = _pick_in_dir(d)
         score = (1 if image else 0) + (1 if audio else 0) + (1 if video else 0)
         dno = re.search(r"(?:v|版本)\s*(\d+)", os.path.basename(d), re.I)
         if cur_no and dno and dno.group(1) == cur_no:
@@ -251,9 +275,9 @@ def resolve_inputs(pdir):
         mt = max(mts or [0])
         cand = (score, mt)
         if best is None or cand > (best[0], best[1]):
-            best = (score, mt, image, audio, video)
+            best = (score, mt, image, audio, video, images)
     if best:
-        out["image"], out["audio"], out["video"] = best[2], best[3], best[4]
+        out["image"], out["audio"], out["video"], out["images"] = best[2], best[3], best[4], best[5]
     out["form"] = ("视频参考" if out["video"] else
                    ("图生" if out["image"] else "文生"))
     return out
@@ -337,14 +361,28 @@ def start_prepare(p):
                     "--duration", int(p.get("duration") or 15),
                     "--prompt-file", p.get("promptPath"),
                     "--timeout", int(p.get("timeout") or 500)]
-            if p.get("image"):
-                args += ["--image", p["image"]]
+            imgs = list(p.get("images") or [])
+            if not imgs and p.get("image"):
+                imgs = [p["image"]]
+            for _im in imgs:                       # 每张参考图都带给豆包（--image 可重复，2026-10-07）
+                args += ["--image", _im]
             if p.get("audio"):
                 args += ["--audio", p["audio"]]
             if p.get("video"):
                 args += ["--video", p["video"]]
+            if p.get("visible"):
+                args += ["--visible"]              # 非豆包通道：跳转豆包界面（可见窗口），用户手动确认
+            elif _tray:
+                try:                               # 后台驱动：豆包窗口收进托盘，任务栏不再挂窗
+                    _tray.hide_async(ab.doubaowork_exe() if ab else "")
+                except Exception:  # noqa: BLE001
+                    pass
             r = _run_video(args)
-            if r.get("state") == "await_confirm" and r.get("confirmText"):
+            if r.get("state") == "manual":
+                _set(running=False, stage="manual", sid=r.get("sid", ""), result=r,
+                     finished=round(time.time(), 1))
+                _flow("已跳转豆包工作界面（可见窗口）——请在豆包里核对确认清单并手动确认执行", "done")
+            elif r.get("state") == "await_confirm" and r.get("confirmText"):
                 _set(running=False, stage="await_confirm", sid=r.get("sid", ""),
                      confirmText=r.get("confirmText", ""), result=r,
                      finished=round(time.time(), 1))
@@ -380,6 +418,11 @@ def start_confirm(p):
                     "--timeout", int(p.get("timeout") or 1500)]
             if p.get("outPath"):
                 args += ["--out", p["outPath"]]
+            if _tray:
+                try:                               # 生成阶段同样把豆包收进托盘
+                    _tray.hide_async(ab.doubaowork_exe() if ab else "")
+                except Exception:  # noqa: BLE001
+                    pass
             r = _run_video(args)
             if r.get("state") == "done" and r.get("video"):
                 _set(running=False, stage="done", video=r.get("video"), result=r,
@@ -416,7 +459,7 @@ def api_estimate(pdir, b):
     return {"ok": True, "estimate": estimate(speech, mode)}
 
 
-def api_prepare(pdir, b):
+def api_prepare(pdir, b, visible=False):
     b = b or {}
     inp = resolve_inputs(pdir)
     model = b.get("model") or DEFAULT_MODEL
@@ -425,11 +468,13 @@ def api_prepare(pdir, b):
     duration = clamp_duration(
         model, b["duration"] if b.get("duration") else est["suggest"])
     return start_prepare({
-        "project": pdir, "image": inp.get("image") or "", "audio": inp.get("audio") or "",
+        "project": pdir, "image": inp.get("image") or "",
+        "images": inp.get("images") or [],
+        "audio": inp.get("audio") or "",
         "video": inp.get("video") or "",
         "promptPath": inp.get("promptPath"), "model": model, "ratio": ratio,
         "duration": duration, "form": inp.get("form"), "estimate": est,
-        "timeout": int(b.get("timeout") or 500)})
+        "timeout": int(b.get("timeout") or 500), "visible": bool(visible)})
 
 
 def api_confirm(pdir, b):
