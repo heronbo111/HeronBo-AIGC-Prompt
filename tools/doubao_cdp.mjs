@@ -610,11 +610,10 @@ async function createIsolatedChat(opts = {}) {
   await b.connect();
   let newId = '';
   try {
-    const r = await b.send('Target.createTarget',
-      asWindow
-        ? { url: 'doubaowork://doubaowork-chat/chat', newWindow: true }
-        : { url: 'doubaowork://doubaowork-chat/chat', newWindow: false, background: true }, 15000);
-    newId = r.targetId;
+    newId = asWindow
+      ? (await b.send('Target.createTarget',
+          { url: 'doubaowork://doubaowork-chat/chat', newWindow: true }, 15000)).targetId
+      : await createBackgroundTab(b, 'doubaowork://doubaowork-chat/chat');
   } finally { b.close(); }
   if (!newId) throw new Error('Target.createTarget 没返回 targetId');
   let t = null;
@@ -828,6 +827,92 @@ async function attachSessionByTarget(targetId) {
   return cdp;
 }
 
+/* ---------- 「窗口没了」兜底（2026-10-08 修 `-32000 no browser is open`） ----------
+ *  症状：工作台报「豆包桥返回码 1」，细节是
+ *    {"code":-32000,"message":"Failed to open new tab - no browser is open"}
+ *  条件（实测）：豆包**进程活着**（tasklist 有 15 个 DoubaoWork.exe，但 MainWindowHandle 全为 0）、
+ *  CDP 端口也通（/json/version 正常），**但没有一个浏览器窗口**——用户把最后一个窗口关掉后，
+ *  Electron 仍留着后台进程。此时任何 `Target.createTarget{newWindow:false}` 都会被 Chromium 拒，
+ *  因为后台标签必须挂到一个已存在的窗口上。所以 `doubaoRunning()`/`cdpReady()` 全绿也照样炸。
+ *  判据用 `Browser.getWindowForTarget` 是否成功——实测它与 background 标签的可用性完全同步：
+ *  有关闭所有带窗页面 → 逐 target 探测全 FAIL，同时 background 标签报 -32000（一字不差复现）；
+ *  用 newWindow:true 立一个窗口 → 探测立刻成功，background 标签立刻恢复 OK。 */
+async function windowedPages(b) {
+  const list = await getJson('/json/list');
+  const out = [];
+  for (const x of (list || [])) {
+    if (x.type !== 'page' || !x.webSocketDebuggerUrl) continue;
+    const tid = x.targetId || x.id;
+    try {
+      const w = await b.send('Browser.getWindowForTarget', { targetId: tid }, 5000);
+      if (w && w.windowId !== undefined) out.push({ targetId: tid, windowId: w.windowId, url: x.url || '' });
+    } catch { /* 这个 page 不在窗口里，继续试下一个 */ }
+  }
+  return out;
+}
+/** 保证"有一个窗口能挂标签"。已有窗口直接复用（绝不重复开窗——实测反复恢复会堆窗）；
+ *  一个都没有时才用 newWindow:true 立一个（`url` 直接用调用方想要的地址，这样那个页面本身
+ *  就是我们要的会话，不必再开第二个标签），并等它真正可挂标签。 */
+async function ensureBrowserWindow(b, opts = {}) {
+  const want = opts.url || 'doubaowork://doubaowork-chat/chat';
+  const hit = await windowedPages(b);
+  if (hit.length) {
+    // 优先复用我们上一次恢复出来的窗口（没有标记就取第一个）
+    const mine = opts.preferTargetId ? hit.find((x) => x.targetId === opts.preferTargetId) : null;
+    return { ok: true, created: false, windowId: (mine || hit[0]).windowId, targetId: (mine || hit[0]).targetId };
+  }
+  step('豆包窗口被关掉了（进程还在、调试端口也通，只是没有窗口能放标签）——我重新开一个');
+  let newId = '';
+  try {
+    const r = await b.send('Target.createTarget', { url: want, newWindow: true }, 20000);
+    newId = r.targetId;
+  } catch (e) {
+    return { ok: false, why: '开豆包窗口失败：' + ((e && e.message) || e) };
+  }
+  for (let i = 0; i < 40; i++) {
+    await sleep(400);
+    const w = await windowedPages(b);
+    if (w.length) {
+      const mine = w.find((x) => x.targetId === newId);
+      return { ok: true, created: true, windowId: (mine || w[0]).windowId,
+               targetId: (mine || w[0]).targetId, openedTargetId: newId, openedUrl: want };
+    }
+  }
+  return { ok: false, why: '开出来的豆包窗口没出现（newWindow:true 返回了 ' + newId + '，但读不到窗口）' };
+}
+/** 把窗口挪到屏外 normal（不最小化——最小化会被 Electron/Windows 冻结，见 createIsolatedChat 注释）。 */
+async function parkWindowOffscreen(b, windowId) {
+  if (windowId === undefined) return;
+  for (let i = 0; i < 8; i++) {
+    try {
+      await b.send('Browser.setWindowBounds',
+        { windowId, bounds: { windowState: 'normal', left: -3200, top: -3200, width: 1000, height: 720 } });
+      return;
+    } catch { await sleep(250); }
+  }
+}
+/** 把 background 标签从 -32000 里救回来：先补窗口，再重试一次。
+ *  补窗口时直接把目标 url 作为**新窗口的首页**——这样那个页面本身就是我们要的会话，
+ *  不用再往新窗口里塞第二个标签（少一次导航、也少一个标签页）。 */
+async function createBackgroundTab(b, url) {
+  const mkTab = () => b.send('Target.createTarget', { url, newWindow: false, background: true }, 15000);
+  try {
+    const r = await mkTab();
+    if (r && r.targetId) return r.targetId;
+  } catch (e) {
+    const msg = (e && e.message) || '';
+    if (!/no browser is open|-32000/.test(msg)) throw e;
+    step('后台标签被拒（' + msg.slice(0, 80) + '）——补一个窗口后重试');
+  }
+  const w = await ensureBrowserWindow(b, { url });
+  if (!w.ok) throw new Error(w.why);
+  await parkWindowOffscreen(b, w.windowId);
+  if (w.created && w.openedTargetId && w.openedUrl === url) return w.openedTargetId;   // 新窗口首页就是它
+  const r = await mkTab();
+  if (!r || !r.targetId) throw new Error('补窗口后重试仍拿不到 targetId');
+  return r.targetId;
+}
+
 // 按 sid **重开**一段历史对话——固定会话的关键拼图（2026-10-02 实测）：
 // App 重启 / 会话窗口被关后，target 必然失效；doubaowork:// 协议支持带 /chat/<sid> 直接定位，
 // Target.createTarget(background 标签) 就能把**同一段对话**原样拉回来，不再新建、侧栏不再堆积。
@@ -839,9 +924,7 @@ async function openSessionBySid(sid) {
   let newId = '';
   try {
     await b.connect();
-    const r = await b.send('Target.createTarget',
-      { url: 'doubaowork://doubaowork-chat/chat/' + sid, newWindow: false, background: true }, 15000);
-    newId = r.targetId;
+    newId = await createBackgroundTab(b, 'doubaowork://doubaowork-chat/chat/' + sid);
   } catch { return null; } finally { try { b.close(); } catch {} }
   if (!newId) return null;
   for (let i = 0; i < 30; i++) {
@@ -900,10 +983,19 @@ async function acquireSession(kind, opts = {}) {
   // 一律开**主窗里的后台标签页**（newWindow:false），不再开独立 OS 窗——独立窗会让
   // 豆包变成多窗多会话，原工作台窗口的 CDP 连接偶发被挤崩、用户也找不到窗。
   // visible=true（非豆包通道跳转手动确认）时才允许可见窗。
-  const c = await createIsolatedChat({
-    asWindow: !!opts.visible,
-    silent: !opts.visible,
-  });
+  let c;
+  try {
+    c = await createIsolatedChat({
+      asWindow: !!opts.visible,
+      silent: !opts.visible,
+    });
+  } catch (e) {
+    // 别把 Chromium 的英文原文（-32000 no browser is open）丢给用户——那读起来像"程序崩了"，
+    // 其实只是豆包窗口被关了。补窗口的兜底已在 createBackgroundTab 里做过，走到这里说明真开不出来。
+    const m = (e && e.message) || String(e);
+    throw new Error('豆包没有可用的窗口，新建会话失败（已尝试重新开窗）。'
+      + '可以手动点开一次豆包工作，然后重试。原始报错：' + m.slice(0, 200));
+  }
   stateWrite(Object.assign(stateRead(), { [keyT]: c.targetId }));
   return c;
 }
@@ -1612,6 +1704,43 @@ async function actRestart() {
   return 3;
 }
 
+/** 内部自检（不进 usage）：复现「豆包没有窗口」→ 验证 createBackgroundTab 能把标签救回来。
+ *  用法：node doubao_cdp.mjs window-guard-test --yes
+ *  --yes 是硬门槛：这个自检会关掉当前所有带窗口的页面（正是用户报障时那个状态）。 */
+async function actWindowGuardTest() {
+  const ver = await getJson('/json/version');
+  if (!ver || !ver.webSocketDebuggerUrl) { log('✗ 连不上豆包 CDP（先 launch）'); return 3; }
+  const b = new Cdp(ver.webSocketDebuggerUrl);
+  await b.connect();
+  try {
+    let w = await windowedPages(b);
+    log('· 当前带窗口的页面：' + w.length + ' 个 ' + JSON.stringify(w.map((x) => x.windowId)));
+    if (w.length) {
+      for (const x of w) {
+        await b.send('Target.closeTarget', { targetId: x.targetId }).catch(() => {});
+      }
+      await sleep(3000);
+    }
+    w = await windowedPages(b);
+    log('· 关完后带窗口的页面：' + w.length + ' 个');
+    let before = 'n/a';
+    try { await b.send('Target.createTarget', { url: 'about:blank', newWindow: false, background: true }, 10000); before = '竟然成功'; }
+    catch (e) { before = (e && e.message) || ''; }
+    log('· 对照：裸 createTarget(newWindow:false) → ' + before);
+    const t = await createBackgroundTab(b, 'doubaowork://doubaowork-chat/chat');
+    log('· 走 createBackgroundTab → targetId ' + t);
+    await sleep(2500);
+    const w2 = await windowedPages(b);
+    log('· 恢复后带窗口的页面：' + w2.length + ' 个 ' + JSON.stringify(w2.map((x) => x.windowId)));
+    const list = await getJson('/json/list');
+    const hit = (list || []).find((x) => (x.targetId || x.id) === t);
+    log('· 新标签在列表里：' + (hit ? '是 ' + hit.url : '否'));
+    const pass = w2.length > 0 && !!hit;
+    log(pass ? '· 自检通过：无窗口态已能自动恢复' : '· 自检失败');
+    return pass ? 0 : 1;
+  } finally { b.close(); }
+}
+
 async function main() {
   if (action === 'status') return actStatus();
   if (action === 'probe') return actProbe();
@@ -1635,6 +1764,10 @@ async function main() {
   if (action === 'restart') {
     if (!has('yes')) { log('✗ restart 会关掉你正在用的豆包工作，要显式加 --yes'); return 2; }
     return actRestart();
+  }
+  if (action === 'window-guard-test') {
+    if (!has('yes')) { log('✗ 自检会关掉当前所有豆包窗口，要显式加 --yes'); return 2; }
+    return actWindowGuardTest();
   }
   log('用法：status | probe | launch | ask --prompt-file <f> | restart --yes');
   return 2;
