@@ -50,9 +50,11 @@ if "--update-helper" in sys.argv:
                     _spec.loader.exec_module(_m)
                     return _m.main(sys.argv[sys.argv.index("--update-helper") + 1:])
                 except Exception as _e:                      # noqa: BLE001
-                    sys.stderr.write("update helper failed: %r\n" % (_e,))
+                    if sys.stderr:                           # windowed exe 里是 None
+                        sys.stderr.write("update helper failed: %r\n" % (_e,))
                     return 3
-        sys.stderr.write("更新助手.py not found\n")
+        if sys.stderr:
+            sys.stderr.write("更新助手.py not found\n")
         return 4
     sys.exit(_run_update_helper())
 
@@ -426,18 +428,20 @@ def _load_core(fname, modname):
     return None
 
 
-def _load_core_patient(fname, modname, tries=20, step=0.5):
-    """按名字加载核心模块；**一时找不到就等**（2026-10-06 加）。
+def _load_core_patient(fname, modname, tries=240, step=0.5):
+    """按名字加载核心模块；**一时找不到就等**（2026-10-06 加；2026-10-07 加长）。
 
     为什么不能像原来那样"找一次没有就 raise"：更新换位后的**第一次自启动**，
     杀软实时扫描可能正踩着刚解包出来的文件（实测：_MEI 里只有 20 个基础 DLL、
     score_core.py 没解出来，直接弹 PyInstaller 的白屏异常框）。多数情况几秒内
     就会放行，所以这里每 step 秒再看一次，最多等 tries×step 秒。
+    2026-10-07 实踩（v0.5.5 更新后首启，itadmin 机 + 本机都崩）：onefile 解包
+    1300+ 文件撞上杀软全盘扫，10 秒根本不够 → tries 20→240（=2 分钟）。
     """
     for i in range(max(1, tries)):
         m = _load_core(fname, modname)
         if m is not None:
-            if i:
+            if i and sys.stderr:                          # windowed exe 里是 None
                 sys.stderr.write("load %s ok after %d retries\n" % (fname, i))
             return m
         time.sleep(step)
@@ -445,12 +449,22 @@ def _load_core_patient(fname, modname, tries=20, step=0.5):
 
 
 def _die_friendly(title, text):
-    """启动失败要**说人话**（中文弹窗），不能只留一个英文异常框给用户猜。"""
-    sys.stderr.write("%s: %s\n" % (title, text))
+    """启动失败要**说人话**（中文弹窗），不能只留一个英文异常框给用户猜。
+
+    ⚠️ windowed exe（console=False）里 sys.stderr/stdout 是 **None**（2026-10-07
+    itadmin 机 + 本机实踩：'NoneType' object has no attribute 'write'，中文弹窗
+    没弹出来、弹的反而是 PyInstaller 白屏英文框）。写日志前必须判 None。
+    """
+    for s in (sys.stderr, sys.stdout):
+        try:
+            if s:
+                s.write("%s: %s\n" % (title, text))
+        except Exception:                                     # noqa: BLE001
+            pass
     try:
         import ctypes
         ctypes.windll.user32.MessageBoxW(0, text, title, 0x00000010)   # MB_ICONERROR
-    except Exception:                                                 # noqa: BLE001
+    except Exception:                                         # noqa: BLE001
         pass
     sys.exit(1)
 

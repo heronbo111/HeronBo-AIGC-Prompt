@@ -896,7 +896,14 @@ async function acquireSession(kind, opts = {}) {
       return c;
     }
   }
-  const c = await createIsolatedChat({ asWindow: true, silent: !opts.visible });
+  // ⑤ 实在没有才新建。⚠️ 2026-10-08 用户裁定（"生视频和出提示词必须在同一台电脑"）：
+  // 一律开**主窗里的后台标签页**（newWindow:false），不再开独立 OS 窗——独立窗会让
+  // 豆包变成多窗多会话，原工作台窗口的 CDP 连接偶发被挤崩、用户也找不到窗。
+  // visible=true（非豆包通道跳转手动确认）时才允许可见窗。
+  const c = await createIsolatedChat({
+    asWindow: !!opts.visible,
+    silent: !opts.visible,
+  });
   stateWrite(Object.assign(stateRead(), { [keyT]: c.targetId }));
   return c;
 }

@@ -177,7 +177,14 @@ def _prompt_file(pdir):
 
 
 def _speech_text(pdir):
-    """提取口播台词（估时只用台词，不能用整段提示词）：优先 备注/需求.txt 的"台词[改成]："后内容。"""
+    """提取口播台词（估时只用台词，不能用整段提示词）。
+
+    来源优先级（2026-10-08 修"出完提示词后默认时长消失"）：
+    ① 备注/需求.txt 的「台词[改成]：」行（工作台口径）；
+    ② 框架.json versions/prompts 里登记的 lines 字段（agent 出提示词时回填的台词）；
+    ③ 文案/提示词正文.txt 里的「台词改成：」行（老口径）。
+    都没有 → ''（estimate 返回 0，界面时长落回模型下限）。
+    """
     for cand in (os.path.join("备注", "需求.txt"), "需求.txt"):
         fp = os.path.join(pdir, cand)
         if os.path.isfile(fp):
@@ -188,6 +195,26 @@ def _speech_text(pdir):
                         t = m.group(1).strip()
                         if t:
                             return t
+            except OSError:
+                pass
+    try:   # ② 框架.json 里 agent 回填的台词（出完提示词后就有）
+        sk = json.load(open(os.path.join(pdir, "框架.json"), encoding="utf-8-sig"))
+        proj = sk.get("project") or {}
+        for v in list(proj.get("versions") or []) + list(proj.get("prompts") or []):
+            t = str(v.get("lines") or v.get("台词") or "").strip()
+            if t:
+                return t
+    except Exception:  # noqa: BLE001
+        pass
+    for cand in (os.path.join("文案", "提示词正文.txt"), "提示词正文.txt",
+                 os.path.join("文案", "提示词.txt"), "提示词.txt"):
+        fp = os.path.join(pdir, cand)
+        if os.path.isfile(fp):
+            try:
+                m = re.search(r"台词(?:改成)?[：:]\s*([^\n]+)",
+                              open(fp, encoding="utf-8-sig").read())
+                if m and m.group(1).strip():
+                    return m.group(1).strip()
             except OSError:
                 pass
     return ""
@@ -452,11 +479,32 @@ def cancel_now(sid):
 
 
 # ---------------- 高层 API（server 薄路由调用） ----------------
+def _settled_duration(pdir):
+    """项目里**已经定过**的成片时长（2026-10-08 修"出完提示词后默认时长消失"）：
+    agent 出提示词时把估的时长回填进了 框架.json 的 prompts[].duration（workbench_server
+    里的 settled_brief 也读它）。返回 None 表示没定过。"""
+    try:
+        sk = json.load(open(os.path.join(pdir, "框架.json"), encoding="utf-8-sig"))
+        proj = sk.get("project") or {}
+        for v in list(proj.get("prompts") or []) + list(proj.get("versions") or []):
+            d = v.get("duration")
+            if d not in (None, "", 0):
+                return int(d)
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 def api_estimate(pdir, b):
     b = b or {}
-    speech = b.get("script") or resolve_inputs(pdir).get("speech") or ""
-    mode = "sell" if b.get("mode", "sell") == "sell" else "normal"
-    return {"ok": True, "estimate": estimate(speech, mode)}
+    est = estimate(b.get("script") or resolve_inputs(pdir).get("speech") or "",
+                   "sell" if b.get("mode", "sell") == "sell" else "normal")
+    settled = _settled_duration(pdir)
+    if settled:
+        # 出过提示词的项目：时长以 agent 定下的为准（语音估时只在没有定值时兜底）
+        est["suggest"] = settled
+        est["settled"] = True
+    return {"ok": True, "estimate": est}
 
 
 def api_prepare(pdir, b, visible=False):
@@ -465,6 +513,10 @@ def api_prepare(pdir, b, visible=False):
     model = b.get("model") or DEFAULT_MODEL
     ratio = b.get("ratio") or DEFAULT_RATIO
     est = estimate(inp.get("speech") or "", "sell")
+    settled = _settled_duration(pdir)
+    if settled:
+        est["suggest"] = settled      # 同 api_estimate：出过提示词按时长定值（2026-10-08）
+        est["settled"] = True
     duration = clamp_duration(
         model, b["duration"] if b.get("duration") else est["suggest"])
     return start_prepare({
