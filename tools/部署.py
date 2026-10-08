@@ -628,11 +628,21 @@ def fetch_vendor(yes=False, force_exe=False, caps=(), with_ffmpeg=False):
     if skip_ffmpeg:
         miss = [m for m in miss if not m[0].startswith("ffmpeg")]
     if miss:
-        names = "、".join("%s（约 %dMB）" % (a[0], a[2]) for a in miss)
+        # 2026-10-08：**别再指 Release 附件那条路**——实测 `vendor-2026-09-22` 这个固定通道在
+        # 两个平台上都没有对应 Release，`wheels-core.zip` / `ffmpeg-win64-gpl-shared.zip`
+        # 在四个基址全部 404（只有 score-tool.exe / version.json 拿得到）。
+        # 好在离线轮子（pywebview/pythonnet/cffi…）本来就**直接躺在仓库里**（tools/_vendor/wheels/，
+        # 已跟踪、~4MB），所以 core 其实只剩 ffmpeg 一个真缺口，而它有不用 Release 的正路。
+        _ff = [a for a in miss if a[0].startswith("ffmpeg")]
+        _other = [a for a in miss if not a[0].startswith("ffmpeg")]
         if not yes:
-            todo("下载离线大件：%s" % names,
-                 "python tools/deploy.py vendor --fetch --yes %s  （从 %s 拉；国内慢会自动换镜像源）"
-                 % (" ".join("--" + c for c in use_caps), VENDOR_REL))
+            if _other:
+                todo("还缺离线大件：%s" % "、".join("%s（约 %dMB）" % (a[0], a[2]) for a in _other),
+                     "这几件走 Release 附件的路已经不通了（全 404）；先跳过，按需联网装即可。")
+            if _ff:
+                todo("系统里没有可用的 ffmpeg（约 %dMB）" % _ff[0][2],
+                     "python tools\\环境检查.py --install --yes   （走 winget 装 Gyan.FFmpeg；"
+                     "装完 ffmpeg/ffprobe 就在 PATH 里）")
         else:
             import zipfile
             for fn, sub, mb in miss:
@@ -641,8 +651,12 @@ def fetch_vendor(yes=False, force_exe=False, caps=(), with_ffmpeg=False):
                 try:
                     n = _download_any(fn, zip_dst)
                 except Exception as e:                           # noqa: BLE001
-                    bad("下载 " + fn, str(e)[:160],
-                        "网络不通就先跳过：用镜像在线装（python tools/deploy.py install --yes）")
+                    if fn.startswith("ffmpeg"):
+                        bad("下载 " + fn, str(e)[:160],
+                            "改走 winget：python tools\\环境检查.py --install --yes")
+                    else:
+                        bad("下载 " + fn, str(e)[:160],
+                            "这条路（Release 附件）实测已全 404，跳过即可")
                     continue
                 ok("下好了 " + fn, "%.1f MB" % (n / 1048576.0))
                 try:
@@ -662,6 +676,18 @@ def fetch_vendor(yes=False, force_exe=False, caps=(), with_ffmpeg=False):
     else:
         ok("离线大件已齐", "core（wheels + %s）都在"
            % ("用系统 ffmpeg" if skip_ffmpeg else "自带 ffmpeg"))
+    # 2026-10-08：能力包**不再走 Release 附件**（`vendor-2026-09-22` 那一串 cap-*.zip 在
+    # GitHub 上全 404，这条路一直是死的）。模型改成从 HF 国内镜像直取 → 交给 能力包.ensure。
+    if KP is not None and use_caps:
+        for cap in use_caps:
+            if KP.present(cap, HERE) and not KP.missing_mods(PY, cap):
+                ok("能力包 %s" % cap, "已就位")
+                continue
+            try:
+                KP.ensure(cap, HERE, py=PY, auto=True, log=log)
+                ok("能力包 %s" % cap, "模型已下好并装好依赖")
+            except Exception as e:                               # noqa: BLE001
+                bad("能力包 %s" % cap, str(e)[:300])
     # 没点名、但确实还缺的能力包 → 说清怎么装（别让用户猜）
     if KP is not None:
         rest = [c for c in KP.ORDER if c not in use_caps and not KP.present(c, HERE)]
@@ -763,7 +789,7 @@ def do_install(yes=False, extras=False):
                 miss_caps.append(cap)
                 miss_mods += [m for m in KP.CAPS[cap]["mods"] if not KP.mod_present(m)]
         if not miss_caps:
-            ok("能力包也已齐（转写 / 图像 / 转深度片）")
+            ok("能力包也已齐（转写 / 转深度片）")
             return
         log("  [按需] 还没装的能力包：%s" % "、".join("%s(%s)" % (c, KP.CAPS[c]["title"]) for c in miss_caps))
         for line in KP.hint(miss_caps).splitlines():
@@ -772,24 +798,38 @@ def do_install(yes=False, extras=False):
             dirs = [os.path.join(VENDOR, d) for c in miss_caps for d in KP.CAPS[c]["wheels_dirs"]
                     if os.path.isdir(os.path.join(VENDOR, d))]
             mods = [m for m in ("numpy", "cv2", "faster_whisper", "onnxruntime") if not KP.mod_present(m)]
-            if not mods:
-                return
-            if dirs:
-                cmd = [PY, "-m", "pip", "install", "--no-index"]
-                for d in dirs:
-                    cmd += ["--find-links", d]
-                cmd += mods
-                src = "本地能力包（免联网）"
-            else:
-                cmd = [PY, "-m", "pip", "install", "-i",
-                       "https://pypi.tuna.tsinghua.edu.cn/simple"] + mods
-                src = "在线（清华源）"
-            if not yes:
-                todo("装能力包依赖：%s（%s）" % (", ".join(mods), src), '"%s"   （加 --yes）' % '" "'.join(cmd))
-                return
-            log("  正在装：%s" % ", ".join(mods))
-            r = run(cmd, timeout=1800)
-            (ok if r.returncode == 0 else bad)("装 %s" % ", ".join(mods), (r.stdout or r.stderr or "")[-200:])
+            if mods:
+                if dirs:
+                    cmd = [PY, "-m", "pip", "install", "--no-index"]
+                    for d in dirs:
+                        cmd += ["--find-links", d]
+                    cmd += mods
+                    src = "本地能力包（免联网）"
+                else:
+                    cmd = [PY, "-m", "pip", "install", "-i",
+                           "https://pypi.tuna.tsinghua.edu.cn/simple"] + mods
+                    src = "在线（清华源）"
+                if not yes:
+                    todo("装能力包依赖：%s（%s）" % (", ".join(mods), src), '"%s"   （加 --yes）' % '" "'.join(cmd))
+                    return
+                log("  正在装：%s" % ", ".join(mods))
+                r = run(cmd, timeout=1800)
+                (ok if r.returncode == 0 else bad)("装 %s" % ", ".join(mods), (r.stdout or r.stderr or "")[-200:])
+            # 依赖装完了未必"齐"：模型文件多半还缺（转写 461MB / 深度 95MB，走 HF 镜像）
+            for cap in miss_caps:
+                if KP.present(cap, HERE):
+                    continue
+                if not yes:
+                    todo("拉 %s 模型（%s）" % (cap, KP.CAPS[cap]["title"]),
+                         '"%s" -c "import sys;sys.path.insert(0,r\'%s\');import 能力包;'
+                         '能力包.ensure(\'%s\', r\'%s\', auto=True)"' % (PY, HERE, cap, HERE))
+                    continue
+                try:
+                    log("  正在拉模型：%s（约 %dMB，走国内镜像）…" % (cap, KP.CAPS[cap]["mb"]))
+                    KP.ensure(cap, HERE, py=PY, auto=True, log=log)
+                    ok("能力包 %s" % cap, "模型已就位")
+                except Exception as e:                           # noqa: BLE001
+                    bad("能力包 %s" % cap, str(e)[:300])
         return
 
     heavy = [("numpy", "numpy"), ("cv2", "opencv-python-headless"),

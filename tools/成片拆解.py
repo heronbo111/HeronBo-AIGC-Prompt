@@ -330,23 +330,50 @@ def audio_profile(wav):
 
 def transcribe(wav, lang="zh"):
     try:
-        os.environ.setdefault("HF_HUB_OFFLINE", "1")
         from faster_whisper import WhisperModel
     except Exception:
         print("[提示] 没装 faster-whisper，跳过转写（--asr）")
         return None
-    # 模型优先用 _vendor 里封好的本地版（离线开箱即用）；没有再回退 "small"（走缓存/联网）
-    model_path = "small"
+    # 模型优先用 _vendor 里封好的本地版；没有就**从国内镜像拉下来**（2026-10-08）。
+    #
+    # 以前这里是 os.environ.setdefault("HF_HUB_OFFLINE", "1") + 回落字符串 "small"：
+    # 新机上模型不在盘 → HF_HUB_OFFLINE=1 又禁止联网 → 直接抛 LocalEntryNotFoundError，
+    # 把 --asr 整条命令炸掉（不是优雅降级）。
+    #
+    # 为什么不让 faster_whisper 自己下（`WhisperModel("small")` + HF_ENDPOINT=hf-mirror）：
+    # 实测小文件能过，但 model.bin 这种 LFS 大件会被镜像 302 到 HF 的 Xet CAS 服务器，
+    # 那边返回 `401 Unauthorized`（cas-server.xethub.hf.co）。所以走**我们自己的下载器**直取
+    # resolve 直链（实测 461MB / 21.5MB/s / 支持 Range 续传），落到 _vendor 下再用本地路径。
+    local = os.path.join(HERE, "_vendor", "models", "faster-whisper-small")
+    if not os.path.isfile(os.path.join(local, "model.bin")):
+        local = _ensure_stt_model(local) or local
+    model_path = local if os.path.isfile(os.path.join(local, "model.bin")) else "small"
+    if model_path == "small":
+        print("[提示] 转写模型不在盘上、也没下成，跳过转写（其余证据照出）。")
+        print("       ↳ 装上它：python tools\\能力包.py get stt")
+        return None
+    os.environ["HF_HUB_OFFLINE"] = "1"              # 用本地版，别再去联网
     try:
-        local = os.path.join(HERE, "_vendor", "models", "faster-whisper-small")
-        if os.path.isfile(os.path.join(local, "model.bin")):
-            model_path = local
-    except Exception:
-        pass
-    model = WhisperModel(model_path, device="cpu", compute_type="int8")
-    segments, info = model.transcribe(wav, language=lang, vad_filter=True)
+        model = WhisperModel(model_path, device="cpu", compute_type="int8")
+        segments, info = model.transcribe(wav, language=lang, vad_filter=True)
+    except Exception as e:                          # noqa: BLE001
+        print("[提示] 转写没跑成，跳过（其余证据照出）：%s" % e)
+        return None
     out = [{"start": round(s.start, 2), "end": round(s.end, 2), "text": s.text.strip()} for s in segments]
     return {"lang_prob": round(float(info.language_probability), 2), "segments": out}
+
+
+def _ensure_stt_model(local):
+    """把转写模型拉到 _vendor（走 能力包 的镜像下载）；失败返回 None，不抛异常。"""
+    try:
+        sys.path.insert(0, HERE)
+        import 能力包
+        print("[提示] 本地没有转写模型，从国内镜像按需下载（约 461MB，只此一次）…")
+        能力包.ensure("stt", HERE, auto=True, log=lambda m: print("  " + str(m)))
+        return local if os.path.isfile(os.path.join(local, "model.bin")) else None
+    except Exception as e:                          # noqa: BLE001
+        print("[提示] 模型没下成：%s" % e)
+        return None
 
 
 def align_rate(cuts, onsets, tol=0.2):

@@ -1,7 +1,7 @@
 ---
 name: HeronBo-AIGC-Prompt
 description: 生成各类 AI 视频的提示词：①图生视频（图片/首尾帧/多图驱动，含道具与主体替换）②文生视频（纯文字）③参考视频生视频（参考运镜/动作/节奏）④参考视频替换生视频（保留动作构图、只换主体）；也用于拆解 AI 二创/爆款成片（读片三问 + 机器证据 + 拆解报告）。当用户要求写视频提示词、把文案/台词/素材变成生成指令、做分镜、换人换物换装、复刻或仿做某条片子，或在即梦/Seedance/MiniMax H3 等平台生成视频时使用。限额按模型维护，见 `references/platforms.md` 的「模型与限额」表；本 skill 只产出提示词文字与分析报告，不提交生成、不消耗积分；并根据每次成片反馈持续优化规则。
-version: 0.5.7
+version: 0.5.8
 agent_created: true
 ---
 
@@ -67,7 +67,7 @@ agent_created: true
 - **不是新项目**（延续已有主题/同一支片子） → **沿用已有项目文件夹**，在其 `文案/提示词.txt` 追加版本、`素材/` 收素材，**不要另建目录**；
 - 命名：**不带日期戳**；同一主题重开**依次加 1、2、3**（**「0」就是第一个、不写 0**：`三本书`、`三本书1`、`三本书2`）。
 
-**换机 / 换 agent / 第一次用：先跑 `python tools\环境检查.py`**（逐项自检 ffmpeg/ffprobe、numpy/opencv、faster-whisper、onnxruntime、Yunet/Depth 模型、系统 OCR）；缺项**先问用户**，同意后 `python tools\环境检查.py --install --yes`（`--models` 补深度模型、`--warm-asr` 预下转写模型）。**装软件必须用户同意，不许静默安装。**
+**换机 / 换 agent / 第一次用：先跑 `python tools\环境检查.py`**（逐项自检 ffmpeg/ffprobe、numpy/opencv、faster-whisper、onnxruntime、Yunet/Depth 模型、系统 OCR）；缺项**先问用户**，同意后 `python tools\环境检查.py --install --yes`（`--models` 补深度模型、`--warm-asr` 预下转写模型；两者都走国内模型镜像 modelscope.cn 优先、hf-mirror.com 兜底，不用挂代理）。**装软件必须用户同意，不许静默安装。**
 
 同一轮问两句（固定话术）：
 

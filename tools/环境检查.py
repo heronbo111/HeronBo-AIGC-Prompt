@@ -41,7 +41,15 @@ DEPTH_DIR = os.path.join(os.path.expanduser("~"), ".cache", "depth-models", "dep
 # 仓库自带的那份（随 skill 分发，装机即用）
 DEPTH_BUNDLED = os.path.join(HERE, "_vendor", "models", "depth-anything-v2-small")
 DEPTH_FILES = ["onnx/model.onnx", "preprocessor_config.json", "config.json"]
-HF_BASE = "https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main"
+# 走**国内模型镜像**（2026-10-08）：裸连 huggingface.co 实测连不上。
+# ⚠️ hf-mirror 只适合小文件：大件会被 302 到海外 Xet/CAS（`cas-bridge.xethub.hf.co`），
+# 实测 0.0–0.17MB/s 甚至 401 → 所以 ModelScope 排第一（国内 cdn-lfs-cn-1，实测 11–12MB/s）。
+# 也可以用 HERONBO_HF_MIRROR 换自建镜像。
+HF_MIRROR = "https://hf-mirror.com"
+HF_BASE = HF_MIRROR + "/onnx-community/depth-anything-v2-small/resolve/main"
+MS_WEB = "https://modelscope.cn/models/onnx-community/depth-anything-v2-small/resolve"
+HF_BASE_MS = ("https://modelscope.cn/api/v1/models/onnx-community/depth-anything-v2-small"
+              "/repo?Revision=master&FilePath=")
 PIP_PKGS = {
     "numpy": "numpy",
     "cv2": "opencv-python-headless==4.10.0.84",
@@ -160,31 +168,74 @@ def do_winget_ffmpeg(assume_yes):
 def do_models():
     print("\n[下载] Depth 模型 → %s" % DEPTH_DIR)
     os.makedirs(DEPTH_DIR, exist_ok=True)
+    mirror = os.environ.get("HERONBO_HF_MIRROR", "").strip().rstrip("/") or HF_MIRROR
     for rel in DEPTH_FILES:
         dst = os.path.join(DEPTH_DIR, os.path.basename(rel))
         if os.path.isfile(dst) and os.path.getsize(dst) > 1000:
             print("  已有 %s" % os.path.basename(dst))
             continue
-        url = "%s/%s" % (HF_BASE, rel)
-        print("  下载 %s" % url)
-        # 用 python 的 urllib（尊重 HTTPS_PROXY，国内直连 HF 通常需要代理）
-        code = ("import urllib.request,sys;"
-                "urllib.request.urlretrieve(%r, %r);print('ok')" % (url, dst))
-        r = run([sys.executable, "-c", code])
-        if "ok" not in (r.stdout or ""):
-            print("  ✗ 失败（HF 需代理：$env:HTTPS_PROXY='http://127.0.0.1:7897' 后重试）")
+        # ModelScope 排第一（大件只有它走国内 CDN），之后才是 hf-mirror 与官方 HF 兜底。
+        # 注意落盘一律用 basename：远端是 `onnx/model.onnx`，本地要平铺成 `model.onnx`
+        # （`深度视频.pick_model` 与安装包载荷都按平铺找）。
+        urls = ["%s/master/%s" % (MS_WEB, rel),
+                HF_BASE_MS + rel,
+                "%s/%s" % (HF_BASE, rel)]
+        if os.environ.get("HERONBO_HF_MIRROR", "").strip():
+            urls.insert(0, "%s/%s/resolve/main/%s"
+                        % (mirror, "onnx-community/depth-anything-v2-small", rel))
+        ok = False
+        for url in urls:
+            print("  下载 %s" % url)
+            code = ("import urllib.request;"
+                    "urllib.request.urlretrieve(%r, %r);print('ok')" % (url, dst))
+            r = run([sys.executable, "-c", code])
+            if "ok" in (r.stdout or ""):
+                ok = True
+                break
+            print("    不通，换下一个源")
+        if not ok:
+            print("  ✗ 三个源都没成（也可挂代理：$env:HTTPS_PROXY='http://127.0.0.1:7897' 后重试）")
             return False
     print("  完成")
     return True
 
 
 def do_warm_asr(model):
-    print("\n[预热] faster-whisper 模型：%s（首次会下载，约几百 MB）" % model)
+    """预下转写模型。
+
+    2026-10-08 改：默认档位 `small` **不再让 faster_whisper 自己去 HF 下** —— 实测
+    `HF_ENDPOINT=https://hf-mirror.com` 时小文件能过，但 LFS 大件 model.bin 会被镜像 302
+    到 HF 的 Xet CAS 服务器，返回 `401 Unauthorized`（cas-server.xethub.hf.co）。
+    改走 能力包.ensure（自己的下载器直取 resolve 直链，实测 461MB / 21.5MB/s / 支持续传）。
+    非默认档位没有对应镜像仓库，保留原来的 HF_ENDPOINT 路子。
+    """
+    print("\n[预热] faster-whisper 模型：%s（走国内镜像）" % model)
+    if model == "small":
+        try:
+            sys.path.insert(0, HERE)
+            import 能力包
+            print("  [下载] Systran/faster-whisper-small → %s（约 461MB）"
+                  % os.path.join(HERE, "_vendor", "models", "faster-whisper-small"))
+            能力包.ensure("stt", HERE, py=sys.executable, auto=True, log=lambda m: print("  " + str(m)))
+            print("  完成")
+            return True
+        except Exception as e:                                    # noqa: BLE001
+            print("  ✗ 失败：%s" % str(e)[:300])
+            return False
+    # 非 small 档位：没有镜像仓库对应，仍让 huggingface_hub 走镜像（大件可能仍被 Xet 拦）
+    env = dict(os.environ)
+    env.setdefault("HF_ENDPOINT",
+                   os.environ.get("HERONBO_HF_MIRROR", "").strip() or HF_MIRROR)
+    env["HF_HUB_OFFLINE"] = "0"
     code = ("from faster_whisper import WhisperModel;"
             "WhisperModel(%r, device='cpu', compute_type='int8');print('ok')" % model)
-    r = run([sys.executable, "-c", code])
-    print("  完成" if "ok" in (r.stdout or "") else "  ✗ 失败：%s" % (r.stderr or "")[-200:])
-    return "ok" in (r.stdout or "")
+    r = run([sys.executable, "-c", code], env=env)
+    if "ok" in (r.stdout or ""):
+        print("  完成（%s）" % env.get("HF_ENDPOINT"))
+        return True
+    print("  ✗ 失败：%s" % (r.stderr or "")[-200:])
+    print("      ↳ 换默认档位试试：python tools\\环境检查.py --warm-asr --asr-model small")
+    return False
 
 
 def main():
@@ -193,8 +244,8 @@ def main():
     ap.add_argument("--extras", action="store_true",
                     help="连「用到才装」的大包一起装（numpy/opencv/转写/深度，几百 MB）")
     ap.add_argument("--yes", action="store_true", help="不询问（供 agent 在用户已同意后使用）")
-    ap.add_argument("--models", action="store_true", help="下载 Depth 模型（约 99MB，HF 需代理）")
-    ap.add_argument("--warm-asr", action="store_true", help="预下 faster-whisper 模型")
+    ap.add_argument("--models", action="store_true", help="下载 Depth 模型（约 99MB，走国内镜像）")
+    ap.add_argument("--warm-asr", action="store_true", help="预下 faster-whisper 模型（约 461MB，走国内镜像）")
     ap.add_argument("--asr-model", default="small", help="faster-whisper 模型档位，默认 small")
     ap.add_argument("--json", action="store_true", help="机读输出")
     args = ap.parse_args()
