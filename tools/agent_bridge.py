@@ -1325,12 +1325,17 @@ def build_cmd_for(key, prompt, session_id=None, cwd=None, permission_mode=None,
         runner, _renv = lib_runner(cli)
         if not runner:
             raise RuntimeError("ZCode CLI 找到了，但没有 node、也没找到 ZCode 的 exe")
-        cmd = [runner, cli, "--prompt", prompt, "--mode", "yolo"]
+        cmd = [runner, cli, "--prompt", prompt, "--mode", "yolo", "--json"]
         if cwd:
             cmd += ["--cwd", cwd]
         if session_id:
             cmd += ["--resume", session_id]      # 钉住本项目自己的会话，不用 -c（不抢用户正在聊的）
-        return cmd, "text"
+        # 2026-10-08 升级：加 --json（CLI help："Print machine-readable JSON where
+        # supported"）。zcode.cjs 源码里有完整的流事件词表（reasoning_start /
+        # reasoning_delta / reasoning_end / text_delta / tool_input_* / model_request_*），
+        # 原先 "text" 模式没有中间事件，工作台进度区整轮空白——用户看的"ZCode 有中文
+        # 思考流、DSH 没有"就是这条通道差异。
+        return cmd, "zcode-json"
     if key == "dsh":
         pkg = dsh_pkg()
         if not pkg:
@@ -1338,8 +1343,15 @@ def build_cmd_for(key, prompt, session_id=None, cwd=None, permission_mode=None,
         runner, _renv = lib_runner(pkg)
         if not runner:
             raise RuntimeError("DSH 找到了，但没有 node 可跑（先装 Node.js）")
-        cmd = [runner, pkg, "--profile", "headless", prompt]
-        return cmd, "text"          # stdout = 最终答复；stderr = 推理过程（当进度用）
+        # 2026-10-08 升级：改走 --json（newline-delimited run events）——
+        # 实测事件形状（本机 headless --json 跑通）：
+        #   {"type":"session","sessionId":"…","cwd":"…"}
+        #   {"type":"status","phase":"turn_start"|"step_start"|"step_end"|"turn_end", …}
+        #   {"type":"final","text":"<最终答复>"}
+        # 原来 "text" 模式 stderr 只有粗粒度推理，工作台进度区没东西可显示；
+        # stream 模式每步都能喂进度（turn/step 计数），最终答复从 final 事件取。
+        cmd = [runner, pkg, "--profile", "headless", "--json", prompt]
+        return cmd, "dsh-json"
     if key == "codex":
         exe = codex_exe()
         if not exe:
@@ -1394,7 +1406,101 @@ def build_cmd_for(key, prompt, session_id=None, cwd=None, permission_mode=None,
                      tools=tools, output_format="stream-json", extra=extra), "workbuddy-json"
 
 
-def _extract_claude_line(line):
+def _extract_dsh_line(line):
+    """DSH headless `--json` 的一行事件 → (可读文本, session_id, 最终答复, 报错)。
+
+    实测形状（2026-10-08 本机 headless --json 跑通）：
+      {"type":"session","sessionId":"session-…","cwd":"…"}
+      {"type":"status","phase":"turn_start","turn":1}
+      {"type":"status","phase":"step_start","turn":1,"step":1}
+      {"type":"status","phase":"step_end","turn":1,"step":1}
+      {"type":"status","phase":"turn_end","turn":1,"reason":{"kind":"error"|"…", …}}
+      {"type":"final","text":"<最终答复>"}
+    进度文本把 turn/step 翻译成人话喂动作流；final.text 是最终答复。
+    """
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        return line.strip()[:400], None, None, None
+    if not isinstance(obj, dict):
+        return "", None, None, None
+    t = obj.get("type")
+    sid = obj.get("sessionId") or obj.get("session_id") or None
+    if t == "session":
+        return "会话已建立", sid, None, None
+    if t == "status":
+        ph = str(obj.get("phase") or "")
+        n = obj.get("turn")
+        s = obj.get("step")
+        if ph == "turn_start":
+            label = "开始第 %s 轮" % (n if n is not None else "?")
+        elif ph == "step_start":
+            label = "第 %s 轮 · 步骤 %s 进行中" % (n if n is not None else "?", s if s is not None else "?")
+        elif ph == "step_end":
+            label = "第 %s 轮 · 步骤 %s 完成" % (n if n is not None else "?", s if s is not None else "?")
+        elif ph == "turn_end":
+            label = "第 %s 轮结束" % (n if n is not None else "?")
+        else:
+            return "", sid, None, None
+        reason = ((obj.get("reason") or {}) or {}).get("kind")
+        if reason and reason != "completed":
+            label += "（%s）" % reason
+        return label, sid, None, None
+    if t == "final":
+        txt = str(obj.get("text") or "").strip()
+        return txt, sid, (txt or None), None
+    return "", sid, None, None
+
+
+def _extract_zcode_line(line):
+    """ZCode CLI `--json` 的一行事件 → (可读文本, session_id, 最终答复, 报错)。
+
+    事件词表来自 zcode.cjs 源码（公开）：reasoning_start/reasoning_delta/
+    reasoning_end（中文思考 delta）、text_delta、tool_input_start/…、
+    model_request_started/completed/failed、turn 相关；最终答复从
+    type=result / assistant_message / final 取（形状以实测为准，解析从宽）。
+    """
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        return line.strip()[:400], None, None, None
+    if not isinstance(obj, dict):
+        return "", None, None, None
+    t = str(obj.get("type") or obj.get("event") or "")
+    sid = obj.get("session_id") or obj.get("sessionId") or None
+    ph = str(obj.get("phase") or obj.get("subtype") or "")
+    if t in ("reasoning_start", "reasoning_delta", "reasoning_end", "text_delta",
+             "tool_input_start", "tool_input_delta", "tool_input_end",
+             "model_request_started", "model_request_queued"):
+        piece = ""
+        if t == "reasoning_delta":
+            piece = str(obj.get("delta") or obj.get("text") or "")
+        label = {"reasoning_start": "思考中…", "reasoning_delta": "", "reasoning_end": "思考完成",
+                 "text_delta": "", "tool_input_start": "准备调用工具…",
+                 "tool_input_delta": "", "tool_input_end": "工具参数就绪",
+                 "model_request_started": "正在询问模型…", "model_request_queued": "排队等模型…"}.get(t, t)
+        return ((label + piece).strip() or ""), sid, None, None
+    if t in ("model_request_completed", "model_first_text", "model_first_content"):
+        return "模型已返回", sid, None, None
+    if t in ("model_request_failed",):
+        return "", sid, None, True
+    # 最终答复：从宽抓（result / assistant_message / final / text 末块）
+    final = None
+    for k in ("result", "text", "message"):
+        v = obj.get(k)
+        if t in ("result", "assistant_message", "final") and isinstance(v, str) and v.strip():
+            final = v.strip()
+            break
+        if t in ("result", "assistant_message") and isinstance(v, dict):
+            inner = _pick_text(v)
+            if inner:
+                final = inner
+                break
+    txt = _pick_text(obj)
+    return (txt or ""), sid, final, None
+
+
+
     """Claude Code `--output-format stream-json` 的一行 → (可读文本, session_id, 最终答复, 报错)。
 
     官方形状（照文档写的，**本机未实测**）：
@@ -1702,6 +1808,26 @@ def ask(prompt, session_id=None, cwd=None, timeout=DEFAULT_TIMEOUT,
                     stream_err = err_
                 if txt and on_line:
                     on_line(txt)
+            elif mode == "dsh-json":
+                txt, sid_, fin_, err_ = _extract_dsh_line(line)
+                if sid_:
+                    stream_sid = sid_
+                if fin_:
+                    stream_text = fin_
+                if err_ is not None:
+                    stream_err = err_
+                if txt and on_line:
+                    on_line(txt)
+            elif mode == "zcode-json":
+                txt, sid_, fin_, err_ = _extract_zcode_line(line)
+                if sid_:
+                    stream_sid = sid_
+                if fin_:
+                    stream_text = fin_
+                if err_ is not None:
+                    stream_err = err_
+                if txt and on_line:
+                    on_line(txt)
             else:
                 txt, sid_, fin_, err_ = _extract_stream_line(line)
                 if sid_:
@@ -1767,11 +1893,35 @@ def ask(prompt, session_id=None, cwd=None, timeout=DEFAULT_TIMEOUT,
         text = raw.strip()
     is_err = bool((res and res.get("is_error")) or stream_err)
     ok = (rc == 0) and (not is_err) and bool(text)
+    if mode == "dsh-json" and rc != 0 and not text:
+        # DSH --json 的错误在 turn_end.reason / stderr 里：给一句可读的
+        dsh_err = _dsh_error_from_events(raw) or (err[-300:] if err else "")
+        return {"ok": False, "agent": key, "agent_label": ADAPTERS[key]["label"],
+                "session_id": sid, "text": "", "res": res, "returncode": rc, "cmd": cmd,
+                "stderr": err[-2000:],
+                "error": dsh_err or ("超时 %ds 已终止" % timeout if killed["timeout"]
+                                     else "CLI 返回码 %s" % rc)}
     return {"ok": ok, "agent": key, "agent_label": ADAPTERS[key]["label"],
             "session_id": sid, "text": text, "res": res, "returncode": rc, "cmd": cmd,
             "stderr": err[-2000:],
             "error": "" if ok else ("超时 %ds 已终止" % timeout if killed["timeout"]
                                     else ("agent 报错" if is_err else "CLI 返回码 %s" % rc))}
+
+
+def _dsh_error_from_events(raw):
+    """从 DSH --json 的事件行里抠 turn_end.reason 的可读错误（没有返回 ''）。"""
+    for line in (raw or "").splitlines():
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and obj.get("type") == "status" \
+                and str(obj.get("phase")) == "turn_end":
+            reason = obj.get("reason") or {}
+            msg = (reason.get("error") or {}).get("message") if isinstance(reason, dict) else ""
+            if msg:
+                return str(msg)[:300]
+    return ""
 
 
 if __name__ == "__main__":                      # 命令行自检：python agent_bridge.py "问题"
