@@ -399,6 +399,11 @@ def start_prepare(p):
                 args += ["--video", p["video"]]
             if p.get("visible"):
                 args += ["--visible"]              # 非豆包通道：跳转豆包界面（可见窗口），用户手动确认
+                if _tray:                          # 那扇窗就是要给用户看的：把上一轮收进托盘的
+                    try:                           # 放出来（否则复用到同一段会话时用户什么也看不见）
+                        _tray.show_all()
+                    except Exception:  # noqa: BLE001
+                        pass
             elif _tray:
                 try:                               # 后台驱动：豆包窗口收进托盘，任务栏不再挂窗
                     _tray.hide_async(ab.doubaowork_exe() if ab else "")
