@@ -1630,7 +1630,7 @@ async function actVideo() {
     const _before = stateRead().videoTarget;
     c = await acquireSession('video', { visible: VVISIBLE });
     step(stateRead().videoTarget === _before ? '复用同一视频会话（上下文连续、加载快）'
-                                            : (VVISIBLE ? '已打开豆包工作窗口（可见）' : '已锁定视频会话（之后都复用、不弹新窗）'));
+                                            : (VVISIBLE ? '已打开豆包工作窗口' : '已接入视频会话'));
     // 路径2：不上传附件，直接给本地绝对路径让豆包自己读；提示词原样带入（保留画幅/时长等可移植依据，不剥离）
     const req = buildVideoRequest({ prompt, model: VMODEL, ratio: VRATIO, duration: VDURATION,
       images: VIMAGES.map((p) => path.resolve(p)), audio: VAUDIO ? path.resolve(VAUDIO) : '',
