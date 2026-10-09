@@ -132,6 +132,18 @@ def gh_publish(tag, target, body, files, force):
         log("  [GitHub] %s 已存在，--force 模式：复用并刷新附件" % tag)
         st, rel = gh_request("%s/repos/%s/%s/releases/tags/%s" % (GH_API, OWNER_GH, REPO, tag), tok)
         rid = rel["id"]
+        # ⚠️ 复用已存在的 release 时也要刷 body（2026-10-09 实锤「阴阳版」：
+        #    v0.5.12 的 release 在正式发版前 14 分钟被提前建出、带着一段谁都没写过的
+        #    旧文案；gh_publish 只补附件不刷 body → GitHub 页面文案与 CHANGELOG 对不上。
+        #    Gitee 分支同理，见 gee_publish。）
+        if rel.get("body") != body:
+            st2, _r = gh_request("%s/repos/%s/%s/releases/%s" % (GH_API, OWNER_GH, REPO, rid),
+                                 tok, method="PATCH",
+                                 data=json.dumps({"body": body}).encode(), timeout=60)
+            if st2 in (200, 201):
+                log("  [GitHub] body 与 CHANGELOG 不一致 → 已刷新")
+            else:
+                log("  [GitHub] body 刷新失败 HTTP%s（附件继续传）" % st2)
     else:
         payload = json.dumps({"tag_name": tag, "target_commitish": target,
                               "name": "HeronBo 视频工作台 %s" % tag,
@@ -249,6 +261,15 @@ def gee_publish(tag, target, body, files, force):
             return "Gitee 已存在 %s（不可变，拒绝覆盖；确需重发请加 --force）" % tag
         rid = hit["id"]
         log("  [Gitee] %s 已存在，--force 模式：补传缺失附件" % tag)
+        # 与 gh_publish 同理：已存在也刷 body（防「阴阳版」——2026-10-09 实锤）
+        if hit.get("body") != body:
+            try:
+                gee_post_form(base + "/releases/%s" % rid, {
+                    "access_token": tok, "tag_name": tag, "target_commitish": target,
+                    "name": "HeronBo 视频工作台 %s" % tag, "body": body, "prerelease": "false"})
+                log("  [Gitee] body 与 CHANGELOG 不一致 → 已刷新")
+            except Exception as e:                                  # noqa: BLE001
+                log("  [Gitee] body 刷新失败（附件继续传）：%s" % str(e)[:120])
     else:
         hit = gee_post_form(base + "/releases", {
             "access_token": tok, "tag_name": tag, "target_commitish": target,
