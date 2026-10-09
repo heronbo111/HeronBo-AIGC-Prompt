@@ -1149,14 +1149,14 @@ def quick_check(key):
             except (ValueError, TypeError):
                 d = {}
             if d.get("cdp"):
-                return True, "豆包工作在跑，且能被接管（调试端口 %s）" % d.get("port")
+                return True, "生成平台在跑，且能被接管（调试端口 %s）" % d.get("port")
             if d.get("running"):
                 # 2026-10-09：以前这里只报"连不上"，让用户自己去重启，结果 bridge 兜底又另起一套实例
                 # → 桌面上两个豆包。现在点「出提示词」会自动安排带端口重启那一套，这里只需说明它会自动弄。
-                return False, ("豆包工作在跑，但**不是调试端口起的**——我现在连不上。"
-                               "点「出提示词」时我会自动安排它带调试端口重启一次（你原来的对话都在历史里）；"
+                return False, ("生成平台在跑，但还没法直接接管——点「出提示词」时我会"
+                               "自动重启一次接上（几秒，你原来的对话都在历史里）；"
                                "急的话也可以在命令行跑 `node tools\\doubao_cdp.mjs restart --yes`")
-            return False, "豆包工作没在跑：点「出提示词」时我会带调试端口把它拉起来"
+            return False, "生成平台没在跑：点「出提示词」时我会自动启动它"
         else:
             return None, "这条通道没有自检命令（自定义通道请点「真跑一句」）"
         rc, out = _run_quiet(cmd)

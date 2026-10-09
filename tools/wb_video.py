@@ -317,7 +317,7 @@ def _run_video(args):
     js = ab.doubao_js()
     runner, renv = ab.lib_runner(js) if js else (None, None)
     if not (js and runner):
-        raise RuntimeError("豆包桥不可用：缺 doubao_cdp.mjs 或 node")
+        raise RuntimeError("视频桥不可用：缺 doubao_cdp.mjs 或 node")
     cmd = [runner, js, "video"] + [str(a) for a in args]
     env = ab.child_env()
     env.update(renv or {})
@@ -351,7 +351,7 @@ def _run_video(args):
         obj["returncode"] = rc
         return obj
     if rc != 0:
-        raise RuntimeError("豆包桥返回码 %s%s" % (rc, (("：" + raw[-200:]) if raw else "（看动作流）")))
+        raise RuntimeError("视频桥返回码 %s%s" % (rc, (("：" + raw[-200:]) if raw else "（看动作流）")))
     return {"ok": False, "returncode": rc, "raw": raw}
 
 
@@ -379,7 +379,7 @@ def start_prepare(p):
         return {"ok": False, "error": "已有视频任务在跑，等它结束"}
     p = dict(p or {})
     _reset("prepare", p)
-    _flow("开始让豆包准备视频方案（只读、不生成、不扣点）", "tool")
+    _flow("开始准备视频方案（只读、不生成、不扣点）", "tool")
 
     def _job():
         try:
@@ -413,7 +413,7 @@ def start_prepare(p):
             if r.get("state") == "manual":
                 _set(running=False, stage="manual", sid=r.get("sid", ""), result=r,
                      finished=round(time.time(), 1))
-                _flow("已跳转豆包工作界面（可见窗口）——请在豆包里核对确认清单并手动确认执行", "done")
+                _flow("已打开生成平台界面——请在窗口里核对确认清单并手动确认执行", "done")
             elif r.get("state") == "await_confirm" and r.get("confirmText"):
                 _set(running=False, stage="await_confirm", sid=r.get("sid", ""),
                      confirmText=r.get("confirmText", ""), result=r,
@@ -440,7 +440,7 @@ def start_confirm(p):
         return {"ok": False, "error": "confirm 缺 sid"}
     _reset("confirm", p)
     _set(sid=p["sid"])
-    _flow("已确认，开始生成成片（画面+配音+合成，扣豆包企业套餐点）", "tool")
+    _flow("已确认，开始生成成片（画面+配音+合成）", "tool")
 
     def _job():
         try:

@@ -1087,7 +1087,7 @@ async function findLivePort() {
 async function launchApp() {
   if (!EXE) return { ok: false, why: '没找到 DoubaoWork.exe（配置 / 运行中进程 / 注册表 / 扫盘全都落空）——把 exe 完整路径写进 agent_bridge.local.json 的 "doubaowork" 字段，或用 --exe / 环境变量 HERONBO_DOUBAO_EXE 指定' };
   PORT = await pickPort();
-  step('正在带调试端口启动豆包工作：端口 ' + PORT);
+  step('正在启动生成平台（首次需要十几秒，之后复用）…');
   // 抗节流/挂起开关：让后台、遮挡、最小化的页面不被 Electron 降速或冻结（配合后台标签页方案）。
   // --disable-notifications 去系统通知弹窗；--window-position 离屏让初始窗口不挡屏（CDP 再最小化兜底）。
   const args = ['--remote-debugging-port=' + PORT, '--remote-allow-origins=*',
@@ -1140,8 +1140,7 @@ async function ensureAttached({ launch = true } = {}) {
              why: doubaoRunning() ? '豆包工作在跑，但不是调试端口起的' : '豆包工作没在跑' };
   }
   if (doubaoRunning()) {
-    step('检测到豆包工作正在运行、但不是用调试端口起的（我连不上）；'
-         + '正在安排带调试端口重启一次——你原来的对话都在历史里，重启完接着用');
+    step('生成平台正在运行、但没法直接接管；正在自动重启一次（几秒，对话历史都保留）');
     if (!spawnLaunchAfterKillViaWmi()) {
       return { ok: false, code: 3,
                why: '豆包工作正在运行，但它不是用调试端口启动的，我连不上；自动重启也没安排成'
@@ -1720,7 +1719,7 @@ async function actVideo() {
 function killApp() {
   // ⚠️ 必须 **/F 强制 + 等到进程数归零**：只发关闭请求时单实例锁还在，
   // 再拉起来的新进程会被合并到旧实例上 → 调试端口根本不会开（2026-09-23 实测踩到）。
-  step('正在结束豆包工作（你会话里的历史都在，只是进程重启）');
+  step('正在结束豆包工作（对话历史都在，只是进程重启）');
   try { execSync('taskkill /IM DoubaoWork.exe /F /T', { stdio: 'ignore' }); } catch {}
   for (let i = 0; i < 20; i++) {
     if (!doubaoRunning()) return true;
@@ -1766,9 +1765,9 @@ function spawnLaunchAfterKillViaWmi() {
 }
 
 async function actRestart() {
-  step('重启豆包工作：先安排一个"独立守场员"（不在豆包进程树里），由它关旧进程、带调试端口拉起新进程');
+  step('重启生成平台（几秒，对话历史都保留）');
   if (spawnLaunchAfterKillViaWmi()) {
-    log('· 已安排：豆包工作将在几秒后自动重启（带调试端口 ' + PORT + '）。'
+    log('· 已安排：生成平台将在几秒后自动重启。'
         + '这段对话如果跟着客户端退了，客户端回来后从历史里能接着用。');
     return 0;
   }
@@ -1830,9 +1829,9 @@ async function main() {
   if (action === 'launch-after-kill') {
     // 内部动作（restart 经 WMI 守场员调用，不进 usage）：爹不在豆包进程树里，随便杀
     killApp();
-    step('已完全退出，正在带端口重起…');
+    step('已退出，正在重新启动…');
     const r = await launchApp();
-    log(r.ok ? '· 守场员：已用调试端口重启（端口 ' + PORT + '）' : '✗ ' + r.why);
+    log(r.ok ? '· 已重启完成' : '✗ ' + r.why);
     return r.ok ? 0 : 2;
   }
   if (action === 'restart') {
