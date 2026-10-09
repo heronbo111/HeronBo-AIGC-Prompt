@@ -574,8 +574,14 @@ def available(prefer=None):
 
 
 def agent_info():
-    """给界面看的完整信息：候选列表 + 选中谁 + 为什么 + 用户是否已明确指定过。"""
-    key, why = pick_agent()
+    """给界面看的完整信息：候选列表 + 选中谁 + 为什么 + 用户是否已明确指定过。
+
+    `rows` 只探一次就同时喂给 pick_agent 与返回值——原先 pick_agent 内部和这里
+    各调一次 list_agents()，等于把"glob 几万条路径 + 几次 tasklist"干了两遍
+    （2026-10-09：/api/state 2.2 秒里绝大部分就是这个）。
+    """
+    rows = list_agents()
+    key, why = pick_agent(rows=rows)
     chosen = _local_cfg().get("agent") or ""
     return {"picked": key,
             "label": (ADAPTERS.get(key) or {}).get("label", ""),
@@ -583,7 +589,7 @@ def agent_info():
             "chosen": chosen,          # 空 = 还没让用户选过（界面据此决定要不要先问）
             "cfg": cfg_path(),         # 选择记在哪（界面显示出来，方便核对"存住没有"）
             "running": running_desktop(),   # 哪些客户端正开着（自动跟随的依据）
-            "list": list_agents()}
+            "list": rows}
 
 
 def set_agent(key):
@@ -935,7 +941,22 @@ ADAPTERS = {
 }
 
 
-_RUN_CACHE = {"t": 0.0, "keys": []}
+_RUN_CACHE = {"t": 0.0, "keys": [], "active": ""}
+
+# 本机 agent 探测结果缓存。**为什么必须有**：`list_agents()` 会 glob 几万个路径
+# （`_app_roots()` 铺到 C:\ D:\ E:\ F:\ 各 1~3 层通配）+ 跑几次 tasklist，实测
+# 一次 0.7~1.4 秒；而 `/api/state` 每次刷新都要 agent_info()，前端切个项目就卡
+# 2 秒多（2026-10-09 实测：GET /api/state 2200ms，其中 agent_ok() 2187ms）。
+# 探测结果（装没装 CLI、哪个客户端在跑）本来就不会秒级变化，缓存 20 秒足够；
+# 用户点「测一下」或改完配置走 fresh=True 强制重探。
+ROWS_TTL = 20.0
+_ROWS_CACHE = {"t": 0.0, "rows": None}
+
+
+def invalidate_agents():
+    """清掉探测缓存（改了配置 / 用户点「测一下」后调，下一次 list_agents 重探）。"""
+    _ROWS_CACHE.update({"t": 0.0, "rows": None})
+    _RUN_CACHE.update({"t": 0.0, "keys": [], "active": ""})
 
 
 def _foreground_exe():
@@ -1059,6 +1080,7 @@ def set_live(key, ok, why="", mode="version"):
     try:
         with open(cfg_path(), "w", encoding="utf-8") as f:
             json.dump(cfg, f, ensure_ascii=False, indent=2)
+        invalidate_agents()      # 实测结果变了 → 探测缓存作废，别让界面还显示旧状态
         return True
     except OSError:
         return False
@@ -1129,8 +1151,11 @@ def quick_check(key):
             if d.get("cdp"):
                 return True, "豆包工作在跑，且能被接管（调试端口 %s）" % d.get("port")
             if d.get("running"):
-                return False, ("豆包工作在跑，但**不是调试端口起的**——我连不上。先退出它，"
-                               "或在命令行跑 `node tools\\doubao_cdp.mjs restart --yes` 让它带着端口重启")
+                # 2026-10-09：以前这里只报"连不上"，让用户自己去重启，结果 bridge 兜底又另起一套实例
+                # → 桌面上两个豆包。现在点「出提示词」会自动安排带端口重启那一套，这里只需说明它会自动弄。
+                return False, ("豆包工作在跑，但**不是调试端口起的**——我现在连不上。"
+                               "点「出提示词」时我会自动安排它带调试端口重启一次（你原来的对话都在历史里）；"
+                               "急的话也可以在命令行跑 `node tools\\doubao_cdp.mjs restart --yes`")
             return False, "豆包工作没在跑：点「出提示词」时我会带调试端口把它拉起来"
         else:
             return None, "这条通道没有自检命令（自定义通道请点「真跑一句」）"
@@ -1156,7 +1181,7 @@ def test_agent(key, lite=True, timeout=180):
     （会消耗一点点额度，但这是唯一能证明"接得上"的办法）。
     结果写进 live 段；下次开界面直接显示，不必重测。
     """
-    if key not in {r["key"] for r in list_agents()}:
+    if key not in {r["key"] for r in list_agents(fresh=True)}:
         return {"ok": False, "error": "未知的通道：%s" % key}
     if lite:
         ok, why = quick_check(key)
@@ -1221,13 +1246,16 @@ def scan_hosts(max_depth=1):
     return out
 
 
-def list_agents():
+def list_agents(fresh=False):
     """本机探测结果（**只报盘上真有的**，并区分"测过没有"）。
 
     每行：key / label / found（盘上有）/ ok（能用＝有且没被实测否掉）/
           verified（真跑过）/ weak（像是残留或缓存，别太当真）/ why / host / at。
     没找到的也会返回（found=False），界面把它们收进折叠块并给出装法。
     """
+    now = time.time()
+    if (not fresh) and _ROWS_CACHE["rows"] is not None and (now - _ROWS_CACHE["t"]) < ROWS_TTL:
+        return [dict(r) for r in _ROWS_CACHE["rows"]]
     hosts = host_agents()
     live = live_cache()
     rows = []
@@ -1260,10 +1288,11 @@ def list_agents():
                      "weak": False, "host": False,
                      "why": "自定义通道" + ("（已测通）" if (live.get(a["key"]) or {}).get("ok") else "（未验证）")})
     rows += scan_hosts()
+    _ROWS_CACHE.update({"t": time.time(), "rows": [dict(r) for r in rows]})
     return rows
 
 
-def pick_agent(prefer=None):
+def pick_agent(prefer=None, rows=None):
     """选一个 agent 干活，返回 (key, why)。理由写清楚，界面直接显示给用户看。
 
     顺序（2026-09-16 起加"自动跟随"，用户要求"能不能根据我在用哪个软件自动切"）：
@@ -1275,7 +1304,9 @@ def pick_agent(prefer=None):
     """
     cfg = _local_cfg()
     want = prefer or cfg.get("agent")
-    rows = {r["key"]: r for r in list_agents()}
+    if rows is None:
+        rows = list_agents()
+    rows = {r["key"]: r for r in rows}
     if want and want in rows:
         r = rows[want]
         if r["ok"]:

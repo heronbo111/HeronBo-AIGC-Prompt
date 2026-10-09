@@ -34,7 +34,7 @@ import threading
 from ctypes import wintypes
 
 _EXE = "DoubaoWork.exe"
-SW_HIDE, SW_SHOW = 0, 5
+SW_HIDE, SW_SHOW, SW_RESTORE = 0, 5, 9
 SWP_NOSIZE, SWP_NOMOVE, SWP_NOZORDER = 0x1, 0x2, 0x4
 SWP_NOACTIVATE = 0x10
 GWL_EXSTYLE = -20
@@ -109,12 +109,20 @@ def hide_all():
 
     注意**不隐藏**窗口——真藏（SW_HIDE）会让桥以为没窗口可挂标签，转手 newWindow
     新开一扇可见窗，任务栏图标又回来。
+    最小化态（IsIconic）的窗也一并处理：先还原再挪走，否则留一个"最小化 + 屏外"的
+    僵尸窗，点托盘时既弹不出来、又占着桥的窗口位（2026-10-09 用户报"打不开豆包工作"）。
     """
     n = 0
     try:
         user32 = ctypes.windll.user32
         for h in _doubao_windows(True):
-            if _apply_tool(user32, int(h)):
+            h = int(h)
+            try:
+                if user32.IsIconic(h):
+                    user32.ShowWindow(h, SW_RESTORE)
+            except Exception:  # noqa: BLE001
+                pass
+            if _apply_tool(user32, h):
                 n += 1
         _st["want_hidden"] = True
     except Exception:  # noqa: BLE001
@@ -123,10 +131,12 @@ def hide_all():
 
 
 def show_all():
-    """把豆包放出来：去掉 TOOLWINDOW + 屏外的挪回屏幕内 + 置前。
+    """把豆包放出来：还原最小化 + 去掉 TOOLWINDOW + 屏外的挪回屏幕内 + 置前。
 
     `--visible`（跳转豆包界面、请用户手动确认）调它：那一轮窗口就是要给用户看的。
     注意只搬**屏外**的窗，用户自己摆在桌面上的豆包窗不动，免得每次都被怼到左上角。
+    2026-10-09 修「豆包工作打不开」：SW_SHOW 不会把最小化的窗还原（它只显隐），
+    用户自己最小化过 / 被 CDP 最小化过的窗必须先 SW_RESTORE，否则点托盘看着像没反应。
     """
     _st["want_hidden"] = False
     try:
@@ -142,19 +152,28 @@ def show_all():
             r = wintypes.RECT()
             if user32.GetWindowRect(h, ctypes.byref(r)) and r.left <= -3000:
                 user32.SetWindowPos(h, 0, 60, 60, 0, 0, SWP_NOSIZE | SWP_NOZORDER)
+            if user32.IsIconic(h):
+                user32.ShowWindow(h, SW_RESTORE)   # 最小化 → 还原（SW_SHOW 不管用）
             user32.SetForegroundWindow(h)
     except Exception:  # noqa: BLE001
         pass
 
 
 def _taskbar_windows():
-    """还挂在任务栏/Alt-Tab 上的豆包窗口（可见 + 无 TOOLWINDOW + 无 owner）。"""
+    """还"摆在用户面前"的豆包窗口（可见 + 没最小化 + 无 TOOLWINDOW + 无 owner）。
+
+    2026-10-09：把 **IsIconic（最小化）也算作"用户看不见"**。此前只看 IsWindowVisible，
+    用户自己最小化豆包后这里仍返回句柄，于是点托盘的判据 `if _taskbar_windows(): hide_all()`
+    走了"收起来"的分支——用户点一下反而更看不见了，这就是"缩小到后台就打不开"的成因。
+    """
     user32 = ctypes.windll.user32
     out = []
     for h in _doubao_windows(False):
         h = int(h)
         try:
             if not user32.IsWindowVisible(h):
+                continue
+            if user32.IsIconic(h):          # 最小化 = 用户看不见 = 该弹出来，不算"还在任务栏摆着"
                 continue
             ex = user32.GetWindowLongW(h, GWL_EXSTYLE)
             if (ex & WS_EX_TOOLWINDOW) == 0 and user32.GetWindow(h, 4) == 0:

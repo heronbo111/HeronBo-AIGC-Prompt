@@ -18,8 +18,10 @@
  *      轨迹文件仍读，但只当辅助（有些版本/模式下它会写工具调用）。
  *
  * ⚠️ 前提与边界：
- *   · 豆包工作**必须用调试端口启动**才能被接管；已经在跑（没有端口）时要先退出它。
- *     本脚本默认**不替用户关**他正在用的客户端（`restart` 才关，且要 `--yes`）。
+ *   · 豆包工作**必须用调试端口启动**才能被接管；已经在跑（没有端口）时，本脚本会**自动安排**
+ *     带端口重启那一套（2026-10-09 改：以前只报错让用户自己弄，结果兜底又另起一套实例、
+ *     桌面上两个豆包）。`--no-launch` 时不动它，只报"连不上"。
+ *     只有显式 `restart --yes` 才是"现在就关"；自动路径走的也是同一条 WMI 守场员。
  *   · 这套是"代操作企业客户端"，发消息＝真在用它干活；工作台侧应把它当一次正式调用对待。
  *
  * 用法：
@@ -36,9 +38,9 @@
  *   --sessions <dir>   会话根目录（默认按 LOCALAPPDATA 推；环境变量 HERONBO_DOUBAO_SESSIONS）
  *   --idle <sec>       静默多少秒算"答完了"（默认 8）
  *   --timeout <sec>    总超时（默认 600，与工作台默认一致）
- *   --no-launch        没连上也不许自己起客户端
+ *   --no-launch        没连上也不许自己起客户端、也不许重启它
  *
- * 退出码：0 成功 ｜ 2 参数/环境不对 ｜ 3 客户端在跑但没有调试端口（需先退出）｜ 4 超时 ｜ 5 输入框没找到
+ * 退出码：0 成功 ｜ 2 参数/环境不对 ｜ 3 没能拿到调试端口（已自动安排重启但没等到）｜ 4 超时 ｜ 5 输入框没找到
  */
 import { spawn as _spawn, execSync as _execSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -575,10 +577,21 @@ async function attachTarget(t) {
   return c;
 }
 const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+/** 气泡里的文本是不是本次这段 prompt（界面会折叠长文/规范化空白，不能只比前 10 字死等）。
+ *  2026-10-09 加：原判据「lastSend.includes(marker.slice(0,10))」在长 prompt 被折叠成
+ *  「前 N 字…」时永不命中，于是「豆包明明答完了，工作台报没能发出去」。逐级放宽。 */
+function samePosted(marker, lastSend) {
+  const m = norm(marker), s = norm(lastSend);
+  if (!m || !s) return false;
+  for (const n of [12, 8, 6]) if (s.includes(m.slice(0, n))) return true;
+  const head = m.slice(0, 8), tail = m.slice(-8);
+  if (head && tail && s.includes(head) && s.includes(tail)) return true;   // 中间被省略号折叠
+  return false;
+}
 /** 发送后定位"真正承载本次消息"的 target：扫描所有聊天页，lastSend 含 prompt 指纹即命中。
- *  无论新会话是同窗口路由还是另开窗口都能锁定。返回 {cdp(保持连接,调用方关),sid,state}；找不到 null。 */
+ *  无论新会话是同窗口路由还是另开窗口都能锁定。返回 {cdp(保持连接,调用方关),sid,state}；找不到 null。
+ *  2026-10-09 放宽：长 prompt 被界面折叠时前缀不一定对得上，故「lastSend 换了」或「已经有回复」也算命中。 */
 async function locateSentTarget(marker, waitMs = 22000) {
-  const key = norm(marker).slice(0, 12);
   const deadline = Date.now() + waitMs;
   while (Date.now() < deadline) {
     const targets = await listChatTargets();
@@ -590,7 +603,7 @@ async function locateSentTarget(marker, waitMs = 22000) {
         state = await c.evalJs(MSG_STATE);
         sid = String(await c.evalJs(PAGE_SID) || '');
       } catch { c.close(); continue; }
-      if (state && norm(state.lastSend).includes(key)) return { cdp: c, sid, state: state || {} };
+      if (state && samePosted(marker, state.lastSend)) return { cdp: c, sid, state: state || {} };
       c.close();
     }
     await sleep(700);
@@ -1110,15 +1123,45 @@ async function hideLaunchedWindow() {
   } finally { b.close(); }
 }
 
-/** 等到"能连上 CDP"；连不上时按需拉起，且在"已在跑但没端口"时明确报错而不是瞎点。 */
+/** 等到"能连上 CDP"；连不上时按需拉起；"已在跑但没端口"时**自动带端口重启那一套**。
+ *
+ *  为什么不再返回错误让用户自己去弄（2026-10-09 用户报"我无法正常打开豆包工作了、
+ *  新开的是豆包浏览器一个分程序"）：CDP 调试端口只能在进程**启动时**给，事后没法附加。
+ *  用户自己双击开的那个豆包（没有端口）我们永远连不上。旧代码这时报 code 3 让用户
+ *  去点"重启它"；而 bridge 兜底又用 launchApp() 另起了**第二套完整实例**——桌面上
+ *  于是有两个豆包，用户分不清哪个是主程序，这就是"分程序"的来头。
+ *  现在：检测到"在跑但没端口"就直接安排**带端口重启**（走 WMI 守场员，不在豆包进程树里，
+ *  不会被 taskkill /T 连坐），全程只有一套实例；重启完端口通了就接着跑这一轮。
+ *  代价只是多等十几秒，而用户当前那段对话在历史里，靠 askSid 能找回来。 */
 async function ensureAttached({ launch = true } = {}) {
   if (await findLivePort()) return { ok: true };
-  if (doubaoRunning() && !launch) return { ok: false, code: 3, why: '豆包工作在跑，但不是调试端口起的' };
-  if (doubaoRunning() && launch) {
+  if (!launch) {
     return { ok: false, code: 3,
-             why: '豆包工作正在运行，但它不是用调试端口启动的——我连不上。请先退出豆包工作（或在下面选“重启它”），我再用调试端口把它拉起来（你当前那段对话会留在历史里）' };
+             why: doubaoRunning() ? '豆包工作在跑，但不是调试端口起的' : '豆包工作没在跑' };
   }
-  if (!launch) return { ok: false, code: 3, why: '豆包工作没在跑' };
+  if (doubaoRunning()) {
+    step('检测到豆包工作正在运行、但不是用调试端口起的（我连不上）；'
+         + '正在安排带调试端口重启一次——你原来的对话都在历史里，重启完接着用');
+    if (!spawnLaunchAfterKillViaWmi()) {
+      return { ok: false, code: 3,
+               why: '豆包工作正在运行，但它不是用调试端口启动的，我连不上；自动重启也没安排成'
+                    + '（WMI 被安全软件挡了）。请手动退出豆包工作后重试，'
+                    + '或在命令行跑 node tools\\doubao_cdp.mjs restart --yes' };
+    }
+    // 守场员会 killApp() → launchApp()，整体最多约 50 秒。这里只轮询等端口出现：
+    // 用 findLivePort() 而不是固定 PORT，因为守场员是独立进程、自己挑的空闲口。
+    for (let i = 0; i < 60; i++) {
+      await sleep(1000);
+      if (await findLivePort()) {
+        stateWrite({ port: PORT, exe: EXE });
+        step('豆包工作已带调试端口起来（端口 ' + PORT + '），接着用原来那段对话');
+        return { ok: true };
+      }
+    }
+    return { ok: false, code: 3,
+             why: '安排带端口重启豆包工作后等了 60 秒还没等到调试端口——它可能被安全软件挡了，'
+                  + '或这个客户端屏蔽了调试开关' };
+  }
   const r = await launchApp();
   if (!r.ok) return { ok: false, code: 2, why: r.why };
   stateWrite({ port: PORT, exe: EXE });
@@ -1265,7 +1308,7 @@ async function actAsk() {
   let cdp = null;
   // 固定会话：复用锁定的 ask 会话（→回收同类→才新建隐藏窗），不再每次新建/弹新窗
   try {
-    step('正在接入固定会话（不弹窗）…');
+    step('正在接入固定会话…');
     cdp = await acquireSession('ask');
     step('固定会话已就绪');
   } catch (e) {
@@ -1276,7 +1319,14 @@ async function actAsk() {
   let sid = '';
   let readCdp = null;
   try {
-    const foc = await cdp.evalJs(FOCUS_COMPOSER);
+    // 输入框要等：刚接入的会话页（尤其 acquireSession ⑤ 级新开的后台标签）落地需要几秒，
+    // 之前只试一次就报「没找到输入框」，真机联调（2026-10-09）十有八九死在这。改成最多等 12 秒。
+    let foc = null;
+    for (let i = 0; i < 12; i++) {
+      foc = await cdp.evalJs(FOCUS_COMPOSER);
+      if (foc) break;
+      await sleep(1000);
+    }
     if (!foc) { log('✗ 没找到输入框（可能停在登录页/主页——先在豆包工作里进到对话页再试）'); return 5; }
     step('输入框：<' + foc.tag + '> ' + clip(foc.cls, 40));
 
@@ -1337,14 +1387,34 @@ async function actAsk() {
 
     if (cdp.targetId) {
       // ★ 独立窗口：webContents/target id 全程不变，**只锁定这一个连接**等消息落地，绝不扫描其它窗口。
-      // 成功判据：本窗口 sends 增加，或最后一条自己发的消息含本次 marker（覆盖高峰期前 2~3 秒 sends=0 的排队）。
+      // 成功判据（任一成立即算发出去了）：
+      //   ① 本窗口 sends 增加（气泡渲染出来）；
+      //   ② 输入框内容被消费、最后一条发送消息换了；
+      //   ③ recvs 增加 / 出现答复文本 / 正在思考或忙碌——只有消息真发出去，豆包才会开始动。
+      // 2026-10-09 修：原先只认 ① 和「lastSend 含 prompt 前 10 字」。长 prompt 会被界面折叠/规范化成
+      // 不同前缀（或气泡渲染慢于答复），前两条同时落空——用户在界面上明明看到豆包答完了，工作台却报
+      // 「没能把消息发出去（高峰期排队过久或页面变了）」。加入 ③ 与末尾的输入框兜底后不再误报。
+      const st0recv = Number(st0.recvs || 0);
+      const st0send = String(st0.lastSend || '');
       let sent = false;
       // 点一次后耐心等：消息正常 2~4 秒才 sends=1（点击→提交→气泡渲染），高峰期排队更久；
       // 这段窗口绝不能再点发送按钮——重复点击会干扰/取消首次提交（2026-09-28 实测反而发不出去）。
-      for (let i = 0; i < 30; i++) {
+      for (let i = 0; i < 40; i++) {
         const s = await cdp.evalJs(MSG_STATE).catch(() => null);
-        if (s && (s.sends > st0.sends || (s.lastSend && s.lastSend.includes(marker.slice(0, 10))))) { sent = true; break; }
+        if (s) {
+          if (s.sends > st0.sends) { sent = true; break; }
+          if (s.lastSend && String(s.lastSend) !== st0send) { sent = true; break; }
+          if (Number(s.recvs || 0) > st0recv) { sent = true; break; }
+          if (s.running || s.busy) { sent = true; break; }
+          if (String(s.lastRecv || '').trim()) { sent = true; break; }
+        }
         await sleep(1000);
+      }
+      if (!sent) {
+        // 最后兜底：输入框已经空了，说明那段字被消费掉了（多半发出去了）——继续读答复，
+        // 别在这里武断判失败。文字还留着才是真没发出去。
+        const left = await cdp.evalJs(COMPOSER_TEXT).catch(() => '');
+        if (!String(left || '').trim()) { sent = true; step('输入框已清空，按已发送继续等答复'); }
       }
       if (!sent) { log('✗ 没能把消息发出去（高峰期排队过久或页面变了，可稍后重试）'); return 5; }
       readCdp = cdp;                                        // 同一个连接，后续只从它读答复
@@ -1670,16 +1740,20 @@ function killApp() {
 function spawnLaunchAfterKillViaWmi() {
   const node = process.execPath;
   const self = fs.realpathSync(process.argv[1] || '');
-  // 守场员的 env 不继承我们的（爹是 WmiPrvSE）：本脚本若跑在 Electron 包装的 node 上
-  //（ZCode/WorkBuddy 自带的 node 就是这种），必须显式带上开关，否则守场员会把
-  // "客户端"整个拉起来而不是跑脚本。纯 node.exe 上这个变量多余但无害。
-  const envLead = process.env.ELECTRON_RUN_AS_NODE ? 'set ELECTRON_RUN_AS_NODE=1&& ' : '';
-  const inner = `cmd /c "${envLead}""${node}" "${self}" launch-after-kill"`;
-  // 经 -EncodedCommand 传（base64 of UTF-16LE）：路径里 Chinese/空格/引号都不用再操心
-  //（2026-10-06 实测：直接拼 -Command 会被 powershell 的外层引号嵌套咬碎；
-  //  另外哈希表后面只能有一个 }，多写一个就是 ParserError——也实测踩过）。
+  // 守场员整段命令用 powershell -EncodedCommand（base64 纯 ASCII）传：
+  // 2026-10-09 实测，WMI 起的进程若命令行直接含中文路径（技能目录常在
+  // 「D:\AI开发\…」这种中文夹层里），WMI/内核按 ANSI 代码页（GBK）转一遍，
+  // node 收到的就是 `Cannot find module 'D:\AI讠…'` —— 守场员每次都静默失败，
+  // 表面 ReturnValue=0、豆包却永远没被重启。base64 把中文藏进 ASCII，
+  // powershell 解码是 UTF-16LE，路径原样还原。ELECTRON_RUN_AS_NODE 同样
+  // 在解码后的脚本里设（本脚本若跑在 Electron 包装的 node 上必须带，否则
+  // 守场员会把"客户端"整个拉起来而不是跑脚本；纯 node 上多余但无害）。
+  const ps = `$env:ELECTRON_RUN_AS_NODE='1'; & '${node}' '${self}' launch-after-kill`;
+  const b64ps = Buffer.from(ps, 'utf16le').toString('base64');
+  // inner 全 ASCII：没有引号嵌套问题，也不用 '' 转义
+  const inner = `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${b64ps}`;
   const script = `Invoke-CimMethod -ClassName Win32_Process -MethodName Create`
-    + ` -Arguments @{CommandLine='${inner.replace(/'/g, "''")}'}`;
+    + ` -Arguments @{CommandLine='${inner}'}`;
   const b64 = Buffer.from(script, 'utf16le').toString('base64');
   try {
     execSync(`powershell -NoProfile -EncodedCommand ${b64}`,
