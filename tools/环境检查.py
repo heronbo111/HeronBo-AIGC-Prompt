@@ -203,26 +203,25 @@ def do_models():
 def do_warm_asr(model):
     """预下转写模型。
 
-    2026-10-08 改：默认档位 `small` **不再让 faster_whisper 自己去 HF 下** —— 实测
-    `HF_ENDPOINT=https://hf-mirror.com` 时小文件能过，但 LFS 大件 model.bin 会被镜像 302
-    到 HF 的 Xet CAS 服务器，返回 `401 Unauthorized`（cas-server.xethub.hf.co）。
-    改走 能力包.ensure（自己的下载器直取 resolve 直链，实测 461MB / 21.5MB/s / 支持续传）。
-    非默认档位没有对应镜像仓库，保留原来的 HF_ENDPOINT 路子。
+    2026-10-10 改：默认引擎换 **SenseVoice**（`能力包.ensure("sense-voice")`，约 239MB，
+    hf-mirror 直链+sha256 校验，ModelScope 无此仓）；`--asr-model` 给非 small 档或想用
+    旧引擎时仍走 faster-whisper 路径（461MB，能力包 stt）。
     """
-    print("\n[预热] faster-whisper 模型：%s（走国内镜像）" % model)
     if model == "small":
         try:
             sys.path.insert(0, HERE)
             import 能力包
-            print("  [下载] Systran/faster-whisper-small → %s（约 461MB）"
-                  % os.path.join(HERE, "_vendor", "models", "faster-whisper-small"))
-            能力包.ensure("stt", HERE, py=sys.executable, auto=True, log=lambda m: print("  " + str(m)))
+            print("\n[预热] 转写模型 SenseVoice（走国内镜像，约 239MB）")
+            print("  [下载] → %s"
+                  % os.path.join(HERE, "_vendor", "models", "sense-voice"))
+            能力包.ensure("sense-voice", HERE, py=sys.executable, auto=True, log=lambda m: print("  " + str(m)))
             print("  完成")
             return True
         except Exception as e:                                    # noqa: BLE001
             print("  ✗ 失败：%s" % str(e)[:300])
             return False
-    # 非 small 档位：没有镜像仓库对应，仍让 huggingface_hub 走镜像（大件可能仍被 Xet 拦）
+    # 非 small 档位：旧引擎 faster-whisper 的大模型，仍让 huggingface_hub 走镜像（大件可能仍被 Xet 拦）
+    print("\n[预热] faster-whisper 模型：%s（走国内镜像）" % model)
     env = dict(os.environ)
     env.setdefault("HF_ENDPOINT",
                    os.environ.get("HERONBO_HF_MIRROR", "").strip() or HF_MIRROR)
@@ -245,7 +244,7 @@ def main():
                     help="连「用到才装」的大包一起装（numpy/opencv/转写/深度，几百 MB）")
     ap.add_argument("--yes", action="store_true", help="不询问（供 agent 在用户已同意后使用）")
     ap.add_argument("--models", action="store_true", help="下载 Depth 模型（约 99MB，走国内镜像）")
-    ap.add_argument("--warm-asr", action="store_true", help="预下 faster-whisper 模型（约 461MB，走国内镜像）")
+    ap.add_argument("--warm-asr", action="store_true", help="预下转写模型 SenseVoice（约 239MB，走国内镜像；--asr-model non-small 走旧引擎 461MB）")
     ap.add_argument("--asr-model", default="small", help="faster-whisper 模型档位，默认 small")
     ap.add_argument("--json", action="store_true", help="机读输出")
     args = ap.parse_args()

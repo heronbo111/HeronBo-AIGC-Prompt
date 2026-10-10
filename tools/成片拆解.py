@@ -329,6 +329,45 @@ def audio_profile(wav):
 
 
 def transcribe(wav, lang="zh"):
+    """转写：SenseVoice（sherpa-onnx）优先，faster-whisper 兜底（2026-10-10 v0.6.1）。
+    SenseVoice 实测比 whisper small 快一个量级（45s 中文音频 1.7s vs 24s）、自带标点、
+    中文准确率明显更好；whisper 保留是因为它给逐段时间戳（SenseVoice 整段一次出），
+    参考音频对时间轴敏感的场景兜底用。"""
+    # ---- 首选 SenseVoice：模型小（239MB int8）、快、带标点 ----
+    try:
+        import sherpa_onnx
+        sv_dir = os.path.join(HERE, "_vendor", "models", "sense-voice")
+        sv_model = os.path.join(sv_dir, "model.int8.onnx")
+        sv_tokens = os.path.join(sv_dir, "tokens.txt")
+        if not (os.path.isfile(sv_model) and os.path.isfile(sv_tokens)):
+            _ensure_stt_model(os.path.join(HERE, "_vendor", "models"))  # 按 能力包 拉一次
+        if os.path.isfile(sv_model) and os.path.isfile(sv_tokens):
+            try:
+                import wave as _wave
+                import numpy as np
+                with _wave.open(wav, "rb") as w:
+                    sr = w.getframerate()
+                    samples = w.readframes(w.getnframes())
+                arr = np.frombuffer(samples, dtype=np.int16).astype(np.float32) / 32768.0
+                t0 = time.time()
+                rec = sherpa_onnx.OfflineRecognizer.from_sense_voice(
+                    model=sv_model, tokens=sv_tokens, num_threads=2, use_itn=True)
+                stream = rec.create_stream()
+                stream.accept_waveform(sr, arr)
+                rec.decode_stream(stream)
+                text = stream.result.text.strip()
+                print("  [SenseVoice] %.1fs 转完 %d 字" % (time.time() - t0, len(text)))
+                if text:
+                    return {"engine": "sensevoice", "lang_prob": 1.0,
+                            "segments": [{"start": 0.0, "end": None, "text": text}]}
+            except Exception as e:                      # noqa: BLE001
+                print("[提示] SenseVoice 转写没跑成，换 whisper 兜底：%s" % e)
+        else:
+            print("[提示] SenseVoice 模型不在盘上，换 whisper 兜底。")
+    except ImportError:
+        pass  # 没装 sherpa-onnx → whisper 兜底
+
+    # ---- 兜底 faster-whisper：有逐段时间戳 ----
     try:
         from faster_whisper import WhisperModel
     except Exception:
@@ -364,13 +403,15 @@ def transcribe(wav, lang="zh"):
 
 
 def _ensure_stt_model(local):
-    """把转写模型拉到 _vendor（走 能力包 的镜像下载）；失败返回 None，不抛异常。"""
+    """把转写模型拉到 _vendor（走 能力包 的镜像下载）；失败返回 None，不抛异常。
+    local 传模型目录（sense-voice 或 faster-whisper-small），能力包按需取对应能力包。"""
     try:
         sys.path.insert(0, HERE)
         import 能力包
-        print("[提示] 本地没有转写模型，从国内镜像按需下载（约 461MB，只此一次）…")
-        能力包.ensure("stt", HERE, auto=True, log=lambda m: print("  " + str(m)))
-        return local if os.path.isfile(os.path.join(local, "model.bin")) else None
+        want = "sense-voice" if os.path.basename(local) == "sense-voice" else "stt"
+        mb = "239MB" if want == "sense-voice" else "461MB"
+        print("[提示] 本地没有转写模型，从国内镜像按需下载（约 %s，只此一次）…" % mb)
+        能力包.ensure(want, HERE, auto=True, log=lambda m: print("  " + str(m)))
     except Exception as e:                          # noqa: BLE001
         print("[提示] 模型没下成：%s" % e)
         return None

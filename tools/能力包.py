@@ -189,9 +189,28 @@ CORE_ASSETS = [
 #     `深度视频.BUNDLED_MODEL`、`环境检查.DEPTH_DIR`、安装包载荷三处都按平铺找它，
 #     照远端原样铺成 `onnx/model.onnx` 会变成"下好了但没人认"。
 CAPS = {
-    "stt": {
-        "title": "转写（faster-whisper）",
+    "sense-voice": {
+        "title": "转写（SenseVoice，默认引擎）",
         "why": "要把音轨转成文字（拆解、废片诊断、字幕）时才要",
+        "mb": 239,
+        "assets": [],
+        "wheels_dirs": ["wheels"],                        # sherpa_onnx 两个 wheel 就在仓库自带 wheels 里
+        "mods": ["sherpa_onnx"],
+        "hf_repo": "csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17",
+        "hf_files": [
+            # ModelScope 没镜像这个仓（api 404，2026-10-10 实测）→ 走 hf-mirror，
+            # revision 钉住 repo sha，防上游 re-push 后 302 链失效。
+            ("model.int8.onnx", "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51",
+             "2365baeacb507f821a0c8120fcee3d484dba7a07", "model.int8.onnx"),
+            ("tokens.txt", "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc",
+             "2365baeacb507f821a0c8120fcee3d484dba7a07", "tokens.txt"),
+        ],
+        "model_dir": "models/sense-voice",
+        "model": "models/sense-voice/model.int8.onnx",
+    },
+    "stt": {
+        "title": "转写兜底（faster-whisper，带时间戳）",
+        "why": "SenseVoice 兜底、或需要逐段时间戳的字幕场景才要",
         "mb": 461,
         "assets": [],                                     # 不再走 Release 附件（通道 404，见上）
         "wheels_dirs": ["wheels-stt"],
@@ -233,7 +252,7 @@ CAPS = {
         "model": "models/depth-anything-v2-small/model.onnx",
     },
 }
-ORDER = ["stt", "depth"]
+ORDER = ["sense-voice", "stt", "depth"]
 
 
 class NeedCapability(Exception):
@@ -405,8 +424,8 @@ def _fetch(cap, tools_dir, log):
             except OSError:
                 pass
         os.makedirs(os.path.dirname(dst), exist_ok=True)
-        log("  下 %s/%s（%s）…" % (repo, rel, rev[:8]))
-        urls = _hf_urls(repo, rel, rev)
+        log("  下 %s/%s%s…" % (repo, rel, ("（rev %s）" % rev[:8]) if rev else ""))
+        urls = _hf_urls(repo, rel, rev or "main")
         try:
             got = dl.fetch_any(urls, dst, sha256=sha, tries=2, log=log, timeout=180)
         except Exception as e:                               # noqa: BLE001
