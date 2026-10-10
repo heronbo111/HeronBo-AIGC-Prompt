@@ -1098,27 +1098,38 @@ async function launchApp() {
   spawn(EXE, args, { detached: true, stdio: 'ignore' }).unref();
   for (let i = 0; i < 30; i++) {
     await sleep(1000);
-    if (await cdpReady()) { await hideLaunchedWindow().catch(() => {}); return { ok: true }; }
+    if (await cdpReady()) {
+      await hideLaunchedWindow().catch(() => {});
+      // 再压一轮（有的客户端首帧窗口要 1–2s 才真正冒出来，第一轮 bounds 可能落空）
+      await sleep(2500);
+      await hideLaunchedWindow().catch(() => {});
+      return { ok: true };
+    }
   }
   return { ok: false, why: '起了但调试端口没通（客户端可能屏蔽了该开关）' };
 }
 
 /** 把"我们刚拉起"的客户端窗口移出视野并最小化（绝不动用户已在看的窗口）：
- *  命令行已给离屏坐标，这里再用 CDP 强制最小化兜底。配合抗节流开关，后台仍正常工作。 */
+ *  命令行已给离屏坐标，这里再用 CDP 强制最小化兜底。配合抗节流开关，后台仍正常工作。
+ *  2026-10-10（m11686 2.2）：改为**所有 page 窗口**逐个收起（首轮只有主窗，重启后
+ *  可能带着历史标签页一起回来），并把窗口移回屏外原点——有的客户端会忽略 minimized
+ *  但尊重 bounds。 */
 async function hideLaunchedWindow() {
   const ver = await getJson('/json/version');
   if (!ver || !ver.webSocketDebuggerUrl) return;
   const list = await getJson('/json/list');
-  const page = (list || []).find((x) => x.type === 'page' && x.webSocketDebuggerUrl);
-  if (!page) return;
+  const pages = (list || []).filter((x) => x.type === 'page' && x.webSocketDebuggerUrl);
+  if (!pages.length) return;
   const b = new Cdp(ver.webSocketDebuggerUrl);
   await b.connect();
   try {
-    const tid = page.targetId || page.id;
-    const w = await b.send('Browser.getWindowForTarget', { targetId: tid }).catch(() => null);
-    if (w && w.windowId !== undefined) {
-      await b.send('Browser.setWindowBounds',
-        { windowId: w.windowId, bounds: { windowState: 'minimized' } }).catch(() => {});
+    for (const page of pages) {
+      const tid = page.targetId || page.id;
+      const w = await b.send('Browser.getWindowForTarget', { targetId: tid }).catch(() => null);
+      if (w && w.windowId !== undefined) {
+        await b.send('Browser.setWindowBounds', { windowId: w.windowId,
+          bounds: { windowState: 'minimized', left: -32000, top: -32000 } }).catch(() => {});
+      }
     }
   } finally { b.close(); }
 }
@@ -1538,8 +1549,18 @@ async function actVideo() {
   // confirm：回"确认" → 轮询成片 → 取回视频
   if (VSTAGE === 'confirm') {
     if (!VSID) { log('✗ confirm 需要 --sid'); return 2; }
-    const c = await attachSessionBySid(VSID, 15000, { silent: true });
-    if (!c) { log('✗ 找不到会话 ' + VSID + '（可能已被关闭）'); return 4; }
+    // 2026-10-10（m11686 2.3①）：会话窗口被误关后不再直接报失败——先按 sid 重开
+    //（后台标签页，不弹窗），再不行才从 state 的 videoTarget 兜底。
+    let c = await attachSessionBySid(VSID, 15000, { silent: true });
+    if (!c) {
+      step('会话窗口不在了（可能被关掉），重新接回这段对话…');
+      c = await openSessionBySid(VSID).catch(() => null);
+    }
+    if (!c) {
+      const st0c = stateRead();
+      if (st0c.videoTarget) c = await attachSessionByTarget(st0c.videoTarget).catch(() => null);
+    }
+    if (!c) { log('✗ 找不到会话 ' + VSID + '（重开也没成）——豆包工作里手动打开那段对话后再点一次确认'); return 4; }
     try {
       const shortJob = Number(VDURATION) <= 6;   // 与 buildVideoRequest 的分段口径一致
       const confirmMsg = shortJob
@@ -1550,7 +1571,10 @@ async function actVideo() {
       const sr = await c.evalJs(CLICK_SEND_WAIT, 20000);
       step('已回确认，等待流水线执行（' + (sr && sr.ok ? '已提交' : '提交异常') + '）…');
       let src = '', candSrc = '', stable = 0, lastBeat = 0, prevTxt = '', srcIsLocalFile = false;
-      const minDur = Math.max(8, Number(VDURATION) - 4);   // 最终成片时长门槛，过滤 6–8s 中间分段
+      // 成片时长门槛：VDURATION<=6 时 minDur 会被抬到 8s，而成片本身就 5–7s → 永不命中、
+      // 弹窗干等到超时（m11686 2.3② 实测）。改为「请求时长的 6 成」且至少 4s——足以过滤
+      // 1–3s 的中间分段，又不会把正经短片判成没生成完。
+      const minDur = Math.max(4, Math.round(Number(VDURATION) * 0.6));
       const deadline = Date.now() + Math.min(TIMEOUT, 1500) * 1000;
       while (Date.now() < deadline) {
         await sleep(4000);

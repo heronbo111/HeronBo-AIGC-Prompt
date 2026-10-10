@@ -277,13 +277,21 @@ def resolve_inputs(pdir):
         out["promptPath"] = pf
     out["speech"] = _speech_text(pdir)
     up = pcore_mod.upload_dir(pdir) if pcore_mod else os.path.join(pdir, "平台上传")
+    # 2026-10-10：素材/平台上传/（原始上传素材，m11803 两级布局）也参与候选——
+    # agent 加工前的原件收在那里，加工副本还没落顶层时从这里取。
+    src_dirs = []
+    if pcore_mod and getattr(pcore_mod, "upload_src_dir", None):
+        sd = pcore_mod.upload_src_dir(pdir)
+        if sd:
+            src_dirs.append(sd)
     dirs = []
-    if os.path.isdir(up):
-        dirs.append(up)
-        for fn in os.listdir(up):
-            d = os.path.join(up, fn)
-            if os.path.isdir(d):
-                dirs.append(d)
+    for d0 in [up] + src_dirs:
+        if os.path.isdir(d0):
+            dirs.append(d0)
+            for fn in os.listdir(d0):
+                d = os.path.join(d0, fn)
+                if os.path.isdir(d):
+                    dirs.append(d)
     cur_no = _current_ver_no(pdir)
     best = None  # (score, mtime, image, audio, video, images)
     for d in dirs:
@@ -558,3 +566,14 @@ def api_cancel(pdir, b):
     if not sid:
         return {"ok": False, "error": "缺 sid"}
     return cancel_now(sid)
+
+
+def api_dismiss(pdir, b):
+    """清掉已收尾（done/error）但没看过的任务残留——恢复弹窗给用户看完后调，下次点
+    「生成视频」不再弹旧结果。2026-10-10（m11686 2.3①）。"""
+    with _LOCK:
+        if _STATE.get("running"):
+            return {"ok": False, "error": "任务还在跑，不能清"}
+        _STATE.update({"stage": "", "sid": "", "confirmText": "", "video": "",
+                       "error": "", "result": None, "params": {}, "events": []})
+    return {"ok": True}

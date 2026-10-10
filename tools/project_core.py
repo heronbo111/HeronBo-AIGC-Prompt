@@ -449,6 +449,19 @@ def upload_dir(pdir, create=False):
     if create:
         os.makedirs(new, exist_ok=True)
     return new
+
+
+def upload_src_dir(pdir):
+    """素材里的"原始上传素材"夹：`素材/平台上传/`（agent 把要上传的原件收进来）。
+
+    2026-10-10 用户裁定（m11803）：**素材/平台上传/（加工前的原始上传素材）与
+    顶层 平台上传/（加工后的副本）是两级有意布局**。本函数只读取、不创建——
+    没有就不存在，消费端逐个兜底。
+    """
+    d = os.path.join(pdir, "素材", "平台上传")
+    return d if os.path.isdir(d) else None
+
+
 STATE_JSON = "状态.json"
 TODO_JSONL = "待办.jsonl"
 RECEIPT_JSONL = "回执.jsonl"
@@ -581,21 +594,24 @@ def assemble_prompt(project_dir, form="", model="", duration="", ratio="", lines
     import glob as _glob
     vdirs = []
     for vk in ("平台上传", "即梦上传"):
-        vp = os.path.join(pdir, vk)
-        if os.path.isdir(vp):
-            vdirs += [d for d in sorted(os.listdir(vp)) if os.path.isdir(os.path.join(vp, d))]
+        for base in (pdir, os.path.join(pdir, "素材")):   # 2026-10-10：素材/平台上传/ 也算（两级布局，m11803）
+            vp = os.path.join(base, vk)
+            if os.path.isdir(vp):
+                vdirs += [d for d in sorted(os.listdir(vp)) if os.path.isdir(os.path.join(vp, d))]
     if len(vdirs) >= 2 and not version:
         return {"ok": False, "error": "平台上传 下有 %d 个版本子目录（%s）——多版本请自己写 提示词.txt，"
                 "或用 --version 加子目录名指定一版；本次没有改动任何文件"
                 % (len(vdirs), "、".join(vdirs[:4]))}
-    if version and not os.path.isdir(os.path.join(pdir, "平台上传", version)):
+    if version and not any(os.path.isdir(os.path.join(b, "平台上传", version))
+                           for b in (pdir, os.path.join(pdir, "素材"))):
         return {"ok": False, "error": "没有这个版本子目录：%s" % version}
 
     ups = []
     for pat in ("平台上传/**/*", "即梦上传/**/*"):
-        for f in sorted(_glob.glob(os.path.join(pdir, pat), recursive=True)):
-            if os.path.isfile(f):
-                ups.append(os.path.basename(f))
+        for base in (pdir, os.path.join(pdir, "素材")):   # 同上：两级都收
+            for f in sorted(_glob.glob(os.path.join(base, pat), recursive=True)):
+                if os.path.isfile(f):
+                    ups.append(os.path.basename(f))
     ups = [n for n in ups if re.match(r"^(图片|视频|音频)\d+[_-]", n)]
     seen, upnames = set(), []
     for n in ups:
