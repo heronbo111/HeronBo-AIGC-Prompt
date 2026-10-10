@@ -734,11 +734,16 @@ function pronFor(prompt) {
   return hits.join('；');
 }
 
-// 构造视频请求（路径2：图生接口无音频位 → 给本地路径，画面/配音分头生成再对齐合成；prepare 只回计划、不生成）
+// 构造视频请求（路径2：图生接口无音频位 → 给本地路径；时长在模型单次上限内就走单段，超上限才分段；prepare 只回计划、不生成）
 function buildVideoRequest(o) {
   const L = [];
-  // 短片（≤6s）不分段：2026-09-30 实测 4s 的活也被切成两段+锚点衔接，纯浪费还引入拼接风险
-  const shortJob = Number(o.duration) <= 6;
+  // 单段阈值 = 模型单次上限（2026-10-10 用户裁定：8s 的活被强切 3 段是错的——上限内一律
+  // 单段一次生成（音频驱动，口型天然同步）；分段只留给超上限的，例如 25s 用 2.0 Fast 上限 15s
+  // → 分段，25s 用 2.5 上限 30s → 单段，35s 超所有上限 → 分段）。
+  // 与 wb_video.py 的 MODEL_LIMIT 表（"Seedance 2.5":(5,30) / "2.0":(4,15)）保持同口径。
+  const m = String(o.model || '');
+  const capSec = /2\.5/.test(m) ? 30 : 15;      // seedance 2.5 = 30s，其它（2.0 fast 等）按 15s
+  const shortJob = Number(o.duration) <= capSec;
   const imgs = (o.images && o.images.length ? o.images : (o.image ? [o.image] : []));
   const formName = o.video ? '视频参考' : (imgs.length ? '图生' : '文生');
   const lockSrc = o.video
@@ -746,7 +751,10 @@ function buildVideoRequest(o) {
     : (imgs.length ? '先读取首帧图锁定人物外观' : '');
   const segStart = o.video ? '参考视频对应片段（抽其首帧并参考运动/口型）'
     : (imgs.length ? '首帧图' : '提示词');
-  L.push('我要做一条【' + formName + '·口播带货】视频。关键约束：视频生成接口没有“参考视频+音色”一次出整条口播的输入位，所以请按“画面与配音分头生成、再逐段对齐、合成一条成片”的流水线执行。素材你直接读本地文件即可，我不需要在对话里上传附件。');
+  L.push('我要做一条【' + formName + '·口播带货】视频。素材你直接读本地文件即可，我不需要在对话里上传附件。'
+    + (shortJob
+      ? '总时长 ' + o.duration + ' 秒，在 ' + o.model + ' 单次生成上限内——**整条一次生成**（画面、口播、口型同步一条出，不要拆成画面/配音两步，更不要分段）。'
+      : '总时长 ' + o.duration + ' 秒，超出 ' + o.model + ' 单次生成上限——请按“分段生成、最后合成一条成片”的流水线执行。'));
   L.push('');
   L.push('【本地素材（请直接用绝对路径读取）】');
   if (o.video) L.push('- 参考视频（人物形象/动作/口型节奏/场景的示范，静音；务必识别为“视频参考”，不要当成文生）：' + o.video);
@@ -761,37 +769,42 @@ function buildVideoRequest(o) {
   if (o.audio) L.push('- 音色参考（只克隆声线与说话状态，不要念它原本内容）：' + o.audio);
   L.push('');
   L.push('【独立执行参数（以此为准）】');
-  L.push('- 画面模型：' + o.model);
+  L.push('- 生成模型：' + o.model);
   L.push('- 画面比例：' + o.ratio);
   L.push('- 成片总时长：约 ' + o.duration + ' 秒（带货快口播；'
     + (shortJob ? '一次性生成，不切分' : '分段画面与配音都对齐到该总时长') + '）');
   L.push('- 形式：' + (o.video
       ? '视频参考：以参考视频锁定人物外观与口型/动作节奏，按新台词生成画面（不是文生）'
-      : (imgs.length ? '图生，分段生成画面' : '文生，分段生成画面')));
+      : (imgs.length ? '图生，一次生成整条画面' : '文生，一次生成整条画面')));
   L.push('');
-  L.push('【确认后请按此流水线执行】');
+  L.push('【确认后请按此执行】');
   if (shortJob) {
-    L.push('1. ' + lockSrc + '；总时长只有 ' + o.duration + ' 秒——**不要分段**，一次性生成整条画面：以'
-      + segStart + '为起点（接口若支持首尾帧，把参考视频对应片段的末帧一并作为锚点），保证人物、服装、场景、光线一致，并满足提示词中的动作、眼神与口型要求。');
+    L.push('1. ' + lockSrc + '；**整条一次性生成**（' + o.duration + ' 秒在单次上限内，不要分段、不要把画面与配音拆成两步）：以'
+      + segStart + '为起点，画面、口播、口型同步一条出；保证人物、服装、场景、光线一致，并满足提示词中的动作、眼神与口型要求。');
+    L.push('2. 生成完直接交付那条成片。');
   } else {
     L.push('1. ' + lockSrc + '；按台词语气拐点把画面分成 2-3 段（每段 4-8 秒、贴合口播、含余量且合计不超过总时长；具体切点、每段秒数与对应台词分句请在确认清单里给出时间轴）。逐段生成画面：第1段以' + segStart + '为起点，后续每段以上一段末尾姿态/画面衔接，保证人物、服装、场景、光线一致，并满足提示词中该段对应的动作、眼神与口型要求。');
+    L.push('2. 用音色参考 + 台词全文生成与画面等长的配音（可按同一切点分段生成再拼接），带货快口播语速，读音准确'
+      + (o.pron ? ('（本条台词的读音要求：' + o.pron + '）') : '') + '。');
+    L.push('3. 把配音与画面逐段对齐口型和节奏，合成【一条】' + o.ratio + '、约 ' + o.duration + ' 秒的成片'
+      + '：段间承接自然、无跳切/黑帧，响度统一；无字幕、水印、Logo，无 BGM。');
+    L.push('4. 交付口径：**不要输出自检/质检报告**（分辨率、帧率、LUFS 响度、口型逐项核对那类都省掉），'
+      + '也不要把中间分段画面单独发我；全部合成完只发最终成片'
+      + '。上传/转码等服务偶发异常自己重试一次即可，不要停下来写解释。');
   }
-  L.push('2. 用音色参考 + 台词全文生成与画面等长的配音（可按同一切点分段生成再拼接），带货快口播语速，读音准确'
-    + (o.pron ? ('（本条台词的读音要求：' + o.pron + '）') : '') + '。');
-  L.push('3. 把配音与画面' + (shortJob ? '' : '逐段') + '对齐口型和节奏，合成【一条】' + o.ratio + '、约 ' + o.duration + ' 秒的成片'
-    + (shortJob ? '' : '：段间承接自然、无跳切/黑帧，响度统一') + '；无字幕、水印、Logo，无 BGM。');
-  L.push('4. 交付口径：**不要输出自检/质检报告**（分辨率、帧率、LUFS 响度、口型逐项核对那类都省掉），'
-    + '也不要把中间分段画面单独发我；' + (shortJob ? '生成完直接把成片发我' : '全部合成完只发最终成片')
-    + '。上传/转码等服务偶发异常自己重试一次即可，不要停下来写解释。');
   L.push('');
-  L.push('【现在停在计划阶段，不要生成、不消耗额度】请只回一份“执行计划确认清单”：');
-  L.push('- 分段时间轴：每段起止秒、对应台词分句、画面动作要点；');
-  L.push('- 每段输入（参考视频/首帧/上一帧）与配音方式；合成方式与最终规格（模型/比例/总时长）；');
-  L.push('- 预计消耗（点数/积分）：分列画面、配音与合计，并给出重试余量建议。');
+  L.push('【现在停在计划阶段，不要生成、不消耗额度】请只回一份“执行计划确认清单”：'
+    + (shortJob ? '单段任务，清单写一行即可（输入、规格、预计消耗）。' : ''));
+  if (!shortJob) {
+    L.push('- 分段时间轴：每段起止秒、对应台词分句、画面动作要点；');
+    L.push('- 每段输入（参考视频/首帧/上一帧）与配音方式；合成方式与最终规格（模型/比例/总时长）；');
+  }
+  L.push('- 预计消耗（按企业套餐点数口径估算，不用“积分”）：合计多少点、重试余量建议。');
   L.push('等我明确回复“确认”后再开始执行。');
   L.push('');
   L.push('【回话纪律（重要，直接影响成片质量）】');
-  L.push('- 清单里**只写这份任务真正要执行的内容**：时间轴、分段输入、配音方式、合成方式、最终规格、预计消耗。');
+  L.push('- 清单里**只写这份任务真正要执行的内容**：'
+    + (shortJob ? '输入、规格、预计消耗。' : '时间轴、分段输入、配音方式、合成方式、最终规格、预计消耗。'));
   L.push('- **不要复述本指令里的约束与说明文字**（例如“不要分段”“一次性生成”“无字幕水印”“以你给的…为准”、'
     + '“本次台词里某组读音不在本条中”这类）——它们是执行要求，不是要交付的内容，写进清单只是噪音。'
     + '本次台词用不到的要求，直接不提。');
@@ -929,8 +942,14 @@ async function createBackgroundTab(b, url) {
 // 按 sid **重开**一段历史对话——固定会话的关键拼图（2026-10-02 实测）：
 // App 重启 / 会话窗口被关后，target 必然失效；doubaowork:// 协议支持带 /chat/<sid> 直接定位，
 // Target.createTarget(background 标签) 就能把**同一段对话**原样拉回来，不再新建、侧栏不再堆积。
+// ⚠️ 2026-10-10 真机实证：deep link 标签关不掉（Target.closeTarget / Page.close / window.close()
+// 三种关法全部无效、豆包 Electron 层防关闭）——所以**绝不能无脑重开**：先查已有同 sid 标签，
+// 活着直接 attach，一扇都没有才 createBackgroundTab。否则每次 restart 都会堆一个关不掉的重复标签。
 async function openSessionBySid(sid) {
   if (!sid) return null;
+  // 已有同 sid 标签在 → 直接复用（不重开、不堆积）
+  const alive = await attachSessionBySid(sid, 1500, { silent: true }).catch(() => null);
+  if (alive) return alive;
   const ver = await getJson('/json/version');
   if (!ver || !ver.webSocketDebuggerUrl) return null;
   const b = new Cdp(ver.webSocketDebuggerUrl);
@@ -948,6 +967,36 @@ async function openSessionBySid(sid) {
   return null;
 }
 
+// 同 sid 标签去重（2026-10-10 用户裁定做）：历史重开/会话回收各留一份标签，豆包左侧
+// 列表里同一对话堆好几个。真机实证 doubaowork:// deep link 标签**关不掉**（Target.closeTarget /
+// Page.close / window.close() 三种关法全部无效），所以这里只对**非 deep link** 的重复标签
+// （普通 http(s) 或无 sid 深链的 chat 页）尝试关闭；关不掉的随缘，堆积的根治在
+// openSessionBySid 先查已有再重开（从源头不产生重复）。
+async function dedupeSidTabs(c, sid) {
+  if (!c || !/^\d+$/.test(String(sid || ''))) return;
+  try {
+    const list = await getJson('/json/list');
+    const twins = (list || []).filter((t) => t.type === 'page' && t.webSocketDebuggerUrl
+      && String(t.targetId || t.id) !== String(c.targetId)
+      && new RegExp('/chat/' + sid + '($|\\?)').test(t.url || ''));
+    if (!twins.length) return;
+    const ver = await getJson('/json/version');
+    let closed = 0;
+    for (const t of twins) {
+      // 只尝试关「非 doubaowork://」的重复页——deep link 页原生层持有，关不掉，跳过免得刷日志
+      if (/^doubaowork:\/\//i.test(t.url || '')) continue;
+      try {
+        const b = new Cdp(t.webSocketDebuggerUrl);
+        await b.connect();
+        await b.send('Page.close').catch(() => {});
+        try { b.close(); } catch {}
+        closed++;
+      } catch {}
+    }
+    if (closed) step('同一会话的重复标签页已清理（' + closed + ' 个）');
+  } catch { /* 去重失败不影响主流程 */ }
+}
+
 /* 统一获取固定会话（kind: 'ask' 出提示词 / 'video' 视频）。
    五级回退，目标都是**回到同一段对话**而不是开新的：
    ① state 里锁定的 target 还活着 → 直接用（最快）
@@ -961,15 +1010,15 @@ async function acquireSession(kind, opts = {}) {
   const st0 = stateRead();
   if (st0[keyT]) {
     const c = await attachSessionByTarget(st0[keyT]).catch(() => null);
-    if (c) return c;
+    if (c) { dedupeSidTabs(c, st0[keyS]); return c; }
   }
   if (st0[keyS]) {
     const c = await attachSessionBySid(st0[keyS], 4000, { silent: true }).catch(() => null);
-    if (c) { stateWrite(Object.assign(stateRead(), { [keyT]: c.targetId })); return c; }
+    if (c) { stateWrite(Object.assign(stateRead(), { [keyT]: c.targetId })); dedupeSidTabs(c, st0[keyS]); return c; }
   }
   if (st0[keyS]) {
     const c = await openSessionBySid(st0[keyS]).catch(() => null);
-    if (c) { stateWrite(Object.assign(stateRead(), { [keyT]: c.targetId })); return c; }
+    if (c) { stateWrite(Object.assign(stateRead(), { [keyT]: c.targetId })); dedupeSidTabs(c, st0[keyS]); return c; }
   }
   const list = await getJson('/json/list');
   const RE_KW = kind === 'video'
@@ -1562,19 +1611,22 @@ async function actVideo() {
     }
     if (!c) { log('✗ 找不到会话 ' + VSID + '（重开也没成）——豆包工作里手动打开那段对话后再点一次确认'); return 4; }
     try {
-      const shortJob = Number(VDURATION) <= 6;   // 与 buildVideoRequest 的分段口径一致
+      const capSec2 = /2\.5/.test(String(VMODEL)) ? 30 : 15;   // 与 buildVideoRequest 的分段口径一致（=wb_video.MODEL_LIMIT）
+      const shortJob = Number(VDURATION) <= capSec2;
       const confirmMsg = shortJob
-        ? '确认，开始执行：一次性生成整条画面 → 用音色生成配音 → 对齐合成【一条】' + VRATIO + '、约' + VDURATION + '秒的成片。完成后直接把最终成片发给我（不要自检/质检报告，不用交付中间分段）。'
+        ? '确认，开始执行：整条一次性生成（不要分段、不要拆画面/配音两步），出【一条】' + VRATIO + '、约' + VDURATION + '秒的成片。完成后直接把最终成片发给我（不要自检/质检报告）。'
         : '确认，按你的执行计划开始执行：分段生成画面 → 用音色生成配音 → 逐段对齐口型、合成【一条】' + VRATIO + '、约' + VDURATION + '秒的成片。全部完成后，只把最终合成的那条成片发给我（中间的分段画面不用单独交付，也不要自检/质检报告）。';
       const f = await c.evalJs(FILL_VIA_EDITOR + '(' + JSON.stringify(confirmMsg) + ')');
       if (!f || !f.ok) await c.send('Input.insertText', { text: confirmMsg });
       const sr = await c.evalJs(CLICK_SEND_WAIT, 20000);
       step('已回确认，等待流水线执行（' + (sr && sr.ok ? '已提交' : '提交异常') + '）…');
       let src = '', candSrc = '', stable = 0, lastBeat = 0, prevTxt = '', srcIsLocalFile = false;
-      // 成片时长门槛：VDURATION<=6 时 minDur 会被抬到 8s，而成片本身就 5–7s → 永不命中、
-      // 弹窗干等到超时（m11686 2.3② 实测）。改为「请求时长的 6 成」且至少 4s——足以过滤
-      // 1–3s 的中间分段，又不会把正经短片判成没生成完。
+      // 成片时长门槛：改为「请求时长的 6 成」且至少 4s——足以过滤 1–3s 的中间分段，
+      // 又不会把正经短片判成没生成完。
       const minDur = Math.max(4, Math.round(Number(VDURATION) * 0.6));
+      // 豆包工作区 chats 根（成片常以"本地文件卡片"交付在这里，页面内没有内嵌 <video>）
+      const chatsRoot = path.join(os.homedir(), 'DoubaoWork', 'chats');
+      const t0Confirm = Date.now();
       const deadline = Date.now() + Math.min(TIMEOUT, 1500) * 1000;
       while (Date.now() < deadline) {
         await sleep(4000);
@@ -1597,12 +1649,37 @@ async function actVideo() {
           if (Date.now() - lastBeat > 15000) { lastBeat = Date.now();
             step('流水线执行中…' + ((vt && vt.slice(-40)) || (vs.running ? '生成中' : ''))); }
         }
+        if (!src && !vs?.running) {
+          // 并行兜底：豆包把成片作为工作区文件交付（本地文件卡片，无内嵌 video）
+          //（2026-10-10 实测：图生 8s 单段"成片已生成"，页面无 video 元素，文件落在
+          //  C:\Users\<u>\DoubaoWork\chats\<日期>\<会话>\*.mp4）。直接扫盘回收，不用再走交接。
+          try {
+            const dayDirs = fs.readdirSync(chatsRoot).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
+            for (const day of dayDirs.reverse().slice(0, 2)) {           // 只看今天/昨天
+              const dayDir = path.join(chatsRoot, day);
+              for (const chat of fs.readdirSync(dayDir)) {
+                const chatDir = path.join(dayDir, chat);
+                let st = null; try { st = fs.statSync(chatDir); } catch { continue; }
+                if (!st.isDirectory() || st.mtimeMs < t0Confirm - 60000) continue;   // 确认前就存在的目录跳过
+                for (const f of fs.readdirSync(chatDir)) {
+                  if (!/\.mp4$/i.test(f)) continue;
+                  const p = path.join(chatDir, f);
+                  let fst = null; try { fst = fs.statSync(p); } catch { continue; }
+                  if (fst.mtimeMs >= t0Confirm && fst.size > 200000) {   // 本轮新出现且不是几 KB 的占位
+                    src = p; srcIsLocalFile = true; break;
+                  }
+                }
+                if (src) break;
+              }
+              if (src) break;
+            }
+            if (src) { step('成片已出现在豆包工作区，直接取回'); break; }
+          } catch {}
+        }
       }
       if (!src) {
-        // 文生/文件型交付：豆包可能把成片写成**会话工作区文件**而不内嵌 <video>
-        //（2026-10-02 实测：文生 4s 片"成片已生成交付"但全文档扫不到 video/mp4 链接；
-        //  图生+配音流程才是内嵌 video）。让它把文件复制到约定目录，从盘上取。
-        step('界面里没有内嵌视频，改走文件交接…');
+        // 都没拿到：让它把文件复制到约定目录，从盘上取（最后兜底）
+        step('界面和豆包工作区都没拿到成片，改走文件交接…');
         const hdir = path.join(os.tmpdir(), 'heronbo_out', String(VSID));
         const startedAt = Date.now() - TIMEOUT * 1000;
         try { fs.mkdirSync(hdir, { recursive: true }); } catch {}
@@ -1622,6 +1699,27 @@ async function actVideo() {
               if (fs.statSync(p).mtimeMs >= startedAt) { src = p; break; }   // 只要这一轮新出现的
             }
           } catch {}
+          if (!src) {
+            // 交接等待期也顺手扫工作区（豆包可能自己把片子放到 chats 而不执行复制）
+            try {
+              for (const day of fs.readdirSync(chatsRoot).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort().reverse().slice(0, 2)) {
+                const dayDir = path.join(chatsRoot, day);
+                for (const chat of fs.readdirSync(dayDir)) {
+                  const chatDir = path.join(dayDir, chat);
+                  let st = null; try { st = fs.statSync(chatDir); } catch { continue; }
+                  if (!st.isDirectory() || st.mtimeMs < t0Confirm - 60000) continue;
+                  for (const f of fs.readdirSync(chatDir)) {
+                    if (!/\.mp4$/i.test(f)) continue;
+                    const p = path.join(chatDir, f);
+                    let fst = null; try { fst = fs.statSync(p); } catch { continue; }
+                    if (fst.mtimeMs >= t0Confirm && fst.size > 200000) { src = p; break; }
+                  }
+                  if (src) break;
+                }
+                if (src) break;
+              }
+            } catch {}
+          }
         }
         if (src) srcIsLocalFile = true;
       }

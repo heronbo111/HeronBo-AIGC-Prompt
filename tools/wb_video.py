@@ -2,8 +2,9 @@
 """
 wb_video.py —— 工作台「让豆包生成视频」后端（2026-09-29）。
 
-全程在豆包工作里展开：经 CDP 跑 doubao_cdp.mjs video，画面用豆包内置 Seedance、
-配音用豆包内置声音工具，扣的是豆包账号（企业套餐）点数；本地 ffmpeg 合成不耗额度。
+全程在豆包工作里展开：经 CDP 跑 doubao_cdp.mjs video，生成用豆包内置 Seedance，
+时长在模型单次上限内整条一次生成（口型天然同步）、超上限才分段，扣的是豆包账号
+（企业套餐）点数。
 
 对外（server 薄路由调用）：
   resolve_inputs(pdir)                 解析「平台上传」夹首帧/音色/提示词正文
@@ -448,7 +449,7 @@ def start_confirm(p):
         return {"ok": False, "error": "confirm 缺 sid"}
     _reset("confirm", p)
     _set(sid=p["sid"])
-    _flow("已确认，开始生成成片（画面+配音+合成）", "tool")
+    _flow("已确认，开始生成成片", "tool")
 
     def _job():
         try:
