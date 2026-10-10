@@ -68,6 +68,17 @@ def ask_yesno(title, default_yes=False):
     return v in ("y", "yes", "1", "是")
 
 
+def auto_target():
+    """--auto 的落点：第一个本机装了的 harness 技能目录；一个都没有 → ZCode 的。"""
+    for label, d in HARNESS_DIRS:
+        if d and os.path.isdir(d):
+            log("  [auto] 探测到 %s → 装到 %s" % (label, d))
+            return os.path.join(d, NAME)
+    d = HARNESS_DIRS[0][1]
+    log("  [auto] 没探测到任何 agent harness 的技能目录 → 默认装到 %s" % d)
+    return os.path.join(d, NAME)
+
+
 def pick_target():
     """让用户选 skill 装哪：列出各 harness 默认目录 + 自定义。"""
     log("== 第 1 问：skill 装到哪？==")
@@ -148,34 +159,39 @@ def move_here2(src, dst):
     return dst
 
 
-def link_to_others(installed):
-    """装到一个 harness 目录后，问要不要给其它 harness 也链一份（junction，不占空间）。"""
+def link_to_others(installed, auto=False):
+    """装到一个 harness 目录后，给其它 harness 也链一份（junction，不占空间）。
+
+    交互模式问一句；--auto 模式不问，直接给所有已存在的其它 harness 目录都建联接
+    （agent 无人值守跑，没人回答 input()）。"""
     real = os.path.realpath(installed).lower()
     others = []
     for label, d in HARNESS_DIRS:
         cand = os.path.join(d, NAME)
-        if os.path.isdir(d) and os.path.realpath(cand).lower() != real:
+        if d and os.path.isdir(d) and os.path.realpath(cand).lower() != real:
             others.append((label, cand))
     if not others:
         return
-    log("")
-    log("== 要不要给其它 agent 也链一份？（Windows 目录联接，不占第二份空间，改一处全同步）==")
-    for k, (label, d) in enumerate(others, 1):
-        log("  %d. %s → %s" % (k, label, d))
-    v = input("  选几号（可只填一个；回车 = 跳过）> ").strip()
-    if not v.isdigit() or not (1 <= int(v) <= len(others)):
-        return
-    dst = others[int(v) - 1][1]
-    if os.path.exists(dst):
-        log("  [跳过] %s 已存在" % dst)
-        return
-    try:
-        import _winapi
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        _winapi.CreateJunction(installed, dst)
-        log("  [OK] 已链接 %s → %s" % (dst, installed))
-    except Exception as e:                                   # noqa: BLE001
-        log("  [没成] %s（%s）；手动：cmd 里 mklink /J \"%s\" \"%s\"" % (dst, e, dst, installed))
+    if not auto:
+        log("")
+        log("== 要不要给其它 agent 也链一份？（Windows 目录联接，不占第二份空间，改一处全同步）==")
+        for k, (label, d) in enumerate(others, 1):
+            log("  %d. %s → %s" % (k, label, d))
+        v = input("  选几号（可只填一个；回车 = 跳过）> ").strip()
+        if not v.isdigit() or not (1 <= int(v) <= len(others)):
+            return
+        others = [others[int(v) - 1]]
+    for label, dst in others:
+        if os.path.exists(dst):
+            log("  [跳过] %s 已存在" % dst)
+            continue
+        try:
+            import _winapi
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            _winapi.CreateJunction(installed, dst)
+            log("  [OK] 已链接 %s → %s" % (dst, installed))
+        except Exception as e:                               # noqa: BLE001
+            log("  [没成] %s（%s）；手动：cmd 里 mklink /J \"%s\" \"%s\"" % (dst, e, dst, installed))
 
 
 def main():
@@ -184,30 +200,51 @@ def main():
     ap.add_argument("--root", help="直接指定项目（样本库）根目录（跳过第 2 问）")
     ap.add_argument("--yes", action="store_true", help="真动手（不加只打印计划）")
     ap.add_argument("--list", action="store_true", help="只列出各 harness 默认目录")
+    ap.add_argument("--auto", action="store_true",
+                    help="无人值守（agent 用）：不问任何 input()——落点自动探测本机 harness；"
+                         "样本库根不落死值（skill 首用流程按 paths.md 问用户）；"
+                         "联接自动建全；不接续部署（那是工作台的安装器的事）")
     a = ap.parse_args()
     if a.list:
         for label, d in HARNESS_DIRS:
             log("%-24s %s" % (label, os.path.join(d, NAME)))
         return 0
     log("HeronBo-AIGC-Prompt · 安装向导")
-    log("（装任何东西前先问你；不加 --yes 只打印计划不动手）")
+    if a.auto:
+        log("（--auto 无人值守：= --yes，直接动手；不做任何 input()）")
+    else:
+        log("（装任何东西前先问你；不加 --yes 只打印计划不动手）")
     mode = install_mode()
-    target = a.dir and os.path.abspath(os.path.expanduser(a.dir)) or pick_target()
-    log("")
-    log("== 第 2 问：项目（样本库）放哪？==")
-    log("  这是你以后放各视频项目素材与产出的工作根目录（不是 skill 本体）。")
-    default_root = os.path.join(os.path.splitdrive(target)[0] + os.sep, "AI创作", "视频项目")
-    root = (a.root and os.path.abspath(os.path.expanduser(a.root))) or \
-        ask_dir("  样本库根目录：", default_root)
+    if a.dir:
+        target = os.path.abspath(os.path.expanduser(a.dir))
+    elif a.auto:
+        target = auto_target()
+    else:
+        target = pick_target()
+    if a.auto:
+        root = None
+    else:
+        log("")
+        log("== 第 2 问：项目（样本库）放哪？==")
+        log("  这是你以后放各视频项目素材与产出的工作根目录（不是 skill 本体）。")
+        default_root = os.path.join(os.path.splitdrive(target)[0] + os.sep, "AI创作", "视频项目")
+        root = (a.root and os.path.abspath(os.path.expanduser(a.root))) or \
+            ask_dir("  样本库根目录：", default_root)
     log("")
     log("== 计划 ==")
     if mode == "download":
         log("  1. 下载 skill（浅克隆优先，没 git 走 gitee zip 直包）→ %s" % target)
     elif mode.startswith("here"):
         log("  1. 当前这份仓库就位（挪/留在）→ %s" % target)
-    log("  2. 样本库根设为 %s" % root)
+    if root:
+        log("  2. 样本库根设为 %s" % root)
+    else:
+        log("  2. 样本库根不落死值——首次使用时由 skill 工作流问用户（paths.md）")
     log("  3. （可选）链接给本机其它 agent harness")
-    log("  4. （可选）接着跑 python tools\\部署.py all --yes（装依赖/接通道/快捷方式/弹工作台）")
+    if not a.auto:
+        log("  4. （可选）接着跑 python tools\\部署.py all --yes（装依赖/接通道/快捷方式/弹工作台）")
+    if a.auto:
+        a.yes = True   # 无人值守就是"确认过计划"：计划照打印，但不再停下来等 --yes
     if not a.yes:
         log("")
         log("只是计划（没动手）。确认无误就加 --yes 再跑一次。")
@@ -220,33 +257,45 @@ def main():
         if os.path.abspath(src) == os.path.abspath(target):
             installed = src
             log("  1. 已在目标位置，不用挪：%s" % src)
+        elif a.auto and a.dir is None:
+            # --auto 且没显式指定 --dir：绝不挪动/复制"当前这份仓库"——它可能是别人的
+            # 开发工作树（本机 900MB+）。安装包场景应该用安装包里的 install_skill.py。
+            installed = src
+            log("  1. [auto] 不挪动当前目录（可能是开发工作树）；要指定落位请用 --dir。"
+                "\n     就地可用：%s" % src)
         else:
             installed = move_here2(src, target)
     else:
         installed = target
     # 样本库根：写进 skill 的 paths.local（不进 git 的机器级配置）
-    try:
-        p = os.path.join(installed, "references", "paths.local.md")
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-        line = "SAMPLES_ROOT: %s\n" % root
-        old = ""
-        if os.path.isfile(p):
-            with open(p, encoding="utf-8") as f:
-                old = f.read()
-        if "SAMPLES_ROOT" in old:
-            import re
-            old = re.sub(r"SAMPLES_ROOT:.*", line.strip(), old)
-            with open(p, "w", encoding="utf-8", newline="\n") as f:
-                f.write(old)
-        else:
-            with open(p, "a", encoding="utf-8", newline="\n") as f:
-                f.write(line)
-        log("  2. [OK] 样本库根已写入 %s" % p)
-    except OSError as e:
-        log("  2. [没成] 样本库根没写上（%s）；装完自己改 references/paths.local.md" % e)
-    link_to_others(installed)
+    if root is None:
+        log("  2. [跳过] 样本库根未指定——按 references/paths.md，首次使用时由 agent 问用户再写")
+    else:
+        try:
+            p = os.path.join(installed, "references", "paths.local.md")
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            line = "SAMPLES_ROOT: %s\n" % root
+            old = ""
+            if os.path.isfile(p):
+                with open(p, encoding="utf-8") as f:
+                    old = f.read()
+            if "SAMPLES_ROOT" in old:
+                import re
+                old = re.sub(r"SAMPLES_ROOT:.*", line.strip(), old)
+                with open(p, "w", encoding="utf-8", newline="\n") as f:
+                    f.write(old)
+            else:
+                with open(p, "a", encoding="utf-8", newline="\n") as f:
+                    f.write(line)
+            log("  2. [OK] 样本库根已写入 %s" % p)
+        except OSError as e:
+            log("  2. [没成] 样本库根没写上（%s）；装完自己改 references/paths.local.md" % e)
+    link_to_others(installed, auto=a.auto)
     dep = os.path.join(installed, "tools", "部署.py")
-    if os.path.isfile(dep):
+    if a.auto:
+        log("  [auto] 不接续部署——图形工作台请走 Release 的完整安装包；"
+            "以后可手动跑：python \"%s\" all --yes" % dep)
+    elif os.path.isfile(dep):
         log("")
         if ask_yesno("== 现在就接着跑部署（装依赖/接 agent 通道/快捷方式/弹工作台）？"):
             subprocess.run([sys.executable, dep, "all", "--yes", "--root", root])
