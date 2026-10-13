@@ -24,10 +24,13 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
+import zipfile
 
 LOG_NAME = "score-tool.update.log"
 KEEP_DEFAULT = 2
+INTERNAL = "_internal"          # onedir 的依赖目录（2026-10-13）
 
 
 def log(d, msg):
@@ -38,6 +41,64 @@ def log(d, msg):
             f.write("[%s] %s\n" % (time.strftime("%Y%m%d-%H%M%S"), msg))
     except OSError:
         pass
+
+
+def tidy_old(d, keep=KEEP_DEFAULT):
+    """只留最近 N 份旧备份。两种形态都清：老的单文件 exe、新的 _old\\<时间戳>\\ 目录。"""
+    try:
+        fs = []
+        for pat in ("score-tool_旧_*.exe", "score-tool_old_*.exe"):
+            fs += glob.glob(os.path.join(d, pat))
+        fs = sorted(set(fs), key=lambda p: os.path.getmtime(p))
+        for old in (fs[:-keep] if len(fs) > keep else []):
+            try:
+                os.remove(old)
+            except OSError:
+                pass
+    except OSError:
+        pass
+    try:
+        root = os.path.join(d, "_old")
+        subs = sorted(x for x in os.listdir(root) if os.path.isdir(os.path.join(root, x)))
+        for x in (subs[:-keep] if len(subs) > keep else []):
+            shutil.rmtree(os.path.join(root, x), ignore_errors=True)
+    except OSError:
+        pass
+
+
+def apply_pkg(d, src_dir, keep=KEEP_DEFAULT, ts=None, move_src=True):
+    """onedir 换位：把 src_dir 里的 score-tool.exe 与 _internal\\ 摊到 d，旧的挪进 d\\_old\\<ts>\\。
+
+    move_src=True 用于「装新版」（src 是解压出来的临时目录，摊完即弃）；
+    move_src=False 用于「回滚」（src 是 _old\\<ts>\\ 里的备份，要原地留着）。
+    """
+    exe_new = os.path.join(src_dir, "score-tool.exe")
+    if not os.path.isfile(exe_new):
+        return False, "新包里没有 score-tool.exe（%s）" % src_dir
+    ts = ts or time.strftime("%Y%m%d-%H%M%S")
+    bak = os.path.join(d, "_old", ts)
+    cur_exe = os.path.join(d, "score-tool.exe")
+    cur_int = os.path.join(d, INTERNAL)
+    take = shutil.move if move_src else shutil.copy2
+    try:
+        if os.path.isfile(cur_exe) or os.path.isdir(cur_int):
+            os.makedirs(bak, exist_ok=True)
+            if os.path.isfile(cur_exe):
+                shutil.move(cur_exe, os.path.join(bak, "score-tool.exe"))
+            if os.path.isdir(cur_int):
+                shutil.move(cur_int, os.path.join(bak, INTERNAL))
+        take(exe_new, cur_exe)
+        new_int = os.path.join(src_dir, INTERNAL)
+        if os.path.isdir(new_int):
+            if move_src:
+                shutil.move(new_int, cur_int)
+            else:
+                shutil.copytree(new_int, cur_int)
+    except OSError as e:                                          # noqa: BLE001
+        return False, "摊入失败（%s）" % e
+    log(d, "pkg applied: src=%s backup=%s" % (os.path.basename(src_dir), os.path.basename(bak)))
+    tidy_old(d, keep)
+    return True, ""
 
 
 def wait_gone(pid, timeout=60.0, step=0.4):
@@ -203,7 +264,39 @@ def main(argv=None):
         except OSError:
             pass
         return 1
-    ok, why = swap(d, a.src, keep=a.keep)
+    # 三种 src 形态都吃（2026-10-13 onedir 化）：
+    #   · .zip  → 新版 onedir 整包：解压 → 摊入（exe + _internal）
+    #   · 目录   → 回滚（_old\<ts>\）或已解压的包：直接摊入
+    #   · 文件   → 老的单文件 exe（兼容期）
+    srcp = a.src if os.path.isabs(a.src) else os.path.join(d, a.src)
+    if os.path.isfile(srcp) and srcp.lower().endswith(".zip"):
+        tmp = tempfile.mkdtemp(prefix="heronbo_pkg_")
+        try:
+            with zipfile.ZipFile(srcp) as z:
+                for n in z.namelist():                 # 防目录穿越：只解常规相对路径
+                    if os.path.isabs(n) or ".." in n.replace("\\", "/").split("/"):
+                        return 3, "包里路径不合法：%s" % n
+                z.extractall(tmp)
+            root = tmp
+            if not os.path.isfile(os.path.join(root, "score-tool.exe")):
+                for x in os.listdir(root):             # 兼容"zip 里套了一层同名目录"
+                    if os.path.isdir(os.path.join(root, x)) \
+                            and os.path.isfile(os.path.join(root, x, "score-tool.exe")):
+                        root = os.path.join(root, x)
+                        break
+            ok, why = apply_pkg(d, root, keep=a.keep)
+        except zipfile.BadZipFile:
+            ok, why = False, "下载的更新包解不开（可能没下完）"
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        try:
+            os.remove(srcp)                            # 包已摊入，原件不留
+        except OSError:
+            pass
+    elif os.path.isdir(srcp):
+        ok, why = apply_pkg(d, srcp, keep=a.keep, move_src=(a.mode == "apply"))
+    else:
+        ok, why = swap(d, a.src, keep=a.keep)
     if not ok:
         log(d, "swap failed: %s" % why)
         return 2

@@ -65,6 +65,12 @@ tools/dist/score-tool_old_*.exe
 tools/dist/score-tool.update.log
 tools/dist/score-tool.update.cmd
 tools/dist/_wtest.tmp
+# onedir 化（2026-10-13）：dist\ 下多了 _internal\ 依赖目录与 _old\ 备份目录，
+# 两样都是产物、不进 git（整目录忽略最省事，也防以后新增产物再漏）。
+tools/dist/_internal/
+tools/dist/_old/
+# 「检查更新」的远端版本缓存（运行时产物）
+tools/dist/heronbo_version_remote.json
 # 版本身份（2026-09-22）：打包/发行时由 tools\版本.py 生成（记版本号 + exe 哈希），
 # 打包换位.py 会在打包前自动写一份 —— 是本机生成物，不进仓库
 tools/_version.json

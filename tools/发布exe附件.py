@@ -69,6 +69,13 @@ def main():
     if not os.path.isfile(up):
         print("!! 找不到 %s" % up)
         return 2
+    # 2026-10-13：dist 改成 onedir（score-tool.exe + _internal\ 目录）后，单独一个
+    # score-tool.exe 是**缺依赖的残缺件**（跑不起来）——拦住它，别把坏包传上 Release。
+    if os.path.basename(up).lower() == "score-tool.exe":
+        print("!! dist 现在是目录形态（onedir）：只传 score-tool.exe 会是缺依赖的坏包。")
+        print("   要发给别的机器：把 dist 整个目录（score-tool.exe + _internal\\）打成一个 zip 传；")
+        print("   要发版：走 tools\\发布版本.py 与完整安装包（安装包本身就是整目录，不受影响）。")
+        return 2
     local = os.path.getsize(up)
     print("要上传的 exe：%s（%.2f MB）" % (up, local / 1048576.0))
 
