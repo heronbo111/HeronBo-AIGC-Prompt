@@ -245,9 +245,12 @@ def main():
     if not os.path.isdir(d):
         raise SystemExit("没有这个目录：%s（先跑 python tools\\打包发行.py）" % d)
     files = sorted(os.path.join(d, f) for f in os.listdir(d) if not f.endswith(".parts.json"))
+    # 工作台本体（2026-10-13 起 onedir）：打包发行.py 已把它打成 score-tool-v*.zip 放进
+    # _release 目录（上面的 files 会带上），这里**不再**单传 dist\score-tool.exe——
+    # onedir 下它缺 _internal\ 跑不起来，传上去等于发坏包。
     exe = os.path.join(HERE, "dist", "score-tool.exe")
-    if os.path.isfile(exe):
-        files.append(exe)                    # 工作台也是附件，跟这套一起挂
+    if os.path.isfile(exe) and not os.path.isdir(os.path.join(HERE, "dist", "_internal")):
+        files.append(exe)                    # 老的单文件形态兜底
     if a.only:
         files = [f for f in files if a.only in os.path.basename(f)]
     total = sum(os.path.getsize(f) for f in files)

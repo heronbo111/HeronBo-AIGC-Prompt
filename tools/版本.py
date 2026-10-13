@@ -231,11 +231,12 @@ def compare(cur, rem, with_hash=True):
         return {"need": True, "why": "远端 %s（你 %s）" % (rv, cv)}
     if c < 0:
         return {"need": False, "why": "你这份比远端还新（你 %s，远端 %s）" % (cv, rv)}
-    # 版本号一样：远端可能重发过同一版（改了内容没改号）→ 比 exe 的 sha256
-    rh = ((rem.get("exe") or {}).get("sha256") or "").lower()
+    # 版本号一样：远端可能重发过同一版（改了内容没改号）→ 比包的 sha256
+    # （2026-10-13：包字段叫 pkg——onedir 的 zip；老的单文件版才有 exe，两样都认，pkg 优先）
+    rh = (((rem.get("pkg") or rem.get("exe")) or {}).get("sha256") or "").lower()
     if with_hash and rh:
         cur = current(with_hash=True)
-        lh = ((cur.get("exe") or {}).get("sha256") or "").lower()
+        lh = (((cur.get("pkg") or cur.get("exe")) or {}).get("sha256") or "").lower()
         if lh and lh != rh:
             return {"need": True, "why": "版本号没变（%s），但远端的包换过内容" % rv}
     return {"need": False, "why": "已是最新（%s）" % cv}

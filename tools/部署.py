@@ -377,12 +377,13 @@ VENDOR_MIRRORS = ["", "https://gh-proxy.com/", "https://ghproxy.net/"]
 # 机器上已有能力够的系统 ffmpeg 时只剩约 22MB）。清单的唯一真相源是 tools\能力包.py，
 # 下面这份只是**老布局的兼容兜底**（别人机器上的旧 tag 还在用这些名字）。
 VENDOR_ASSETS = [("wheels-core.zip", "wheels", 4),
-                 ("ffmpeg-win64-gpl-shared.zip", "ffmpeg", 76),
-                 ("score-tool.exe", "dist", 18)]
+                 ("ffmpeg-win64-gpl-shared.zip", "ffmpeg", 76)]
 VENDOR_ASSETS_OLD = [("wheels-heavy.zip", "wheels-heavy", 116),
                      ("ffmpeg-win64-gpl-shared.zip", "ffmpeg", 82),
-                     ("depth-model.zip", "models", 88),
-                     ("score-tool.exe", "dist", 18)]
+                     ("depth-model.zip", "models", 88)]
+# 工作台本体（2026-10-13 起是 onedir 的 score-tool-vX.Y.Z.zip）**不在这两份老清单里**：
+# 它走 能力包.urls_for 的 releases/latest 版本化通道（每次发版一个不可变 release）。
+# 原来那项 ("score-tool.exe", "dist") 已删——资产不再叫这个名字，留着只会白跑一趟。
 # 工作台 exe 是**每次改代码都会变**的那一个：别只看"在不在"（老机器上它一直在，但它是旧版）
 # → 记一份版本戳（大小+下载时间）在 exe 旁边，下次 fetch 时跟远端 HEAD 比一比，变了就换（2026-09-17）。
 EXE_DST = os.path.join(HERE, "dist", "score-tool.exe")

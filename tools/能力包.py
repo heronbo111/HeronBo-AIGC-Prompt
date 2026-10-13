@@ -115,7 +115,9 @@ def latest_release(timeout=12, force=False, log=None):
 
 def _is_product(rel):
     base = os.path.basename(str(rel))
-    return base in PRODUCT_FILES or base.endswith(".exe")
+    # 2026-10-13：工作台本体改成 onedir 的 zip（score-tool-vX.Y.Z.zip）——它也走
+    # releases/latest 那条版本化通道，别被当成能力包（否则会去固定 tag 找、永远找不到）。
+    return base in PRODUCT_FILES or base.endswith(".exe") or base.startswith("score-tool")
 
 
 def _gitee_asset(tag, rel):

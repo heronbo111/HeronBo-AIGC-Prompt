@@ -89,6 +89,31 @@ def _zip_from_dir(zpath, root, prefix="", skip=(), log=print):
     return n
 
 
+def _zip_workbench(zpath, log=print):
+    """把 dist 里的工作台本体打成 zip（2026-10-13 起是 onedir：score-tool.exe + _internal\\）。
+
+    刻意**只收这两样**：dist\\ 里的 *.local.json（本机配置与凭据）、_old\\（旧版备份）、
+    历史 score-tool_旧_*.exe 都不该混进发给用户的更新包。
+    """
+    d = os.path.join(HERE, "dist")
+    exe = os.path.join(d, "score-tool.exe")
+    if not os.path.isfile(exe):
+        raise SystemExit("dist 里没有 score-tool.exe —— 先打包换位：python tools\\打包换位.py")
+    n = 0
+    with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+        z.write(exe, "score-tool.exe")
+        n += 1
+        internal = os.path.join(d, "_internal")
+        if os.path.isdir(internal):
+            for dp, _dn, fns in os.walk(internal):
+                for fn in sorted(fns):
+                    fp = os.path.join(dp, fn)
+                    z.write(fp, os.path.relpath(fp, d).replace(os.sep, "/"))
+                    n += 1
+    log("    %-30s %6.1f MB  %d 个文件" % (os.path.basename(zpath), _mb(zpath), n))
+    return n
+
+
 def _zip_from_files(zpath, files, base, prefix="", log=print):
     n = 0
     with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
@@ -185,19 +210,30 @@ def build(tag, notes="", version="", log=print):
         _zip_from_dir(p, ffb, prefix="ffmpeg-win64-gpl-shared/bin/", skip=tuple(FFMPEG_DROP), log=log)
         assets.append(p)
 
-    # 5) SHA256SUMS.txt —— **工作台 exe 也要在里面**（2026-09-22 补）：
-    #    部署.py 判断"exe 要不要更新"就是拿这份清单比 sha256（比原来靠 GitHub 发 HEAD 比大小可靠得多，
-    #    国内那条 HEAD 常常直接超时 → 表现成"永远不更新"）。exe 由上传脚本一起传，这里只登记哈希。
+    # 5) 工作台本体（2026-10-13 起改 onedir：dist\ 打成 **zip** 一起发，不再单发一个 exe——
+    #    onedir 的 exe 缺了旁边的 _internal\ 就是跑不起来的残缺件）。
+    #    ⚠️ version.json 里**不**再把 exe 字段指向这个包：老客户端读 exe.name 会去下载 zip
+    #    当 exe 换上（坏）。让它取不到 exe 下载地址 → 报"取不到下载地址" → 用户走完整安装包（安全）。
     exe = os.path.join(HERE, "dist", "score-tool.exe")
     extra = []
+    pkg = {}
     if os.path.isfile(exe):
-        extra.append(exe)
+        if os.path.isdir(os.path.join(HERE, "dist", "_internal")):
+            zp = os.path.join(out, "score-tool-v%s.zip" % version)
+            _zip_workbench(zp, log=log)
+            extra.append(zp)
+            pkg = {"name": os.path.basename(zp), "size": os.path.getsize(zp),
+                   "sha256": sha256(zp)}
+        else:                                   # 老形态兜底（万一还没换成 onedir）
+            extra.append(exe)
+            pkg = {"name": os.path.basename(exe), "size": os.path.getsize(exe),
+                   "sha256": sha256(exe)}
     sums = os.path.join(out, "SHA256SUMS.txt")
     with open(sums, "w", encoding="utf-8", newline="\n") as f:
         for a in list(assets) + extra:
             f.write("%s  %s\n" % (sha256(a), os.path.basename(a)))
-    log("  · SHA256SUMS.txt（%d 条，含工作台 exe：%s）" % (len(assets) + len(extra), bool(extra)))
-    # 6) version.json（2026-09-22 加）：工作台「检查更新」读的就是它——**版本号 + exe 的 sha256**。
+    log("  · SHA256SUMS.txt（%d 条，含工作台包：%s）" % (len(assets) + len(extra), bool(extra)))
+    # 6) version.json（2026-09-22 加）：工作台「检查更新」读的就是它——**版本号 + 工作台包的 sha256**。
     #    同一份也写回 tools/_version.json，打包时被 spec 打进 exe → 「我这版是谁」与
     #    「远端这版是谁」是同一份结构，永远不会对不上。放在 SHA256SUMS 之后，好把清单哈希也带上。
     vp = os.path.join(out, "version.json")
@@ -211,13 +247,14 @@ def build(tag, notes="", version="", log=print):
                     sums_map[p[1].lstrip("*")] = p[0]
         local = ver.write_local(version=version, notes=notes)
         d = dict(local)
-        if os.path.isfile(exe):                     # 两份元数据相互校验用：清单里也有一份 exe 哈希
-            d["sumsExeSha256"] = sums_map.get(os.path.basename(exe), "")
+        if pkg:
+            d["pkg"] = pkg                                     # 新版客户端按它下载
+            d["sumsPkgSha256"] = sums_map.get(pkg["name"], "")
         with open(vp, "w", encoding="utf-8", newline="\n") as f:
             json.dump(d, f, ensure_ascii=False, indent=2)
         assets.append(vp)
-        log("  · version.json（版本 %s · commit %s · exe %s…）"
-            % (d.get("version"), d.get("commit") or "—", (d.get("exe") or {}).get("sha256", "")[:12]))
+        log("  · version.json（版本 %s · commit %s · 包 %s…）"
+            % (d.get("version"), d.get("commit") or "—", (pkg.get("sha256") or "")[:12]))
     except Exception as e:                                       # noqa: BLE001
         log("  [!!] version.json 没生成：%s（工作台就查不到新版了）" % e)
     # 7) 清单（人看的）
