@@ -8,16 +8,16 @@
   ① 镜头切点表（切点/每段时长/平均亮度/运动量）；
   ② 主体证据（逐采样点人脸数、人脸中心 x%、人脸宽占画面比）→ 每段人脸位移 → "人物与镜头稳不稳"；
   ③ 音轨证据（有无音轨、能量起音数、起音间隔中位数、切点与节拍对齐率）→ "节奏是否跟着音乐走"；
-  ④ 可选 `--asr`：faster-whisper 转写 → 判断口播 / 演唱 / 纯音乐。
+  ④ 可选 `--asr`：SenseVoice 转写 → 判断口播 / 演唱 / 纯音乐。
 - **报告**：默认在源片旁写 `<源片>_拆解报告.md`（人读）与 `<源片>_拆解报告.json`（机读）。
 
 用法：
     python 成片拆解.py -i "<成片>"                    # 出报告（分析采样默认 4 帧/秒）
-    python 成片拆解.py -i "<成片>" --asr              # 追加转写（需 faster-whisper）
+    python 成片拆解.py -i "<成片>" --asr              # 追加转写（需 SenseVoice，缺了会自动拉）
     python 成片拆解.py -i "<成片>" --sample-fps 6     # 提高时间分辨率
     python 成片拆解.py --check                        # 自检：合成 3 段硬切测试片跑全流程
 
-依赖：ffmpeg / ffprobe 在 PATH；opencv-python + numpy；可选 faster-whisper；
+依赖：ffmpeg / ffprobe 在 PATH；opencv-python + numpy；可选 sherpa-onnx（SenseVoice 转写）；
 人脸用 `识别工具/face_detection_yunet_2023mar.onnx`（缺则跳过人脸列，其余照出）。
 只做本地分析：不上传、不提交、不消耗积分。
 """
@@ -329,10 +329,12 @@ def audio_profile(wav):
 
 
 def transcribe(wav, lang="zh"):
-    """转写：SenseVoice（sherpa-onnx）优先，faster-whisper 兜底（2026-10-10 v0.6.1）。
+    """转写：SenseVoice（sherpa-onnx，唯一引擎，2026-10-13 起）。
+
     SenseVoice 实测比 whisper small 快一个量级（45s 中文音频 1.7s vs 24s）、自带标点、
-    中文准确率明显更好；whisper 保留是因为它给逐段时间戳（SenseVoice 整段一次出），
-    参考音频对时间轴敏感的场景兜底用。"""
+    中文准确率更好；原 faster-whisper 兜底（它给逐段时间戳）已删除——省掉内置的 461MB
+    模型。代价：返回的是**整段一次出**（start=0 / end=None），没有逐句时间戳；
+    对时间轴特别敏感的场景如果需要分段，可另配 VAD 切分（目前没做）。"""
     # ---- 首选 SenseVoice：模型小（239MB int8）、快、带标点 ----
     try:
         import sherpa_onnx
@@ -361,50 +363,18 @@ def transcribe(wav, lang="zh"):
                     return {"engine": "sensevoice", "lang_prob": 1.0,
                             "segments": [{"start": 0.0, "end": None, "text": text}]}
             except Exception as e:                      # noqa: BLE001
-                print("[提示] SenseVoice 转写没跑成，换 whisper 兜底：%s" % e)
+                print("[提示] SenseVoice 转写没跑成，跳过转写（其余证据照出）：%s" % e)
         else:
-            print("[提示] SenseVoice 模型不在盘上，换 whisper 兜底。")
+            print("[提示] SenseVoice 模型不在盘上（可先跑：python tools\能力包.py get sense-voice）。")
     except ImportError:
-        pass  # 没装 sherpa-onnx → whisper 兜底
+        print("[提示] 没装 sherpa-onnx，跳过转写（其余证据照出）。")
+    return None
 
-    # ---- 兜底 faster-whisper：有逐段时间戳 ----
-    try:
-        from faster_whisper import WhisperModel
-    except Exception:
-        print("[提示] 没装 faster-whisper，跳过转写（--asr）")
-        return None
-    # 模型优先用 _vendor 里封好的本地版；没有就**从国内镜像拉下来**（2026-10-08）。
-    #
-    # 以前这里是 os.environ.setdefault("HF_HUB_OFFLINE", "1") + 回落字符串 "small"：
-    # 新机上模型不在盘 → HF_HUB_OFFLINE=1 又禁止联网 → 直接抛 LocalEntryNotFoundError，
-    # 把 --asr 整条命令炸掉（不是优雅降级）。
-    #
-    # 为什么不让 faster_whisper 自己下（`WhisperModel("small")` + HF_ENDPOINT=hf-mirror）：
-    # 实测小文件能过，但 model.bin 这种 LFS 大件会被镜像 302 到 HF 的 Xet CAS 服务器，
-    # 那边返回 `401 Unauthorized`（cas-server.xethub.hf.co）。所以走**我们自己的下载器**直取
-    # resolve 直链（实测 461MB / 21.5MB/s / 支持 Range 续传），落到 _vendor 下再用本地路径。
-    local = os.path.join(HERE, "_vendor", "models", "faster-whisper-small")
-    if not os.path.isfile(os.path.join(local, "model.bin")):
-        local = _ensure_stt_model(local) or local
-    model_path = local if os.path.isfile(os.path.join(local, "model.bin")) else "small"
-    if model_path == "small":
-        print("[提示] 转写模型不在盘上、也没下成，跳过转写（其余证据照出）。")
-        print("       ↳ 装上它：python tools\\能力包.py get stt")
-        return None
-    os.environ["HF_HUB_OFFLINE"] = "1"              # 用本地版，别再去联网
-    try:
-        model = WhisperModel(model_path, device="cpu", compute_type="int8")
-        segments, info = model.transcribe(wav, language=lang, vad_filter=True)
-    except Exception as e:                          # noqa: BLE001
-        print("[提示] 转写没跑成，跳过（其余证据照出）：%s" % e)
-        return None
-    out = [{"start": round(s.start, 2), "end": round(s.end, 2), "text": s.text.strip()} for s in segments]
-    return {"lang_prob": round(float(info.language_probability), 2), "segments": out}
 
 
 def _ensure_stt_model(local):
     """把转写模型拉到 _vendor（走 能力包 的镜像下载）；失败返回 None，不抛异常。
-    local 传模型目录（sense-voice 或 faster-whisper-small），能力包按需取对应能力包。"""
+    local 传模型目录（sense-voice），能力包按需取对应能力包。"""
     try:
         sys.path.insert(0, HERE)
         import 能力包
@@ -484,8 +454,8 @@ def build_report(path, info, samples, shots, aud, asr, cands):
     else:
         lines.append("- 音频：**无音轨**（口播/音乐类需先补声音；替换类可作为静音驱动片）")
     if asr:
-        lines.append("- 转写（faster-whisper small，语言置信 %.2f）：**%d 段**" % (
-            asr["lang_prob"], len(asr["segments"])))
+        lines.append("- 转写（SenseVoice，整段一次出）：**%d 字**" % sum(
+            len(s.get("text") or "") for s in asr["segments"]))
         for s in asr["segments"][:20]:
             lines.append("  - [%6.2f → %6.2f] %s" % (s["start"], s["end"], s["text"]))
         if len(asr["segments"]) > 20:
@@ -546,7 +516,7 @@ def do_check(tmp):
 def main():
     ap = argparse.ArgumentParser(description="成片拆解：出镜头切点/主体稳定度/音轨节拍等机器证据（只出证据，不下结论）")
     ap.add_argument("-i", "--input", help="要拆解的成片/二创视频")
-    ap.add_argument("--asr", action="store_true", help="追加 faster-whisper 转写（判断口播/演唱/纯音乐）")
+    ap.add_argument("--asr", action="store_true", help="追加 SenseVoice 转写（判断口播/演唱/纯音乐）")
     ap.add_argument("--lang", default="zh", help="转写语言，默认 zh")
     ap.add_argument("--sample-fps", type=float, default=4.0, help="分析采样帧率，默认 4")
     ap.add_argument("--min-shot", type=float, default=0.6, help="最短镜头长度（秒），默认 0.6——抑制相邻点连触发的伪镜头")
@@ -595,7 +565,7 @@ def main():
     if wav:
         aud = audio_profile(wav)
         if args.asr:
-            print("转写中（faster-whisper small，可能要 1–2 分钟）…")
+            print("转写中（SenseVoice）…")
             asr = transcribe(wav, args.lang)
     report = build_report(args.input, info, samples, shots, aud, asr, cands)
 

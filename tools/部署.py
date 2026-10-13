@@ -746,7 +746,7 @@ def do_install(yes=False, extras=False):
 
     - 必须：pywebview / pythonnet / clr_loader（工作台独立窗口要用）→ 仓库里带了离线 wheel，
       没网也能装、几秒钟装完（2026-09-16 用户反映"安装花很长时间"就是这些+重包一起装的结果）。
-    - 按需：numpy / opencv（成片对比、人物遮罩、竖版画布）· faster-whisper（拆解转写）·
+    - 按需：numpy / opencv（成片对比、人物遮罩、竖版画布）· sherpa-onnx（拆解转写，SenseVoice）·
       onnxruntime（深度视频）→ 用到哪个功能再装哪个，加 `--extras` 一次装全。
     """
     log("== 依赖 ==")
@@ -798,7 +798,7 @@ def do_install(yes=False, extras=False):
         if extras:                       # --extras：连能力包一起装（在线装或本地能力包轮子）
             dirs = [os.path.join(VENDOR, d) for c in miss_caps for d in KP.CAPS[c]["wheels_dirs"]
                     if os.path.isdir(os.path.join(VENDOR, d))]
-            mods = [m for m in ("numpy", "cv2", "faster_whisper", "onnxruntime") if not KP.mod_present(m)]
+            mods = [m for m in ("numpy", "cv2", "sherpa_onnx", "onnxruntime") if not KP.mod_present(m)]
             if mods:
                 if dirs:
                     cmd = [PY, "-m", "pip", "install", "--no-index"]
@@ -834,7 +834,7 @@ def do_install(yes=False, extras=False):
         return
 
     heavy = [("numpy", "numpy"), ("cv2", "opencv-python-headless"),
-             ("faster_whisper", "faster-whisper"), ("onnxruntime", "onnxruntime")]
+             ("sherpa_onnx", "sherpa-onnx"), ("onnxruntime", "onnxruntime")]
     miss = []
     for mod, pkg in heavy:
         try:

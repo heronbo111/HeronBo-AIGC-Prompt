@@ -14,7 +14,6 @@ r"""能力包：把"用到才装"的大依赖从默认安装里摘出来，按�
   拆完之后：**默认安装 304MB → 约 104MB**；想要转写/深度的人再按需拉（各 26 / 101MB）。
 
 三个能力（名字就是 CLI 上用的 key）：
-    stt     转写（faster-whisper）—— 拆解/诊断转写音轨、做字幕（模型 461MB）
     depth   转深度片（Depth-Anything-V2-Small）—— 模型 95MB
 
 （2026-10-08 更新：这两个能力包的模型**从国内模型镜像按需直取**，不再挂 Release 附件——
@@ -212,29 +211,6 @@ CAPS = {
         "model_dir": "models/sense-voice",
         "model": "models/sense-voice/model.int8.onnx",
     },
-    "stt": {
-        "title": "转写兜底（faster-whisper，带时间戳）",
-        "why": "SenseVoice 兜底、或需要逐段时间戳的字幕场景才要",
-        "mb": 461,
-        "assets": [],                                     # 不再走 Release 附件（通道 404，见上）
-        "wheels_dirs": ["wheels-stt"],
-        "mods": ["faster_whisper"],
-        # 装机自带 runtime 里已烘好 faster_whisper/ctranslate2/tokenizers，
-        # 新机唯一缺的就是这个 461MB 的 model.bin。
-        "hf_repo": "Systran/faster-whisper-small",
-        "hf_files": [
-            ("config.json", "b55496ac7940a7ae47d2c01eab40edfd8701feec1229d9cce3b40014383fb828",
-             "afb04c7b910ac0b9851459d068069ab337931534", "config.json"),
-            ("tokenizer.json", "fb7b63191e9bb045082c79fd742a3106a12c99513ab30df4a0d47fa6cb6fd0ab",
-             "afb04c7b910ac0b9851459d068069ab337931534", "tokenizer.json"),
-            ("vocabulary.txt", "34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913",
-             "afb04c7b910ac0b9851459d068069ab337931534", "vocabulary.txt"),
-            ("model.bin", "3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671",
-             "ace8b2ad9dee031c53b6371f6c3c918b5e4f1db9", "model.bin"),
-        ],
-        "model_dir": "models/faster-whisper-small",
-        "model": "models/faster-whisper-small/model.bin",
-    },
     "depth": {
         "title": "转深度片（Depth-Anything-V2-Small）",
         "why": "要把参考片转成深度片（L4 复刻动作的替代路线）时才要",
@@ -256,7 +232,7 @@ CAPS = {
         "model": "models/depth-anything-v2-small/model.onnx",
     },
 }
-ORDER = ["sense-voice", "stt", "depth"]
+ORDER = ["sense-voice", "depth"]
 
 
 class NeedCapability(Exception):

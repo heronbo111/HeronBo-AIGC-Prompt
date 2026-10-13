@@ -3,7 +3,7 @@
 
 设计（2026-09-12 v1.0）：
 - 这个 skill 的工具链要靠本机软件：ffmpeg/ffprobe、python 的 numpy/opencv、可选的
-  faster-whisper（转写）与 onnxruntime（深度视频），外加两个模型文件。
+  sherpa-onnx（SenseVoice 转写）与 onnxruntime（深度视频），外加两个模型文件。
   缺任何一个，工具都会在跑到一半时报错——所以**部署第一步先自检**。
 - **默认只检查、不做任何改动**（exit 0=齐了 / exit 1=缺东西并打印该装什么）。
 - 加 `--install` 才安装：会先把「要装什么」列出来**问一次**（`--yes` 跳过询问，供 agent 在
@@ -14,7 +14,7 @@
     [必需]     python≥3.9 / ffmpeg / ffprobe
     [源码运行用] pywebview + pythonnet（用 dist 里的 exe 时不需要，exe 自带）
     [可选]     numpy / opencv（成片对比、人物遮罩、竖版画布、拆解抽帧）——**用到才装**
-               faster-whisper（转写）、Yunet 人脸模型（随仓库走）、Windows OCR（读画面文字）
+               sherpa-onnx（SenseVoice 转写）、Yunet 人脸模型（随仓库走）、Windows OCR（读画面文字）
     [可选]     onnxruntime + Depth-Anything-V2-Small（L4 复刻动作的前置）
     **大包默认不装**：`--install` 只补必需项，`--install --extras` 才连可选的一起装
     （2026-09-16：新机一上来就下几百 MB、装很久，用户反馈过）。
@@ -25,7 +25,7 @@
     python tools\\环境检查.py --install            # 装缺的必需项（会先确认一次）
     python tools\\环境检查.py --install --extras   # 连可选大包一起装
     python tools\\环境检查.py --install --yes      # 无人值守（用户已同意）
-    python tools\\环境检查.py --warm-asr           # 预下 faster-whisper 模型（默认 small）
+    python tools\\环境检查.py --warm-asr           # 预下转写模型 SenseVoice（约 239MB）
     python tools\\环境检查.py --models             # 额外下 Depth 模型（约 99MB，HF 需代理）
 """
 import argparse
@@ -53,7 +53,7 @@ HF_BASE_MS = ("https://modelscope.cn/api/v1/models/onnx-community/depth-anything
 PIP_PKGS = {
     "numpy": "numpy",
     "cv2": "opencv-python-headless==4.10.0.84",
-    "faster_whisper": "faster-whisper",
+    "sherpa_onnx": "sherpa-onnx",
     "onnxruntime": "onnxruntime",
 }
 
@@ -117,7 +117,7 @@ def probe():
     # 「成片对比 / 人物遮罩 / 竖版画布 / 拆解抽帧」这些工具里用得上，新机不该为了跑
     # 提示词流程先下几百 MB。核心链路（写提示词、评分、工作台）不依赖它们。
     for mod, level in (("numpy", "可选（对比/画布工具用）"), ("cv2", "可选（遮罩/抽帧用）"),
-                       ("faster_whisper", "可选（拆解转写）"), ("onnxruntime", "可选（深度视频）")):
+                       ("sherpa_onnx", "可选（拆解转写）"), ("onnxruntime", "可选（深度视频）")):
         ok, detail = mod_state(mod)
         add(mod, level, ok, detail, "" if ok else "pip install %s" % PIP_PKGS[mod])
 
@@ -200,41 +200,28 @@ def do_models():
     return True
 
 
-def do_warm_asr(model):
-    """预下转写模型。
+def do_warm_asr(model=""):
+    """预下转写模型：**SenseVoice**（2026-10-13 起是唯一引擎）。
 
-    2026-10-10 改：默认引擎换 **SenseVoice**（`能力包.ensure("sense-voice")`，约 239MB，
-    hf-mirror 直链+sha256 校验，ModelScope 无此仓）；`--asr-model` 给非 small 档或想用
-    旧引擎时仍走 faster-whisper 路径（461MB，能力包 stt）。
+    原来是"默认 SenseVoice、--asr-model 走 faster-whisper"两条路；faster-whisper 连同它
+    内置的 461MB 模型已移除（省安装包体积），所以 --asr-model 接收但不再切引擎——
+    只是一句提示，避免老命令直接报参数错。
     """
-    if model == "small":
-        try:
-            sys.path.insert(0, HERE)
-            import 能力包
-            print("\n[预热] 转写模型 SenseVoice（走国内镜像，约 239MB）")
-            print("  [下载] → %s"
-                  % os.path.join(HERE, "_vendor", "models", "sense-voice"))
-            能力包.ensure("sense-voice", HERE, py=sys.executable, auto=True, log=lambda m: print("  " + str(m)))
-            print("  完成")
-            return True
-        except Exception as e:                                    # noqa: BLE001
-            print("  ✗ 失败：%s" % str(e)[:300])
-            return False
-    # 非 small 档位：旧引擎 faster-whisper 的大模型，仍让 huggingface_hub 走镜像（大件可能仍被 Xet 拦）
-    print("\n[预热] faster-whisper 模型：%s（走国内镜像）" % model)
-    env = dict(os.environ)
-    env.setdefault("HF_ENDPOINT",
-                   os.environ.get("HERONBO_HF_MIRROR", "").strip() or HF_MIRROR)
-    env["HF_HUB_OFFLINE"] = "0"
-    code = ("from faster_whisper import WhisperModel;"
-            "WhisperModel(%r, device='cpu', compute_type='int8');print('ok')" % model)
-    r = run([sys.executable, "-c", code], env=env)
-    if "ok" in (r.stdout or ""):
-        print("  完成（%s）" % env.get("HF_ENDPOINT"))
+    if model and model != "small":
+        print("\n[提示] 转写引擎现在只有 SenseVoice，--asr-model %s 不再生效（参数只是兼容老命令）。"
+              % model)
+    try:
+        sys.path.insert(0, HERE)
+        import 能力包
+        print("\n[预热] 转写模型 SenseVoice（走国内镜像，约 239MB）")
+        print("  [下载] → %s"
+              % os.path.join(HERE, "_vendor", "models", "sense-voice"))
+        能力包.ensure("sense-voice", HERE, py=sys.executable, auto=True, log=lambda m: print("  " + str(m)))
+        print("  完成")
         return True
-    print("  ✗ 失败：%s" % (r.stderr or "")[-200:])
-    print("      ↳ 换默认档位试试：python tools\\环境检查.py --warm-asr --asr-model small")
-    return False
+    except Exception as e:                                    # noqa: BLE001
+        print("  ✗ 失败：%s" % str(e)[:300])
+        return False
 
 
 def main():
@@ -244,8 +231,8 @@ def main():
                     help="连「用到才装」的大包一起装（numpy/opencv/转写/深度，几百 MB）")
     ap.add_argument("--yes", action="store_true", help="不询问（供 agent 在用户已同意后使用）")
     ap.add_argument("--models", action="store_true", help="下载 Depth 模型（约 99MB，走国内镜像）")
-    ap.add_argument("--warm-asr", action="store_true", help="预下转写模型 SenseVoice（约 239MB，走国内镜像；--asr-model non-small 走旧引擎 461MB）")
-    ap.add_argument("--asr-model", default="small", help="faster-whisper 模型档位，默认 small")
+    ap.add_argument("--warm-asr", action="store_true", help="预下转写模型 SenseVoice（约 239MB，走国内镜像）")
+    ap.add_argument("--asr-model", default="", help="（已废弃）转写只有 SenseVoice，传入只作兼容提示")
     ap.add_argument("--json", action="store_true", help="机读输出")
     args = ap.parse_args()
 
@@ -296,7 +283,7 @@ def main():
     if args.models:
         do_models()
     if args.warm_asr:
-        do_warm_asr(args.asr_model)
+        do_warm_asr(args.asr_model or "")
 
     core_ok = all(i["状态"] == "OK" for i in probe() if i["级别"] == "必需")
     print("\n结论：%s" % ("必需项齐备，可以开工。" if core_ok else "必需项有缺失，按上面的 → 处理后再来。"))

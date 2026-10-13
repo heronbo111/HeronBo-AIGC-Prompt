@@ -8,8 +8,6 @@ r"""打发行包：把 `_vendor` 里的东西打成 Release 附件（默认安�
     默认（core）：wheels-core 4MB ＋ ffmpeg 76MB ＋ 工作台 exe 18MB
                   —— 新机上若已有**能力够的系统 ffmpeg**（编码器/滤镜探测，见 能力包.py），
                      连这 76MB 都能跳过，默认安装只剩约 22MB
-    能力包 stt   ：26MB（faster-whisper）—— 转写/诊断时才装
-    能力包 stt   ：28MB（faster-whisper）—— 转写/诊断时才装
     能力包 depth ：101MB（模型 88MB + onnxruntime 13MB，分两件传以避开 Gitee 单附件 100MB 上限）
   注意 cv2/numpy **在核心**（抽帧/遮罩/对比/画布四个工具都要它俩，放可选会弄坏功能）。
 
@@ -41,10 +39,6 @@ TAG_DEFAULT = "vendor-2026-09-22"
 # 挪回核心——4 个工具都要它俩，放可选会悄悄弄坏抽帧/遮罩/对比/画布）。
 WHEEL_GROUPS = {
     "wheels": [],                        # core：_vendor/wheels 整个目录
-    "wheels-stt": ["ctranslate2", "tokenizers", "faster_whisper", "faster-whisper",
-                   "huggingface_hub", "hf_xet", "fsspec", "pyyaml", "tqdm", "packaging",
-                   "protobuf", "httpx", "httpcore", "h11", "anyio", "idna", "certifi",
-                   "click", "colorama", "filelock", "typing_extensions", "flatbuffers"],
     "wheels-depth": ["onnxruntime"],
 }
 # 明确不要的（写出来免得下次有人又问"av 呢"）
