@@ -381,7 +381,7 @@ VENDOR_ASSETS = [("wheels-core.zip", "wheels", 4),
 VENDOR_ASSETS_OLD = [("wheels-heavy.zip", "wheels-heavy", 116),
                      ("ffmpeg-win64-gpl-shared.zip", "ffmpeg", 82),
                      ("depth-model.zip", "models", 88)]
-# 工作台本体（2026-10-13 起是 onedir 的 score-tool-vX.Y.Z.zip）**不在这两份老清单里**：
+# 工作台本体（2026-10-13 起是 onedir 的 HeronBo-Workbench-Update-vX.Y.Z.zip）**不在这两份老清单里**：
 # 它走 能力包.urls_for 的 releases/latest 版本化通道（每次发版一个不可变 release）。
 # 原来那项 ("score-tool.exe", "dist") 已删——资产不再叫这个名字，留着只会白跑一趟。
 # 工作台 exe 是**每次改代码都会变**的那一个：别只看"在不在"（老机器上它一直在，但它是旧版）

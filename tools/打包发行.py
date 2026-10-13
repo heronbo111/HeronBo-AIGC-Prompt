@@ -219,7 +219,10 @@ def build(tag, notes="", version="", log=print):
     pkg = {}
     if os.path.isfile(exe):
         if os.path.isdir(os.path.join(HERE, "dist", "_internal")):
-            zp = os.path.join(out, "score-tool-v%s.zip" % version)
+            # 命名与安装包成体系（2026-10-13 用户点出"score-tool"是内部工程名、对用户太怪）：
+            #   HeronBo-Workbench-**Setup**-vX.Y.Z.exe  = 全量安装包（约 1.3GB，新装/重装用）
+            #   HeronBo-Workbench-**Update**-vX.Y.Z.zip = 在线更新小包（约 21MB，只换程序本体）
+            zp = os.path.join(out, "HeronBo-Workbench-Update-v%s.zip" % version)
             _zip_workbench(zp, log=log)
             extra.append(zp)
             pkg = {"name": os.path.basename(zp), "size": os.path.getsize(zp),
