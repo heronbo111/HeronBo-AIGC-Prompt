@@ -23,7 +23,9 @@ import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_SRC = r"D:\HeronBo-Build\pkg-real"
-DEFAULT_OUT = r"D:\HeronBo-Build\art"
+# 默认落到工作区的 `_安装包\`（2026-10-13 用户反馈"产物在哪、我找不到"）——
+# 那是他收安装包的地方；放在构建目录里他翻不到。--out 可覆盖。
+DEFAULT_OUT = os.path.join(os.path.dirname(os.path.dirname(HERE)), "_安装包")
 # 系统运行库安装器（2026-10-13）：安装版会在装的时候替你装这两样（见 setup-common.iss 的
 # [Run] 段），绿色版不能少——否则目标机缺运行库时表现就不一致了（界面渲染/组件起不来）。
 # 源在 D:\HeronBo-Build\vendor\（203MB 的 WebView2 是**离线完整版**，断网机器也能装）。
