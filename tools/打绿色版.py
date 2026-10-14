@@ -133,6 +133,23 @@ def main():
             print("   " + b)
         return 3
     print("  自检通过：不含本机配置/凭据。用户解压后双击 %s/HeronBo.exe 即可用。" % top)
+    # 签名状态说清（2026-10-13）：绿色版绕开的是"安装"这一步；若主程序没签名，
+    # 用户那边照样会被 SmartScreen 警告、被智能应用控制拦——那跟装不装没关系。
+    try:
+        import importlib.util as _ilu
+        _sp = os.path.join(HERE, "签名.py")
+        if os.path.isfile(_sp):
+            _spec = _ilu.spec_from_file_location("heronbo_sign", _sp)
+            _sg = _ilu.module_from_spec(_spec)
+            _spec.loader.exec_module(_sg)
+            _st = _sg.is_signed(os.path.join(src, "HeronBo.exe"))
+            print("  主程序签名：%s" % {
+                True: "已签名",
+                False: "**未签名**（用户侧可能被 SmartScreen 警告 / 被「智能应用控制」拦——"
+                       "签名请见 tools\\签名.py 顶部说明）",
+            }.get(_st, "未知（没装 signtool，看不出）"))
+    except Exception:                                            # noqa: BLE001
+        pass
     return 0
 
 

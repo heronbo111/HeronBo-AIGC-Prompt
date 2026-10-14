@@ -137,7 +137,8 @@ def main():
         return 2
 
     # 1) 预清理不该进包的大件（/MIR 的 /XD 不会删它们，所以先显式删）
-    doomed = [os.path.join(dst, "tools", "_release")]
+    #    2026-10-13 补 `_stage`：实测 `/XD _stage` 没挡住它，安装包里混进过无关的 skill 压缩包。
+    doomed = [os.path.join(dst, "tools", "_release"), os.path.join(dst, "_stage")]
     doomed += [os.path.join(dst, "tools", "_vendor", w)
                for w in ("wheels", "wheels-heavy", "wheels-stt", "wheels-depth")]
     for d in doomed:
