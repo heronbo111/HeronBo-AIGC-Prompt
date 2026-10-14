@@ -24,23 +24,76 @@ import zipfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_SRC = r"D:\HeronBo-Build\pkg-real"
 DEFAULT_OUT = r"D:\HeronBo-Build\art"
+# 系统运行库安装器（2026-10-13）：安装版会在装的时候替你装这两样（见 setup-common.iss 的
+# [Run] 段），绿色版不能少——否则目标机缺运行库时表现就不一致了（界面渲染/组件起不来）。
+# 源在 D:\HeronBo-Build\vendor\（203MB 的 WebView2 是**离线完整版**，断网机器也能装）。
+VENDOR_DIR = r"D:\HeronBo-Build\vendor"
+RUNTIME_PKGS = [("vc_redist.x64.exe", 24),
+                ("MicrosoftEdgeWebView2RuntimeInstallerX64.exe", 203)]
+PKG_SUBDIR = "runtime_pkgs"          # 目录名刻意用 ASCII：cmd 处理中文路径/编码容易翻车
 
-EXCLUDE_DIRS = {"__pycache__", "_old", "_已删除", "node_modules", "_release", "_stage"}
-EXCLUDE_SUFFIXES = (".pyc", ".log", ".local.json", ".local.md")
+# ⚠️ 别把 node_modules 排除掉：runtime\node 自带的 corepack（npm/npx/pnpm 的 shim）就在里面，
+# 排除后绿色版会比安装版少 5000 多个文件（2026-10-13 实测踩过）。
+EXCLUDE_DIRS = {"__pycache__", "_old", "_已删除", "_release", "_stage"}
+EXCLUDE_SUFFIXES = (".pyc", ".log", ".local.json", ".local.md", "heronbo_version_remote.json")
 
 GUIDE = """HeronBo 视频工作台 · 绿色版（解压即用，不需要安装）
 
-1. 把整个文件夹解压到任意位置（建议路径不含空格，例如 D:\\HeronBo）
-2. 双击文件夹里的 HeronBo.exe 启动工作台（第一次启动稍慢，属正常现象）
-3. 不写注册表、不产生卸载项；不想要了直接删掉整个文件夹即可
-4. 想要桌面图标：右键 HeronBo.exe → 发送到 → 桌面快捷方式
+【第一次使用】
+  双击文件夹里的  first-run.cmd  ——它会：
+    1. 检查并补装两个系统运行库（VC++ 运行库、界面渲染用的 WebView2；装过的机器几秒跳过）
+    2. 自动启动工作台
+  以后每次使用：直接双击 HeronBo.exe 即可。
 
-说明
-· 本版自带运行环境（Python / Node / ffmpeg / 模型），不需要另装任何东西；
-· 若杀毒软件或系统拦截：把**整个文件夹**加进信任区（加目录，不要只加单个文件）；
-  Windows「智能应用控制」拦的是未签名程序，与是否安装无关——那种情况需要在
-  系统设置里关闭该项，或使用带代码签名发行的版本；
-· 首次用到「拆解转写 / 深度视频」时若提示缺模型，按提示联网拉取一次即可（之后都在本地）。
+【不想跑 first-run.cmd 也行】
+  机器上如果已经有这两个运行库，直接双击 HeronBo.exe；界面渲染库缺失时，工作台会自动
+  改用 Edge 窗口打开（功能不缺，只是窗口形态不同）。
+
+【其它】
+  · 本版自带运行环境（Python / Node / ffmpeg / 模型），不需要另装任何东西
+  · 不写注册表、不产生卸载项；不想要了直接删掉整个文件夹
+  · 想要桌面图标：右键 HeronBo.exe → 发送到 → 桌面快捷方式
+  · 若被杀毒软件或系统拦截：把**整个文件夹**加进信任区（加目录，不要只加单个文件）。
+    Windows「智能应用控制」拦的是未签名程序——签名需要购买代码签名证书（当前发行版未签名），
+    遇到该项拦截需要在系统设置里关闭它，或把程序交给能加白名单的机器使用。
+  · 更新：在工作台里点「检查更新」会自动换新版程序。**别把这个文件夹放进 Program Files**，
+    那里普通用户没有写权限，更新会失败（放 D 盘等可写位置最稳）。
+"""
+
+FIRST_RUN_CMD = """@echo off
+rem HeronBo Workbench - first run helper.
+rem ASCII-only on purpose: cmd.exe parses .cmd byte-by-byte in the active code page,
+rem so UTF-8 Chinese text in here would get mangled (we hit that before).
+rem What it does: install the two system runtimes if missing, then start the app.
+chcp 65001 >nul
+setlocal
+cd /d "%~dp0"
+title HeronBo Workbench - first run
+echo ============================================================
+echo   HeronBo Workbench  -  first run
+echo   step 1/2  VC++ runtime     (skipped if already installed)
+echo   step 2/2  WebView2 runtime (skipped if already installed)
+echo   then      start the workbench
+echo   (UAC may ask for permission - that is expected)
+echo ============================================================
+echo.
+if exist "runtime_pkgs\\vc_redist.x64.exe" (
+  echo [1/2] VC++ runtime ...
+  start /wait "" "runtime_pkgs\\vc_redist.x64.exe" /install /quiet /norestart
+) else (
+  echo [1/2] vc_redist not bundled - skipped.
+)
+if exist "runtime_pkgs\\MicrosoftEdgeWebView2RuntimeInstallerX64.exe" (
+  echo [2/2] WebView2 runtime ...
+  start /wait "" "runtime_pkgs\\MicrosoftEdgeWebView2RuntimeInstallerX64.exe" /silent /install
+) else (
+  echo [2/2] webview2 installer not bundled - skipped.
+)
+echo.
+echo Starting HeronBo ...
+start "" "HeronBo.exe"
+echo Done.  Next time just double-click HeronBo.exe
+exit /b 0
 """
 
 
@@ -97,9 +150,17 @@ def main():
     top = "HeronBo-Workbench-Portable-v%s" % ver
     files, skipped = collect(src)
     total = sum(os.path.getsize(p) for p, _ in files)
+    pkgs = [(os.path.join(VENDOR_DIR, fn), fn) for fn, _ in RUNTIME_PKGS
+            if os.path.isfile(os.path.join(VENDOR_DIR, fn))]
+    missing_pkgs = [fn for fn, _ in RUNTIME_PKGS if not os.path.isfile(os.path.join(VENDOR_DIR, fn))]
+    total += sum(os.path.getsize(p) for p, _ in pkgs)
     print("源：%s" % src)
     print("版本：%s    文件：%d 个    原始大小：%.0f MB    排除命中：%d" %
           (ver, len(files), total / 1048576.0, skipped))
+    print("系统运行库：%s" % ("、".join(fn for _p, fn in pkgs) or "（一个都没找到）"))
+    for fn in missing_pkgs:
+        print("  !! 缺 %s（不在 %s）——目标机缺该运行库时绿色版装不上，功能会与安装版不一致"
+              % (fn, VENDOR_DIR))
 
     if a.dry:
         print("\n[dry] 到这里为止（真打去掉 --dry）。")
@@ -112,6 +173,11 @@ def main():
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         z.writestr(top + "/先读我-绿色版.txt", GUIDE)
         n += 1
+        z.writestr(top + "/first-run.cmd", FIRST_RUN_CMD)
+        n += 1
+        for fp, fn in pkgs:                       # 系统运行库（安装版会替你装的那两个）
+            z.write(fp, "%s/%s/%s" % (top, PKG_SUBDIR, fn))
+            n += 1
         for fp, rel in files:
             z.write(fp, top + "/" + rel)
             n += 1
@@ -133,6 +199,36 @@ def main():
             print("   " + b)
         return 3
     print("  自检通过：不含本机配置/凭据。用户解压后双击 %s/HeronBo.exe 即可用。" % top)
+    # 一致性自检（2026-10-13 用户要求"绿色版和安装版功能一致"）：能找到安装副本就比文件清单。
+    # 差异只允许出现在"壳"上：卸载器、首启脚本、运行库目录、说明文件。
+    try:
+        import importlib.util as _ilu
+        _fp = os.path.join(HERE, "找工作台.py")
+        if os.path.isfile(_fp):
+            _spec = _ilu.spec_from_file_location("heronbo_findwb", _fp)
+            _m = _ilu.module_from_spec(_spec)
+            _spec.loader.exec_module(_m)
+            _app = ((_m.detect(scan=True) or {}).get("appDir") or "")
+            if _app and os.path.isdir(_app):
+                shell = ("unins", PKG_SUBDIR + "/", "first-run", "先读我")
+                have = set()
+                for dp, dns, fns in os.walk(_app):
+                    dns[:] = [d for d in dns if d not in EXCLUDE_DIRS]
+                    for f in fns:
+                        have.add(os.path.relpath(os.path.join(dp, f), _app).replace("\\", "/"))
+                with zipfile.ZipFile(out) as z:
+                    inzip = {i.filename[len(top) + 1:] for i in z.infolist()
+                             if i.filename.startswith(top + "/") and not i.filename.endswith("/")}
+                a = sorted(x for x in have - inzip if not x.startswith(shell))
+                b = sorted(x for x in inzip - have if not x.startswith(shell))
+                print("  与安装版比对（%s）：只在安装版 %d 个、只在绿色版 %d 个"
+                      % (os.path.basename(_app.rstrip("\\/")), len(a), len(b)))
+                for x in (a + b)[:8]:
+                    print("     · %s" % x)
+                if not a and not b:
+                    print("     ✓ 两边内容一致（除安装器自带的壳文件）")
+    except Exception:                                            # noqa: BLE001
+        pass
     # 签名状态说清（2026-10-13）：绿色版绕开的是"安装"这一步；若主程序没签名，
     # 用户那边照样会被 SmartScreen 警告、被智能应用控制拦——那跟装不装没关系。
     try:
