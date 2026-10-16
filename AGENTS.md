@@ -17,7 +17,7 @@
 | 位置 | 是什么 | 入口 / 主要文件 |
 |---|---|---|
 | `SKILL.md` | 技能入口：工作流、四大类、限额引用 | 新会话按需读章节 |
-| `references/` | 知识库：规则、模板、平台口径、样本库、拆解手册 | `rules.md`（上游规则，**先读顶部索引**）、`prompt-templates.md`（交付形态与句式）、`platforms.md`（模型与限额，**唯一数字源**）、`playbooks.md`、`samples-db.md`、`eval-cases.md` |
+| `references/` | 知识库：规则、模板、平台口径、项目库、拆解手册 | `rules.md`（上游规则，**先读顶部索引**）、`prompt-templates.md`（交付形态与句式）、`platforms.md`（模型与限额，**唯一数字源**）、`playbooks.md`、`samples-db.md`、`eval-cases.md` |
 | `references/*.local.md` | 本机个人层（gitignore，不进仓库） | `rules.local.md`（本地经验，**优先级高于上游 rules.md**）、`paths.local.md` |
 | `tools/` | 工具链（Python / .cmd，脚本名多为中文） | `首次配置.py`、`部署.py`、`换exe.py`、`提示词体检.py`、`联调自检.py`、`project_core.py`（项目骨架/回执/清单）、`workbench_server.py` + `workbench/`（**工作台源码，gitignore、不随仓库分发**） |
 | `tools/dist/` | 工作台 exe（Release 附件来的） | `score-tool.exe` |
@@ -25,7 +25,7 @@
 | `samples/` | 示例项目（结构参考） | 每个子目录 = 一个项目 |
 | `_stage/` | 待换的 exe（换位用） | `score-tool.exe` |
 
-**样本库（不在本仓库、但你会被叫去干活）**：每个项目一个子文件夹，内含 `文案/ 素材/ 平台上传/ 成片/ 废片/ 评价/ 备注/ _会话/`。
+**项目库（不在本仓库、但你会被叫去干活）**：每个项目一个子文件夹，内含 `文案/ 素材/ 平台上传/ 成片/ 废片/ 评价/ 备注/ _会话/`。
 
 ## 命令（都能直接跑；改完东西至少跑前两条）
 
@@ -79,7 +79,7 @@ python tools/发布exe附件.py                   # 把大件/exe 发到 Release
 对照用；与上面铁律冲突时以铁律为准。
 
 - ✅ **可以直接做**：读/搜任何文件；写 `references/*.local.md`；改自己认领范围内的文件；
-  按 `prompt-templates.md` 的口径出提示词；在样本库项目里建 `文案/ 平台上传/ 备注/ _会话/` 产物；跑上面「命令」里那些自检。
+  按 `prompt-templates.md` 的口径出提示词；在项目库项目里建 `文案/ 平台上传/ 备注/ _会话/` 产物；跑上面「命令」里那些自检。
 - ⚠️ **先问用户**：改 `references/rules.md` 等上游规则 / 模板口径；改 `SKILL.md` 流程与 `version`；
   动别人项目或别人的未提交改动；删文件；改本机取值（`paths.local.md` 指向的路径）；
   装任何软件/依赖；对素材做加工（静音/裁剪/转比例/深度片/转写/OCR/抽水印…）。
@@ -119,7 +119,7 @@ python tools/发布exe附件.py                   # 把大件/exe 发到 Release
 
 ## 分工建议（减少撞车）
 
-- **ZCode**：规则/模板/样本库内容（`references/rules.md`、`references/prompt-templates.md`、`references/samples-db.md`）
+- **ZCode**：规则/模板/项目库内容（`references/rules.md`、`references/prompt-templates.md`、`references/samples-db.md`）
 - **Codex / DSH**：工具链与文档（`tools/`、`SKILL.md` 流程节、`README.md`、`TODO.md`、本文件）
 - 跨范围改动先在「当前认领」登记再动手；同一文件两人都要改时，一人改完提交、另一人 `git pull --rebase` 后再改。
 

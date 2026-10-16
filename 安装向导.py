@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Skill 安装向导：装之前**先问清楚两件事**——skill 装哪、项目（样本库）放哪。
+"""Skill 安装向导：装之前**先问清楚两件事**——skill 装哪、项目库放哪。
 
 为什么要有它（2026-09-22 用户反馈两件事）：
 1. 「让别的电脑安装 skill 时速度太慢（通过 gitee 仓库安装）」——慢有三个来源：
@@ -12,7 +12,7 @@
 
 用法（在解压好的仓库目录里）：
     python 安装向导.py                 # 交互式：问位置 → 就位 → 可选接去部署
-    python 安装向导.py --dir "D:\\技能库\\HeronBo-AIGC-Prompt" --root "D:\\样本库" --yes
+    python 安装向导.py --dir "D:\\技能库\\HeronBo-AIGC-Prompt" --root "D:\\项目库" --yes
     python 安装向导.py --list          # 只列出各 harness 的默认目录，不装
 
 铁律（照仓库 AGENTS.md）：装任何东西前先问用户；--yes 才真动手，否则只打印计划。
@@ -197,12 +197,12 @@ def link_to_others(installed, auto=False):
 def main():
     ap = argparse.ArgumentParser(description="Skill 安装向导（先问位置，再就位）")
     ap.add_argument("--dir", help="直接指定 skill 安装位置（跳过第 1 问）")
-    ap.add_argument("--root", help="直接指定项目（样本库）根目录（跳过第 2 问）")
+    ap.add_argument("--root", help="直接指定项目库目录（跳过第 2 问）")
     ap.add_argument("--yes", action="store_true", help="真动手（不加只打印计划）")
     ap.add_argument("--list", action="store_true", help="只列出各 harness 默认目录")
     ap.add_argument("--auto", action="store_true",
                     help="无人值守（agent 用）：不问任何 input()——落点自动探测本机 harness；"
-                         "样本库根不落死值（skill 首用流程按 paths.md 问用户）；"
+                         "项目库不落死值（skill 首用流程按 paths.md 问用户）；"
                          "联接自动建全；不接续部署（那是工作台的安装器的事）")
     a = ap.parse_args()
     if a.list:
@@ -225,11 +225,11 @@ def main():
         root = None
     else:
         log("")
-        log("== 第 2 问：项目（样本库）放哪？==")
+        log("== 第 2 问：项目库放哪？==")
         log("  这是你以后放各视频项目素材与产出的工作根目录（不是 skill 本体）。")
         default_root = os.path.join(os.path.splitdrive(target)[0] + os.sep, "AI创作", "视频项目")
         root = (a.root and os.path.abspath(os.path.expanduser(a.root))) or \
-            ask_dir("  样本库根目录：", default_root)
+            ask_dir("  项目库目录：", default_root)
     log("")
     log("== 计划 ==")
     if mode == "download":
@@ -237,9 +237,9 @@ def main():
     elif mode.startswith("here"):
         log("  1. 当前这份仓库就位（挪/留在）→ %s" % target)
     if root:
-        log("  2. 样本库根设为 %s" % root)
+        log("  2. 项目库设为 %s" % root)
     else:
-        log("  2. 样本库根不落死值——首次使用时由 skill 工作流问用户（paths.md）")
+        log("  2. 项目库不落死值——首次使用时由 skill 工作流问用户（paths.md）")
     log("  3. （可选）链接给本机其它 agent harness")
     if not a.auto:
         log("  4. （可选）接着跑 python tools\\部署.py all --yes（装依赖/接通道/快捷方式/弹工作台）")
@@ -267,9 +267,9 @@ def main():
             installed = move_here2(src, target)
     else:
         installed = target
-    # 样本库根：写进 skill 的 paths.local（不进 git 的机器级配置）
+    # 项目库：写进 skill 的 paths.local（不进 git 的机器级配置）
     if root is None:
-        log("  2. [跳过] 样本库根未指定——按 references/paths.md，首次使用时由 agent 问用户再写")
+        log("  2. [跳过] 项目库未指定——按 references/paths.md，首次使用时由 agent 问用户再写")
     else:
         try:
             p = os.path.join(installed, "references", "paths.local.md")
@@ -287,9 +287,9 @@ def main():
             else:
                 with open(p, "a", encoding="utf-8", newline="\n") as f:
                     f.write(line)
-            log("  2. [OK] 样本库根已写入 %s" % p)
+            log("  2. [OK] 项目库已写入 %s" % p)
         except OSError as e:
-            log("  2. [没成] 样本库根没写上（%s）；装完自己改 references/paths.local.md" % e)
+            log("  2. [没成] 项目库没写上（%s）；装完自己改 references/paths.local.md" % e)
     link_to_others(installed, auto=a.auto)
     dep = os.path.join(installed, "tools", "部署.py")
     if a.auto:

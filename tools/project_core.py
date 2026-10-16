@@ -35,7 +35,7 @@ def find_skill_root():
     为什么非这样不可（2026-09-15 实测）：PyInstaller 打包后 `__file__` 落在
     `%TEMP%\\_MEIxxxx`，于是 `HERE/..` 就是 %TEMP% —— 当时的表现是 exe 把
     `paths.local.md` 写进了 `%TEMP%\\references\\`，Windows 一清临时目录，
-    "样本库根"就丢了。改成往上找 SKILL.md，exe 放在仓库的 tools\\dist\\ 里
+    "项目库"就丢了。改成往上找 SKILL.md，exe 放在仓库的 tools\\dist\\ 里
     也能正确定位到仓库根。
     """
     env = os.environ.get("HERONBO_SKILL_ROOT")
@@ -123,11 +123,11 @@ def write_local(local_md=None, **kw):
 
 
 def looks_unset(value):
-    return (not value) or any(h in value for h in ("<", "待用户指定", "你的样本库根目录"))
+    return (not value) or any(h in value for h in ("<", "待用户指定", "你的项目库目录", "你的样本库根目录"))
 
 
 def detect_root(cli_root=None):
-    """样本库根目录：命令行 > paths.local.md > paths.md 兼容取值。
+    """项目库目录：命令行 > paths.local.md > paths.md 兼容取值。
 
     注意：命令行给的路径**即使还不存在也要认**（用户就是要新建到这个位置），
     所以这里不能加 os.path.isdir 判断 —— 否则会悄悄退回旧配置、把项目建到别处去。
@@ -378,7 +378,7 @@ def ensure_root(root):
     if not os.path.exists(note):
         try:
             with open(note, "w", encoding="utf-8") as f:
-                f.write("这是本 skill 的样本库根目录（评分工具与素材投放都连本目录）。\n")
+                f.write("这是本 skill 的项目库目录（评分工具与素材投放都连本目录）。\n")
                 f.write("每个项目/实验一个子文件夹，统一结构：\n")
                 f.write("  <实验名>/\n")
                 f.write("    ├── 框架.json            # 机器读（agent 优先读这份）\n")
@@ -1040,7 +1040,7 @@ def auto_build(paths, root=None, name=None, platform="", register=True, on_log=N
 
     plan = auto_plan(paths, root=root, name=name, on_log=emit)
     if not plan["root"]:
-        return None, plan, log + ["还没有样本库根目录，无法自动建框架"]
+        return None, plan, log + ["还没有项目库目录，无法自动建框架"]
     if not plan["final_name"]:
         plan["final_name"] = "新项目"
         emit("推不出项目名 → 先用「新项目」，建好后随手改名即可")
@@ -1418,7 +1418,7 @@ def _cli(argv):
     ap = argparse.ArgumentParser(
         prog="project_core",
         description="项目框架 / 素材投放（agent 与工具共用同一套实现）")
-    ap.add_argument("--root", help="样本库根目录（登记为 SAMPLES_ROOT）")
+    ap.add_argument("--root", help="项目库目录（登记为 SAMPLES_ROOT）")
     ap.add_argument("--name", help="实验名；不带日期戳，重开自动加序号")
     ap.add_argument("--project", help="直接指定项目目录（建框架或投素材都可用）")
     ap.add_argument("--platform", default="", help="平台名（即梦 / 小云雀 / updream）")
@@ -1522,9 +1522,9 @@ def _cli(argv):
     # 1) 建框架
     if (a.project or a.name) and not session_only:
         if not root and not a.project:
-            out.update(ok=False, error="还没指定样本库根目录",
+            out.update(ok=False, error="还没指定项目库目录",
                        ask=ASK_PLACE,
-                       hint='先问用户，再跑：--root "<样本库根>" --name "<实验名>"')
+                       hint='先问用户，再跑：--root "<项目库>" --name "<实验名>"')
             print(json.dumps(out, ensure_ascii=False, indent=2) if a.json
                   else "[框架] 还没指定根目录。先问用户：%s" % ASK_PLACE)
             return 1

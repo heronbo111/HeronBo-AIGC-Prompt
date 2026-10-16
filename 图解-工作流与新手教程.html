@@ -204,7 +204,7 @@
 
       <div class="step"><div class="n">7</div><div>
         <h4>回收反馈，更新规则<span class="who t">工具</span><span class="who a">agent</span></h4>
-        <p>你保存的评分 json → <code>python tools\评价回收.py</code> → agent 按《反馈优化循环》更新 <code>rules.md</code> / 模板 / 样本库，并回报这次改了什么。</p>
+        <p>你保存的评分 json → <code>python tools\评价回收.py</code> → agent 按《反馈优化循环》更新 <code>rules.md</code> / 模板 / 项目库，并回报这次改了什么。</p>
       </div></div>
     </div>
   </section>
@@ -285,7 +285,7 @@
         <tr><td class="f"><code>prompt-templates.md</code></td><td>模板 A–F（开头有"四大类 ↔ 模板"总表）</td><td><span class="tag agent">agent</span>选模板时</td></tr>
         <tr><td class="f"><code>playbooks.md</code></td><td>实战手册：一、替换类（分级 / 路线 / 失败模式）二、二创拆解三、深度视频与环境</td><td><span class="tag agent">agent</span>做替换、拆解、深度片时</td></tr>
         <tr><td class="f"><code>platforms.md</code></td><td>平台与 CLI + <b>模型与限额（唯一真相源）</b> + 平台玩法提炼</td><td><span class="tag agent">agent</span>定模型 / 查限额时</td></tr>
-        <tr><td class="f"><code>samples-db.md</code></td><td>样本库：提示词 → 成片 → 评价 → 规则产出</td><td><span class="tag agent">agent</span>找同类先例时</td></tr>
+        <tr><td class="f"><code>samples-db.md</code></td><td>项目库：提示词 → 成片 → 评价 → 规则产出</td><td><span class="tag agent">agent</span>找同类先例时</td></tr>
         <tr><td class="f"><code>paths.md</code> / <code>paths.local.md</code></td><td>路径变量模板 / 本机实际取值</td><td><span class="tag both">定位项目时</span></td></tr>
         <tr><td class="f"><code>eval-cases.md</code></td><td>回归用例与逐条断言</td><td><span class="tag agent">agent</span>改完规则自检</td></tr>
         <tr><td class="f"><code>eval-absorbed.local.json</code></td><td>评价回收账本（不进仓库）</td><td><span class="tag t">工具</span>回收评价时</td></tr>
@@ -323,7 +323,7 @@
       <div class="to pulse">→</div>
       <div class="node"><b>回收</b><code>评价回收.py</code></div>
       <div class="to pulse">→</div>
-      <div class="node"><b>更新规则</b>rules / 模板 / 样本库</div>
+      <div class="node"><b>更新规则</b>rules / 模板 / 项目库</div>
     </div>
     <p class="note" style="margin-top:14px">规则只写「规则 + 依据（日期 / 来源）」：同一现象出现 ≥2 次且因果明确才升为"已验证"，只出现 1 次先记"待验证"。</p>
   </section>

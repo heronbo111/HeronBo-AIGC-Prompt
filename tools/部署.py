@@ -11,7 +11,7 @@
     python 部署.py install        # 装缺的依赖（默认只打印命令；加 --yes 才真装）
     python 部署.py shortcut       # 桌面快捷方式（指向 dist\\score-tool.exe，用自带图标）
     python 部署.py all            # check → agents → install → shortcut
-常用开关：--yes（真动手） / --root <样本库根>（配置样本库）
+常用开关：--yes（真动手） / --root <项目库>（配置项目库）
 
 铁律（照仓库 AGENTS.md）：**装任何东西前先问用户**——不加 --yes 只打印命令，不执行。
 """
@@ -192,19 +192,19 @@ def _wv2_state():
     except Exception:                                            # noqa: BLE001
         return False, "", "查不到"
 def check_root(root=None):
-    log("== 样本库根 ==")
+    log("== 项目库 ==")
     try:
         import project_core as pc
         cur = (pc.read_local() or {}).get("SAMPLES_ROOT") or ""
         if root:
             pc.write_local(SAMPLES_ROOT=os.path.abspath(root))
-            ok("样本库根已设为", os.path.abspath(root))
+            ok("项目库已设为", os.path.abspath(root))
             return
         if cur and os.path.isdir(cur):
-            ok("样本库根", cur)
+            ok("项目库", cur)
         else:
-            bad("样本库根", cur or "未配置",
-                "python tools\\部署.py check --root \"<你的样本库目录>\"")
+            bad("项目库", cur or "未配置",
+                "python tools\\部署.py check --root \"<你的项目库目录>\"")
     except Exception as e:                                       # noqa: BLE001
         bad("读取 project_core / paths.local.md", str(e))
 
@@ -983,7 +983,7 @@ def main():
     ap.add_argument("action", nargs="?", default="check",
                     choices=["check", "install", "agents", "shortcut", "start", "wx", "vendor", "defender", "all"])
     ap.add_argument("--yes", action="store_true", help="真动手（不加就只打印命令）")
-    ap.add_argument("--root", help="设置样本库根目录")
+    ap.add_argument("--root", help="设置项目库目录")
     ap.add_argument("--fetch", action="store_true",
                     help="vendor 时从 Release 下大件（默认只下 core，约 76MB；断点续传）")
     ap.add_argument("--exe", action="store_true",

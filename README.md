@@ -50,12 +50,12 @@ AI 视频提示词生成 + 成片六维评价工具。把「文案/台词 + 素�
 装 skill / 放项目**都会先问位置**，不再默认塞进固定目录：
 
 ```bash
-python 安装向导.py            # 问两件事：①skill 装到哪（按本机 agent 给默认值）②项目样本库放哪
+python 安装向导.py            # 问两件事：①skill 装到哪（按本机 agent 给默认值）②项目项目库放哪
 python 安装向导.py --list     # 只看各 harness 的默认目录
 ```
 
 它会：选位置（ZCode / WorkBuddy / Codex / DSH / 豆包 / 豆包工作 默认目录或自定义）→ 没下载就浅克隆（`--depth 1`，
-没 git 就直接下 gitee 的 zip 源码包，**不用装 git**）→ 写样本库根 → 可选给其它 agent 建 junction
+没 git 就直接下 gitee 的 zip 源码包，**不用装 git**）→ 写项目库 → 可选给其它 agent 建 junction
 （一份实体多处可用）→ 可选接着跑 `tools\部署.py all --yes`。
 
 ### 下载（任选其一，都只要最新一层）
@@ -156,7 +156,7 @@ HeronBo-AIGC-Prompt/
 │   ├── prompt-templates.md        # 提示词模板
 │   ├── playbooks.md               # 实战手册
 │   ├── platforms.md               # 平台与 CLI + 模型限额
-│   ├── samples-db.md              # 样本库对照
+│   ├── samples-db.md              # 项目库对照
 │   ├── paths.md                   # 路径表模板
 │   ├── rules.local.md             # 本机规则覆盖层
 │   └── paths.local.md             # 本机路径配置
@@ -176,13 +176,13 @@ HeronBo-AIGC-Prompt/
 
 - **references/**：写提示词前只读本次相关条目；rules.md 顶部有规则索引
 - **tools/**：本地预处理与评价工具，都不提交生成、不消耗积分
-- **samples/**：仓库内为脱敏示例，真实数据存各机本机样本库
+- **samples/**：仓库内为脱敏示例，真实数据存各机本机项目库
 
 ## 四、参与贡献
 
 1. 使用并反馈：成片反馈/六维评分是规则更新的唯一来源
 2. 本地优化写 `references/*.local.md`（gitignored），git pull 不会冲突
-3. 大视频（成片/废片）不进仓库；真实数据只存各机本机样本库
+3. 大视频（成片/废片）不进仓库；真实数据只存各机本机项目库
 
 ### 作者侧：改完怎么发出去
 

@@ -1,5 +1,9 @@
 # 路径与平台约定（模板；本机取值在 paths.local.md）
 
+> **名字说明（2026-10-16 起）**：装各项目的那一层目录（就是下面 `${SAMPLES_ROOT}`）界面上叫
+> 「**项目库**」——一个大库装各类小项目；旧文档、旧对话里叫"样本库 / 样本库根"，指的是同一个东西。
+> 配置键 `SAMPLES_ROOT` 与仓库里的 `samples/` 目录名**保持不变**（老配置、老脚本、老安装向导都不受影响）。
+
 skill 正文一律使用变量名（`${SAMPLES_ROOT}` / `${AI_CREATE_ROOT}`），不写死任何具体路径。
 **本机取值不写在本文件**——写进同目录的 `references/paths.local.md`（已 gitignore，不进仓库、不参与 git 冲突）。
 该文件不存在 = 首次使用 → 先问用户（见下）。
@@ -17,7 +21,7 @@ agent 按顺序问两个问题（同一轮问完）：
 ## paths.local.md 格式
 
 ```
-SAMPLES_ROOT=<样本库根目录：各项目目录的上一级，评分工具连接这一级>
+SAMPLES_ROOT=<项目库目录：各项目目录的上一级，评分工具连接这一级>
 AI_CREATE_ROOT=<参考素材/来源素材根目录>
 PLATFORM=<即梦|小云雀|updream>
 CLI=<CLI 命令名，没有就留空>
@@ -26,7 +30,7 @@ DEPTH_MODEL=<深度模型 onnx 路径，可选；也可用环境变量 DEPTH_MOD
 
 由 `tools\首次配置.py` 创建并写回；也可以手写。
 
-## 目录模型（样本库内含素材库）
+## 目录模型（项目库内含素材库）
 
 ```
 ${SAMPLES_ROOT}/
@@ -44,6 +48,6 @@ ${SAMPLES_ROOT}/
 
 1. 安装 skill：ZCode `~/.zcode/skills/`；Codex CLI `~/.codex/skills/`；DeepSeek Harness `~/.dsh/skills/`（也可项目级 `.dsh/skills/`）。新对话自动识别。
 2. agent 问位置 + 问平台 → 建框架 + 归类素材 + 按 `platforms.md` 装 CLI（可选）+ 写 `paths.local.md`。
-3. 评分工具：双击 `tools\score_gui.cmd`（优先 `dist\score-tool.exe`）；找不到样本库根时会弹目录选择框，选 `${SAMPLES_ROOT}` 后自动写回 `paths.local.md`。exe 自带运行时、不需要装 Python；要自行打包才需要 Python 3 + PyInstaller。
+3. 评分工具：双击 `tools\score_gui.cmd`（优先 `dist\score-tool.exe`）；找不到项目库时会弹目录选择框，选 `${SAMPLES_ROOT}` 后自动写回 `paths.local.md`。exe 自带运行时、不需要装 Python；要自行打包才需要 Python 3 + PyInstaller。
 4. 环境：Python 3、Edge/Chrome、ffmpeg（素材识别抽帧）；**不检测平台账号**，账号由用户自行登录。
 5. 自检：`python tools\首次配置.py`（无参：已配置 exit 0 / 未配置 exit 1 并打印问句）、`python tools\评价回收.py`、`tools\score_gui.cmd` 能弹出评分窗口。

@@ -206,7 +206,7 @@
 
       <div class="step"><div class="n">7</div><div>
         <h4>回收反馈，更新规则<span class="who t">工具</span><span class="who a">agent</span></h4>
-        <p>你保存的评分 json → <code>python tools\评价回收.py</code> → agent 按《反馈优化循环》更新 <code>rules.md</code> / 模板 / 样本库，并回报这次改了什么。</p>
+        <p>你保存的评分 json → <code>python tools\评价回收.py</code> → agent 按《反馈优化循环》更新 <code>rules.md</code> / 模板 / 项目库，并回报这次改了什么。</p>
       </div></div>
     </div>
   </section>
@@ -293,7 +293,7 @@
         <tr><td class="f"><code>prompt-templates.md</code></td><td>模板 A–F（开头有"四大类 ↔ 模板"总表）</td><td><span class="tag agent">agent</span>选模板时</td></tr>
         <tr><td class="f"><code>playbooks.md</code></td><td>实战手册：一、替换类（分级 / 路线 / 失败模式）二、二创拆解三、深度视频与环境</td><td><span class="tag agent">agent</span>做替换、拆解、深度片时</td></tr>
         <tr><td class="f"><code>platforms.md</code></td><td>平台与 CLI + <b>模型与限额（唯一真相源）</b> + 平台玩法提炼</td><td><span class="tag agent">agent</span>定模型 / 查限额时</td></tr>
-        <tr><td class="f"><code>samples-db.md</code></td><td>样本库：提示词 → 成片 → 评价 → 规则产出</td><td><span class="tag agent">agent</span>找同类先例时</td></tr>
+        <tr><td class="f"><code>samples-db.md</code></td><td>项目库：提示词 → 成片 → 评价 → 规则产出</td><td><span class="tag agent">agent</span>找同类先例时</td></tr>
         <tr><td class="f"><code>paths.md</code> / <code>paths.local.md</code></td><td>路径变量模板 / 本机实际取值</td><td><span class="tag both">定位项目时</span></td></tr>
         <tr><td class="f"><code>eval-cases.md</code></td><td>回归用例与逐条断言</td><td><span class="tag agent">agent</span>改完规则自检</td></tr>
         <tr><td class="f"><code>eval-absorbed.local.json</code></td><td>评价回收账本（不进仓库）</td><td><span class="tag t">工具</span>回收评价时</td></tr>
@@ -331,7 +331,7 @@
       <div class="to pulse">→</div>
       <div class="node"><b>回收</b><code>评价回收.py</code></div>
       <div class="to pulse">→</div>
-      <div class="node"><b>更新规则</b>rules / 模板 / 样本库</div>
+      <div class="node"><b>更新规则</b>rules / 模板 / 项目库</div>
     </div>
     <p class="note" style="margin-top:14px">规则只写「规则 + 依据（日期 / 来源）」：同一现象出现 ≥2 次且因果明确才升为"已验证"，只出现 1 次先记"待验证"。</p>
   </section>
@@ -384,7 +384,7 @@
     <div class="card" style="margin-top:14px">
       <h3>四栏各自管什么（2026-09-16 起）</h3>
       <p><b>① 项目</b>：顶上那颗「＋ 新建项目」给一张白纸（空素材、空提示词），名字留空自动起一个；
-      下面列的是样本库里已有的项目，点名字就切过去。</p>
+      下面列的是项目库里已有的项目，点名字就切过去。</p>
       <p><b>② 文案 / 素材识别</b>：先写「你的简单需求」一句（比如"老师出镜带货、8 秒、竖版"）——
       它会存进项目里，agent 出提示词和核对归类时都按它来；下面是素材清单，每行有角色、名字、大小，
       右边 <b>✕ 移除</b>（文件移到项目里的 <code>_已移除/</code>，不会真删）、
@@ -435,7 +435,7 @@
       <p><b>克隆用 <code>git clone --depth 1</code></b>：仓库历史里有历代 18 MB 的 exe，
       完整 clone 要下 70 MB+ 历史，浅克隆只要 20 MB 左右——<b>"装得很慢"一半在这里</b>。</p>
       <p><code>python tools\deploy.py check</code> —— <b>只体检</b>：Python / tkinter / pywebview /
-      <b>WebView2 运行库</b> / node / ffprobe / exe / 图标 / 样本库根 / 四个 agent 通道，
+      <b>WebView2 运行库</b> / node / ffprobe / exe / 图标 / 项目库 / 四个 agent 通道，
       缺什么列什么、并给出修法。（中文名的 <code>tools\部署.py</code> 与它同一条，
       批处理里用 ASCII 别名 <code>deploy.py</code>。）</p>
       <p><code>python tools\deploy.py agents --yes</code> —— 接 agent 通道：探测 WorkBuddy / Codex /

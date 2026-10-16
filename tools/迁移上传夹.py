@@ -5,9 +5,9 @@ r"""把老项目里的 `即梦上传/` 改成新名 `平台上传/`（2026-09-17
 **只做重命名**（`os.rename`），不改文件内容、不删东西——想退回把名字改回来即可。
 
 用法：
-    python tools\迁移上传夹.py --root "<样本库根>"            # 只看要改哪些（默认只预览）
-    python tools\迁移上传夹.py --root "<样本库根>" --yes                  # 真改
-    python tools\迁移上传夹.py --root "<样本库根>" --yes --dry-run        # 同 --dry-run 只预览
+    python tools\迁移上传夹.py --root "<项目库>"            # 只看要改哪些（默认只预览）
+    python tools\迁移上传夹.py --root "<项目库>" --yes                  # 真改
+    python tools\迁移上传夹.py --root "<项目库>" --yes --dry-run        # 同 --dry-run 只预览
 """
 import argparse
 import os
@@ -36,7 +36,7 @@ def scan(root):
 
 def main():
     ap = argparse.ArgumentParser(description="把 即梦上传/ 重命名为 平台上传/")
-    ap.add_argument("--root", required=True, help="样本库根目录（里面每个子目录＝一个项目）")
+    ap.add_argument("--root", required=True, help="项目库目录（里面每个子目录＝一个项目）")
     ap.add_argument("--yes", action="store_true", help="真的改；不加只预览")
     ap.add_argument("--dry-run", action="store_true", help="只预览（和默认一样）")
     a = ap.parse_args()

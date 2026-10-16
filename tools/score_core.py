@@ -8,7 +8,7 @@
     python 评分.py                      # 问答式打分（列出待评样本 → 选一个 → 逐项打分）
     python 评分.py --list               # 只看清单：每个样本有哪些成片、上次评分多少
     python 评分.py --show "三本书"       # 看某个样本最近一次评价
-    python 评分.py --root "<样本库根>"    # 指定样本库根（默认读 references/paths.local.md）
+    python 评分.py --root "<项目库>"    # 指定项目库（默认读 references/paths.local.md）
     python 评分.py --sample "课堂走神" --video 成片.mp4 --口型 同步 --动作 准确 --形象 稳定 --语速 合适 --节奏 准 \
                    --字幕 无 --运镜 无 --畸变 无 --评分 4 --结论 可改 --备注 "老师位置对了"   # 非交互（agent/脚本调用）
     python 评分.py --list --dry-run      # 只看，不写任何文件
@@ -52,7 +52,7 @@ OK_VALS = {"同步", "准确", "稳定", "合适", "准", "无", "无问题"}
 
 
 def detect_root(cli_root=None):
-    """样本库根：命令行 > references/paths.local.md > 环境变量"""
+    """项目库：命令行 > references/paths.local.md > 环境变量"""
     if cli_root:
         return os.path.abspath(cli_root)
     for name in ("paths.local.md", "paths.md"):
@@ -60,7 +60,7 @@ def detect_root(cli_root=None):
         if os.path.isfile(p):
             for line in open(p, encoding="utf-8"):
                 s = line.strip()
-                for key in ("SAMPLES_ROOT", "样本库根"):
+                for key in ("SAMPLES_ROOT", "项目库", "样本库根"):   # 末一个是旧名（老配置还这么写）
                     if key in s:
                         val = s.split("=")[-1].split("`")[-2] if "`" in s else s.split("=")[-1]
                         val = val.strip().strip('`').strip('"').strip()
@@ -69,7 +69,7 @@ def detect_root(cli_root=None):
     env = os.environ.get("SAMPLES_ROOT")
     if env and os.path.isdir(env):
         return os.path.abspath(env)
-    sys.exit("[错误] 没找到样本库根目录：请用 --root 指定，或先把路径写进 references/paths.local.md")
+    sys.exit("[错误] 没找到项目库目录：请用 --root 指定，或先把路径写进 references/paths.local.md")
 
 
 def scan(root):
@@ -113,7 +113,7 @@ def cmd_list(root, dry):
     if not rows:
         print("（%s 下没扫到样本；确认目录结构：<样本>/成片、<样本>/评价）" % root)
         return
-    print("样本库：%s\n" % root)
+    print("项目库：%s\n" % root)
     for s in rows:
         last = s["reviews"][-1][1] if s["reviews"] else None
         print("● %s" % s["name"])
@@ -142,7 +142,7 @@ def score_interactive(root, sample_filter=None):
         sys.exit("没扫到样本")
     if sample_filter:
         rows = [r for r in rows if sample_filter in r["name"]] or sys.exit("没找到样本：%s" % sample_filter)
-    print("样本库：%s" % root)
+    print("项目库：%s" % root)
     for i, s in enumerate(rows, 1):
         print("  %2d) %-28s 成片 %d 个，已有评价 %d 条" % (i, s["name"], len(s["videos"]), len(s["reviews"])))
     while True:
@@ -217,7 +217,7 @@ _fix_console()
 
 def main():
     ap = argparse.ArgumentParser(description="成片六维评分（命令行版，与网页版同一口径）")
-    ap.add_argument("--root", help="样本库根目录")
+    ap.add_argument("--root", help="项目库目录")
     ap.add_argument("--list", action="store_true", help="列出样本/成片/最近评价")
     ap.add_argument("--show", help="看某样本最近一次评价")
     ap.add_argument("--sample", help="非交互模式：样本名")

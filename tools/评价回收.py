@@ -8,7 +8,7 @@
     python 评价回收.py --mark-all               # 把当前待吸收的全部记账
 
 账本：references/eval-absorbed.local.json（本机文件，已 gitignore）。
-样本库根目录取自 references/paths.local.md 的 SAMPLES_ROOT（兼容旧版 paths.md 表格）。
+项目库目录取自 references/paths.local.md 的 SAMPLES_ROOT（兼容旧版 paths.md 表格）。
 """
 import json
 import os
@@ -124,7 +124,7 @@ def fmt(item):
 def main(argv):
     root = samples_root()
     if root is None:
-        print("[评价回收] 还没配置样本库根目录。先跑：python tools/首次配置.py --project \"<项目目录>\"")
+        print("[评价回收] 还没配置项目库目录。先跑：python tools/首次配置.py --project \"<项目目录>\"")
         return 1
     items = scan(root)
     if not items:
@@ -159,7 +159,7 @@ def main(argv):
     if not show:
         print("[评价回收] 没有待吸收评价（全部 %d 条已记账）。" % len(items))
         return 0
-    print("[评价回收] 样本库：%s" % root)
+    print("[评价回收] 项目库：%s" % root)
     print("[评价回收] %s %d 条：" % ("全部评价" if "--all" in argv else "待吸收评价", len(show)))
     print("")
     for it in show:

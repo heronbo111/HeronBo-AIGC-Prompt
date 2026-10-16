@@ -9,7 +9,7 @@
 用法：
     python 首次配置.py                                   # 校验：已配置 exit 0；未配置 exit 1 并打印问句
     python 首次配置.py --project "<项目目录>"             # 建项目框架，其上一级登记为 SAMPLES_ROOT
-    python 首次配置.py --set "<样本库根>"                 # 只登记样本库根
+    python 首次配置.py --set "<项目库>"                 # 只登记项目库
     python 首次配置.py --platform 即梦 --cli dreamina     # 登记平台与 CLI 命令
 
 供启动器与 agent 调用；也可直接运行。
@@ -22,7 +22,7 @@ SKILL_ROOT = os.path.normpath(os.path.join(HERE, ".."))
 LOCAL_MD = os.path.join(SKILL_ROOT, "references", "paths.local.md")
 PATHS_MD = os.path.join(SKILL_ROOT, "references", "paths.md")
 PROJECT_DIRS = ["文案", "素材", "成片", "废片", "评价", "备注"]
-PLACEHOLDER_HINTS = ("<", "待用户指定", "你的样本库根目录", "你的素材根目录")
+PLACEHOLDER_HINTS = ("<", "待用户指定", "你的项目库目录", "你的样本库根目录", "你的素材根目录")
 ASK_PLACE = "请问您要把项目建在哪里？您提供好素材后，我会自动将其进行归类"
 ASK_PLATFORM = "你主要用哪个平台做 AI 视频？即梦 / 小云雀 / updream"
 HEADER = "# 本机取值（不提交仓库；由首次使用时的用户回答写入）\n"
@@ -96,7 +96,7 @@ def ensure_root(root):
     note = os.path.join(root, "README.txt")
     if not os.path.exists(note):
         with open(note, "w", encoding="utf-8") as f:
-            f.write("这是打分工具的样本库根目录（评分工具连接本目录）。\n")
+            f.write("这是打分工具的项目库目录（评分工具连接本目录）。\n")
             f.write("每个项目/实验一个子文件夹，统一结构：\n")
             f.write("  <实验名>/\n")
             f.write("    ├── 文案/口播稿.txt      # 台词原文\n")
@@ -157,17 +157,17 @@ def main(argv):
 
     root = configured_root()
     if root:
-        print("[首次配置] 样本库根目录已配置：%s" % root)
+        print("[首次配置] 项目库目录已配置：%s" % root)
         if not read_local().get("PLATFORM"):
             print("[首次配置] 还没登记平台，问用户：%s" % ASK_PLATFORM)
             print("[首次配置] 拿到回答后：python 首次配置.py --platform 即梦 --cli dreamina")
         return 0
 
-    print("[首次配置] 尚未指定样本库根目录（references/paths.local.md 不存在或无效）。")
+    print("[首次配置] 尚未指定项目库目录（references/paths.local.md 不存在或无效）。")
     print("[首次配置] 先问用户：%s" % ASK_PLACE)
     print("[首次配置] 再问用户：%s" % ASK_PLATFORM)
     print("[首次配置] 拿到位置后：python 首次配置.py --project \"<项目目录>\"")
-    print("[首次配置] 或只登记根目录：python 首次配置.py --set \"<样本库根目录>\"")
+    print("[首次配置] 或只登记根目录：python 首次配置.py --set \"<项目库目录>\"")
     return 1
 
 

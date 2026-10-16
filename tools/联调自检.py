@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""exe ↔ agent 联动自检：不弹窗、不碰真实样本库，在临时目录把协议跑一遍并逐条断言。
+"""exe ↔ agent 联动自检：不弹窗、不碰真实项目库，在临时目录把协议跑一遍并逐条断言。
 
 覆盖《联调说明》里的全部通道：
   ① 建框架      项目目录 + 业务目录 + 框架.json / 框架.md + _会话/状态.json
@@ -81,7 +81,7 @@ def main():
     tmp = tempfile.mkdtemp(prefix="heronbo_joint_")
     stage = os.path.join(tmp, "_投放台")
     os.makedirs(stage, exist_ok=True)
-    root = os.path.join(tmp, "样本库")
+    root = os.path.join(tmp, "项目库")
     os.makedirs(root, exist_ok=True)
     print("临时工作区：%s\n" % tmp)
 
