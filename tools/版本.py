@@ -274,10 +274,12 @@ def _notes_from_changelog(tools_dir=None):
     return txt
 
 
-def write_local(tools_dir=None, version="", notes="", log=_say):
+def write_local(tools_dir=None, version="", notes="", log=_say, pkg=None):
     """生成 tools\\_version.json（打包前调；spec 的 datas 会把它打进 exe）。
 
     一份两用：**运行中的版本**与**发行版元数据**是同一份东西，不会对不上。
+    `pkg`（可选）：在线更新包（zip）的 {name,size,sha256}——发布版本.py 发版时传；
+    工作台「检查更新」按它下载（2026-10-16 起 onedir 走 zip 更新包）。
     """
     import 下载器 as dl
     old = _read_local_json()
@@ -287,12 +289,20 @@ def write_local(tools_dir=None, version="", notes="", log=_say):
     if os.path.isfile(ex):
         ent["size"] = os.path.getsize(ex)
         ent["sha256"] = dl.sha256_file(ex)
+    # onedir 形态（2026-10-16 起）：程序是"目录式"（score-tool.exe + 旁边的 _internal\），
+    # 单独那个 exe 是**残缺件**——老客户端（单文件形态）照 exe 字段把它下载换上会直接弄坏程序。
+    # 所以 onedir 下 exe 字段置空（老客户端取不到下载地址 → 明确报错、去装完整安装包）；
+    # 新版客户端走 pkg（更新包 zip）。
+    if os.path.isdir(os.path.join(os.path.dirname(ex), "_internal")):
+        ent = {"name": "", "size": 0, "sha256": ""}
     d = {"schema": SCHEMA, "version": ver, "commit": git_commit(tools_dir),
          "builtAt": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
          "minLauncher": old.get("minLauncher") or ver,
          "exe": ent,
          "repo": {"branch": "main", "commit": git_commit(tools_dir)},
          "notes": notes or _notes_from_changelog(tools_dir) or old.get("notes") or ""}
+    if pkg:
+        d["pkg"] = dict(pkg)
     p = os.path.join(tools_dir or HERE, "_version.json")
     with open(p, "w", encoding="utf-8", newline="\n") as f:
         json.dump(d, f, ensure_ascii=False, indent=2)
@@ -345,14 +355,19 @@ def payload(tools_dir=None, urls=None, timeout=12, with_repo=True):
     rem = remote(urls, timeout=timeout)
     res = compare(cur, rem)
     ex = rem.get("exe") or {}
+    pk = rem.get("pkg") or {}
+    # 显示的"下载体积/校验值"：有在线更新包（zip，2026-10-16 起 onedir）就显示包的，
+    # 老的单文件版本没有 pkg 才回落到 exe（界面"下载约 xx MB"就这么来的）。
+    vol = pk if (pk.get("size") or 0) else ex
     out = {"ok": True, "current": {"version": cur.get("version"), "commit": cur.get("commit"),
                                    "source": cur.get("source")},
            "remote": {}, "need": bool(res["need"]), "why": res["why"],
-           "exe": {"mb": round((ex.get("size") or 0) / 1048576.0, 1), "size": ex.get("size") or 0},
+           "exe": {"mb": round((vol.get("size") or 0) / 1048576.0, 1), "size": vol.get("size") or 0},
            "repo": {"behind": None, "error": None}}
     if rem:
         out["remote"] = {"version": rem.get("version"), "builtAt": rem.get("builtAt") or "",
-                         "notes": rem.get("notes") or "", "sha256": ex.get("sha256") or ""}
+                         "notes": rem.get("notes") or "",
+                         "sha256": (pk.get("sha256") or ex.get("sha256") or "")}
     if with_repo:
         n, err = repo_behind(tools_dir)
         out["repo"] = {"behind": n, "error": err or None}

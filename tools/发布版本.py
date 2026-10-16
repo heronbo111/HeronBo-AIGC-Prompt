@@ -7,8 +7,13 @@ r"""统一发版：为每个产品版本建一个【不可变】vX.Y.Z Release�
   · 新做法：每次发版一个 vX.Y.Z，永久保留、带更新说明；平台 releases/latest 自动指向最新一个，
     工作台经 能力包.latest_release() 取最新，已装用户检查更新即可拿到。
 
-分工：
-  · 产品本体（score-tool.exe / version.json / 完整 setup）→ 版本化 vX.Y.Z release；
+分工（2026-10-16 onedir 起）：
+  · 产品本体 → 版本化 vX.Y.Z release：
+      - version.json（版本元数据；`pkg` 字段指向在线更新包）
+      - HeronBo-Workbench-Update-vX.Y.Z.zip（在线更新包，已装用户「检查更新」下载；打更新包.py 产出）
+      - HeronBo-Workbench-Setup-vX.Y.Z.exe（完整安装包，新装/重装；--setup 传入）
+    ⚠️ **不再**上传 dist\score-tool.exe：onedir 下它是残缺件（缺旁边的 _internal\），
+       老客户端（单文件形态）拿到换上会弄坏程序——version.json 的 exe 字段同时置空（版本.py）。
   · 能力包依赖（wheels / ffmpeg，大件）→ 固定 assets 通道（能力包.ASSETS_TAG），不在此重复挂。
 
 安全：
@@ -20,8 +25,10 @@ r"""统一发版：为每个产品版本建一个【不可变】vX.Y.Z Release�
     python tools\发布版本.py --version 0.4.1                 # 预演（不外发）
     python tools\发布版本.py --version 0.4.1 --apply         # 正式发（双平台）
     python tools\发布版本.py --version 0.4.1 --setup "X:\...\Setup_v0.4.1.exe" --apply
+    python tools\发布版本.py --version 0.4.1 --setup "…" --update "…Update-v0.4.1.zip" --apply
 """
 import argparse
+import hashlib
 import json
 import mimetypes
 import os
@@ -67,24 +74,49 @@ def credential(host, username=""):
 
 
 # ---------------- 本地元数据 ----------------
-def prepare_local(version, notes):
-    """生成与将发布一致的 _version.json（版本号 + 当前 dist 内核的 sha256）。返回 (meta, version.json 路径)。"""
+def prepare_local(version, notes, pkg=None):
+    """生成与将发布一致的 _version.json（版本号 + 更新包指纹）。返回 (meta, version.json 路径)。"""
     import 版本 as ver
-    meta = ver.write_local(version=version, notes=notes)
+    meta = ver.write_local(version=version, notes=notes, pkg=pkg)
     return meta, LOCAL_VERSION_JSON
 
 
-def make_body(version, notes, has_setup, setup_name):
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def find_update_pkg(version, explicit=""):
+    """在线更新包（HeronBo-Workbench-Update-v<ver>.zip）：显式路径优先，否则找工作区 _安装包\。"""
+    if explicit:
+        return explicit if os.path.isfile(explicit) else ""
+    cand = os.path.join(os.path.dirname(os.path.dirname(HERE)), "_安装包",
+                        "HeronBo-Workbench-Update-v%s.zip" % version)
+    return cand if os.path.isfile(cand) else ""
+
+
+def make_body(version, notes, has_setup, setup_name, has_update=True):
     lines = ["HeronBo 视频工作台 v%s" % version, ""]
     if notes:
         lines += [notes, ""]
     lines += ["【如何更新 / 安装】",
-              "· 已安装：打开工作台 →「检查更新」，自动拉取本版本内核并重启；",
-              "· 本版本附件：score-tool.exe（工作台内核）、version.json（版本元数据）。"]
+              "· 已安装：打开工作台 →「检查更新」，自动拉取本版本内核并重启；"]
+    if has_update:
+        lines.append("· 本版本附件：HeronBo-Workbench-Update-v%s.zip（在线更新包）、"
+                     "version.json（版本元数据）。" % version)
+    else:
+        lines.append("· 本版本附件：score-tool.exe（工作台内核）、version.json（版本元数据）。")
     if has_setup:
         lines.append("· 新安装：下载本页完整安装包 %s（双击即装、依赖全封装）。" % setup_name)
     else:
         lines.append("· 新安装需完整安装包：Gitee 单附件限 100MB，完整包仅放在 GitHub Release。")
+    # 一次性迁移提示（2026-10-13 起程序改"目录式"）：老的单文件形态客户端「检查更新」
+    # 接不上新更新包（会明确报错）——引导它装一次完整安装包，之后就能在线更新。
+    lines.append("· 老版本（0.6.2 及更早的单文件形态）：「检查更新」会提示去装完整安装包——"
+                 "下载本页的 Setup 重装一次即可（一次性迁移；之后就能在线更新）。")
     return "\n".join(lines)
 
 
@@ -330,6 +362,8 @@ def main():
     ap = argparse.ArgumentParser(description="统一发布不可变版本 vX.Y.Z（默认 dry-run）")
     ap.add_argument("--version", required=True, help="产品版本号 X.Y.Z（tag 自动加 v 前缀）")
     ap.add_argument("--setup", default="", help="完整安装包路径（可选；仅 GitHub，Gitee 超 100MB 不传）")
+    ap.add_argument("--update", default="",
+                    help="在线更新包路径（默认自动找 _安装包\\HeronBo-Workbench-Update-v<版本>.zip）")
     ap.add_argument("--target", default="", help="release 指向的分支（默认当前分支）")
     ap.add_argument("--notes", default="", help="更新说明（默认取 CHANGELOG 顶部）")
     ap.add_argument("--apply", action="store_true", help="真正外发（默认只预演）")
@@ -351,13 +385,28 @@ def main():
         log("找不到完整安装包：%s" % setup)
         return 3
 
-    # 1) 本地元数据（dry-run 也生成，便于核对；与将发布一致）
-    meta, vj = prepare_local(version, a.notes)
-    body = make_body(version, meta.get("notes") or "", bool(setup),
-                     gh_asset_name(os.path.basename(setup)) if setup else "")
+    # onedir（2026-10-16 起）：dist\score-tool.exe 旁边有 _internal\ —— 单发那个 exe 是残缺件
+    # （老客户端照着换上会把程序弄坏）。这一形态必须发**在线更新包 zip**，不发裸 exe。
+    onedir = os.path.isdir(os.path.join(HERE, "dist", "_internal"))
+    up_pkg = ""
+    if onedir:
+        up_pkg = find_update_pkg(version, a.update.strip())
+        if not up_pkg:
+            log("找不到在线更新包（HeronBo-Workbench-Update-v%s.zip）——先跑："
+                "python tools\\打更新包.py，或用 --update 指路径" % version)
+            return 3
 
-    # 2) 上传清单（产品本体）
-    files = [SCORE, vj]
+    # 1) 本地元数据（dry-run 也生成，便于核对；与将发布一致）
+    pkg = None
+    if up_pkg:
+        pkg = {"name": os.path.basename(up_pkg), "size": os.path.getsize(up_pkg),
+               "sha256": sha256_file(up_pkg)}
+    meta, vj = prepare_local(version, a.notes, pkg)
+    body = make_body(version, meta.get("notes") or "", bool(setup),
+                     gh_asset_name(os.path.basename(setup)) if setup else "", bool(up_pkg))
+
+    # 2) 上传清单（产品本体）：onedir → version.json + 更新包 zip（不发裸 exe，见上）
+    files = ([vj, up_pkg] if up_pkg else [SCORE, vj])
     if setup:
         files.append(setup)
 
