@@ -1741,17 +1741,23 @@ async function actVideo() {
         if (src) srcIsLocalFile = true;
       }
       if (!src) { log('✗ 超时未拿到成片'); return 4; }
-      const out = VOUT || path.join(os.homedir(), 'Desktop', 'heronbo_video_' + VSID + '.mp4');
-      fs.mkdirSync(path.dirname(out), { recursive: true });
-      let n = 0;
+      let n = 0, videoPath = '';
       if (srcIsLocalFile) {
-        try { fs.copyFileSync(src, out); } catch (e) { log('✗ 成片复制失败：' + e.message); return 4; }
-        n = fs.statSync(out).size;
+        // 2026-10-16（用户要求）：成片已经落在豆包工作区/交接目录——**直接用原路径，不再复制一份**。
+        // 好处：省一份体积；「打开文件夹」直接指向豆包的真实位置，跟用户在豆包里看到的对得上。
+        // （代价：原文件被豆包清掉/移动后，工作台里那份路径就播不出来——这是用户明确接受的口径。）
+        videoPath = src;
+        try { n = fs.statSync(src).size; } catch { n = 0; }
+        step('成片已就位（原位置直接用，不复制）：' + src);
       } else {
+        // 页面内嵌 video（没有"本地原位置"）→ 只能下载落地：下到 --out 指定的位置
+        const out = VOUT || path.join(os.homedir(), 'Desktop', 'heronbo_video_' + VSID + '.mp4');
+        fs.mkdirSync(path.dirname(out), { recursive: true });
         step('正在取回视频…');
         n = await downloadMedia(c, src, out);
+        videoPath = out;
       }
-      console.log(JSON.stringify({ state: 'done', sid: VSID, video: out, bytes: n }));
+      console.log(JSON.stringify({ state: 'done', sid: VSID, video: videoPath, bytes: n }));
     } finally {
       // 同一上下文：成片后保留会话（仅断 CDP、不关窗、不清 target），下次 prepare 复用、上下文连续
       c.close();
