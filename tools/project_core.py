@@ -1193,42 +1193,119 @@ def add_materials(project_dir, paths, copy=True, note="", on_log=None, into=None
     return added, skipped, log
 
 
-def _find_in_project(project_dir, fname):
-    """在项目内按文件名找回素材，返回相对路径（找不到返回 ""）。
+def _find_in_scope(project_dir, rel):
+    """在记录**自己那个素材夹的顶层**按文件名找回，返回新相对路径（找不到返回 ""）。
 
-    为什么要它（2026-10-13 修用户反馈的"素材丢失"）：rescan 原来"磁盘上找不到就立刻删记录"，
-    可素材常被**移到别处**——agent 把它归进 `平台上传/`、界面移除进了 `_已移除/`、
-    加工产物换到了子目录——文件还在项目里，记录却被永久抹掉，看着就是"素材凭空少了"。
-    先在项目内找一圈：找到就把记录**改指到新位置**（素材不丢、记录还在）。
+    素材夹是**扁平**的（rules 71：默认版全在 `素材/` 下、命名版全在 `素材/<版本名>/` 下，
+    都不再分子目录），所以只扫父目录这一层：
+      · 不递归 → 天生不可能串进别的版本夹（`素材/v2 换服装/` 同为 `素材/` 的子目录，
+        2026-10-16 实测过：递归一步就会把 v1 的记录顶成 v2 的同名文件）；
+      · 跳过 `素材/平台上传/`（那是另一个夹，进 find_elsewhere 提示）。
+    跨夹一律不碰 `file`（2026-10-16 用户裁定：「素材和平台上传应该是两个东西而不是迁移」）。
     """
-    want = (fname or "").strip().lower()
+    rel = str(rel or "").replace("\\", "/").strip("/")
+    want = os.path.basename(rel).lower()
+    scope = os.path.dirname(rel)
+    if not (want and scope):
+        return ""
+    base = os.path.join(project_dir, scope.replace("/", os.sep))
+    if not os.path.isdir(base):
+        return ""
+    try:
+        fns = sorted(os.listdir(base))
+    except OSError:
+        return ""
+    for fn in fns:
+        if fn.lower() != want or fn.startswith("."):
+            continue
+        fp = os.path.join(base, fn)
+        if os.path.isfile(fp):
+            return "%s/%s" % (scope, fn)
+    return ""
+
+
+def cur_mats_sub(sk):
+    """当前版的素材夹相对路径（默认版=`素材`，命名版=`素材/<版本名>`）。
+
+    rules 71：重扫/投放只认**当前版**的素材夹；扫默认夹会把别的版本素材串进来。
+    （workbench_server 里有个同名函数读项目磁盘；这里是给拿着 sk 的场合用的。）
+    """
+    proj = ((sk or {}).get("project") or {})
+    vs = [v for v in (proj.get("versions") or []) if isinstance(v, dict)]
+    if not vs:
+        return MATERIAL_DIR
+    cur = str(proj.get("current") or "").strip()
+    names = [str(v.get("name") or "") for v in vs]
+    if cur not in names:
+        cur = names[-1] if names else ""
+    v = next((v for v in vs if str(v.get("name") or "") == cur), None) or vs[-1]
+    d = str(v.get("dir") or "").strip().strip("/\\")
+    if not d:                                  # 默认版（VER_DEFAULT=""）：素材不分子目录
+        return MATERIAL_DIR
+    return "%s/%s" % (MATERIAL_DIR, d)
+
+
+def _sync_cur_versions(sk):
+    """把 `project.materials` 同步进「当前版」的 versions[] 快照。
+
+    为什么要（2026-10-16）：界面读素材走的是版本快照（`cur_materials` 优先 versions），
+    重扫/清理只写 `project.materials` 的话切一次版本就被快照"复原"，重扫白做。
+    """
+    proj = sk.get("project") or {}
+    vs = proj.get("versions")
+    if not isinstance(vs, list) or not vs:
+        return
+    cur = str(proj.get("current") or "").strip()
+    names = [str(v.get("name") or "") for v in vs if isinstance(v, dict)]
+    if cur not in names:
+        cur = names[-1] if names else ""
+        proj["current"] = cur
+    for v in vs:
+        if isinstance(v, dict) and str(v.get("name") or "") == cur:
+            v["materials"] = proj.get("materials") or []
+
+
+def find_elsewhere(project_dir, rel, sk=None):
+    """在项目**别处**按文件名找同名文件，返回相对路径（找不到返回 ""）。
+
+    找的是"实体被搬到哪儿了"，只用于提示（写 `movedTo`）——**绝不改 `file`**。
+    搜索顺序：上传夹（加工件落点，最可能）→ 素材夹其余位置（含别的版本夹）→ `_已移除/`。
+    场景（2026-10-16 用户原话「为了省空间可以迁移」「素材理论上是需要被看见的」）：
+    原件只剩一份、留在了 `平台上传/v1 主推/`——素材记录要能指回它，而不是被它顶掉。
+    """
+    want = os.path.basename(str(rel or "").replace("\\", "/")).strip().lower()
     if not want:
         return ""
-    for sub in (MATERIAL_DIR, "平台上传", "素材/平台上传", "_已移除", "文案"):
-        base = os.path.join(project_dir, sub.replace("/", os.sep))
+    reln = str(rel or "").replace("\\", "/").strip("/")
+    roots = [UPLOAD_DIR, UPLOAD_DIR_OLD, MATERIAL_DIR, "_已移除"]
+    for sub in roots:
+        base = os.path.join(project_dir, sub)
         if not os.path.isdir(base):
             continue
         for dp, dns, fns in os.walk(base):
             dns[:] = [d for d in dns if d != "__pycache__"]
-            for fn in fns:
+            for fn in sorted(fns):
                 if fn.lower() != want:
                     continue
                 fp = os.path.join(dp, fn)
-                try:
-                    if os.path.isfile(fp):
-                        return os.path.relpath(fp, project_dir).replace(os.sep, "/")
-                except OSError:
+                if not os.path.isfile(fp):
                     continue
+                hit = os.path.relpath(fp, project_dir).replace(os.sep, "/")
+                if hit != reln:
+                    return hit
     return ""
 
 
 def rescan(project_dir):
     """磁盘→清单的自愈重扫：扫 素材/ 与 文案/，按相对路径合并，保留原 id 与人工字段。
 
-    2026-10-13 改「丢失处理」（修用户反馈的"素材丢失"，该逻辑 09-14 引入）：
-      旧＝磁盘上找不到就**立即删记录**（文件被移走/临时不可见 → 记录永久没了）；
-      新＝① 先在项目内按文件名**找回并改路径**；② 找不到才计一次 `missing`，
-            **连续 3 次扫描都找不到**才移除。临时抖动不再造成永久丢失。
+    2026-10-16 口径（用户裁定「素材和平台上传是两个东西、素材要看得见」）：
+      · **记录永不自动消失**——文件不在就标 `missing`（界面显示「文件不在」，连跑多少次都在）。
+        要清理由用户点×、或 `--prune-missing` 显式做；程序不再猜"找不到＝不要了"。
+      · 找回分两档：
+        ① **同夹内**找到（`素材/` 或本版素材夹里挪了位置）→ 改指 `file`（安全，不跨版本夹）；
+        ② **别处**找到（上传夹/别的版本夹/_已移除）→ 只写 `movedTo`（"实体在哪儿"），
+           `file` 不动——省空间把原件只留一份是允许的，但素材记录不许被上传夹顶掉。
     """
     project_dir = os.path.normpath(project_dir)
     sk = load_skeleton(project_dir) or {"schema": SCHEMA, "project": {
@@ -1236,7 +1313,8 @@ def rescan(project_dir):
     mats = sk["project"].setdefault("materials", [])
     by_file = {m.get("file"): m for m in mats}
     on_disk = []
-    for sub in (MATERIAL_DIR, "文案"):
+    msub = cur_mats_sub(sk)                   # 只扫「当前版」素材夹（rules 71，别把别的版本串进来）
+    for sub in (msub, "文案"):
         folder = os.path.join(project_dir, sub)
         if not os.path.isdir(folder):
             continue
@@ -1245,7 +1323,7 @@ def rescan(project_dir):
                 continue
             if os.path.isfile(os.path.join(folder, fn)):
                 on_disk.append("%s/%s" % (sub, fn))
-    added = removed = moved = 0
+    added = removed = moved = 0            # removed 恒 0：记录不再自动删（2026-10-16 口径）
     seq = len(mats) + 1
     for rel in on_disk:
         if rel in by_file:
@@ -1266,6 +1344,7 @@ def rescan(project_dir):
         seq += 1
         added += 1
     keep = []
+    missing_now = 0
     for m in mats:
         rel = str(m.get("file", ""))
         if not rel:
@@ -1274,27 +1353,63 @@ def rescan(project_dir):
         fp = os.path.join(project_dir, rel.replace("/", os.sep))
         if os.path.isfile(fp):
             m.pop("missing", None)
+            m.pop("missingSince", None)
+            m.pop("movedTo", None)
             keep.append(m)
             continue
-        hit = _find_in_project(project_dir, os.path.basename(rel))
+        hit = _find_in_scope(project_dir, rel)
         if hit and hit != rel:
-            m["file"] = hit                       # 找回：改指到新位置，记录保住
+            m["file"] = hit                       # 同夹内挪动/改名：改指（不跨版本、不跨夹）
             m.pop("missing", None)
+            m.pop("missingSince", None)
+            m.pop("movedTo", None)
             moved += 1
             keep.append(m)
             continue
-        miss = int(m.get("missing") or 0) + 1
-        if miss >= 3:
-            removed += 1
-            continue
-        m["missing"] = miss
+        other = find_elsewhere(project_dir, rel, sk)
+        if other:
+            m["movedTo"] = other                  # 实体在别处（上传夹/别的版本夹/_已移除）→ 只记位置
+        else:
+            m.pop("movedTo", None)
+        m["missing"] = int(m.get("missing") or 0) + 1
+        if not m.get("missingSince"):
+            m["missingSince"] = datetime.date.today().isoformat()
+        missing_now += 1
         keep.append(m)
     sk["project"]["materials"] = keep
-    if moved:
+    if moved or missing_now or sk["project"].get("lastRescanMissing"):
         sk["project"]["lastRescanMoved"] = moved
+        sk["project"]["lastRescanMissing"] = missing_now
         sk["project"]["lastRescanAt"] = datetime.datetime.now().isoformat(timespec="seconds")
+    _sync_cur_versions(sk)                    # 同步进当前版快照，切版不会把重扫结果复原
     save_skeleton(project_dir, sk)
     return added, removed, sk
+
+
+def prune_missing(project_dir):
+    """清掉 `file` 找不到的素材记录（返回 (条数, 名字列表)）。
+
+    **只该由用户/agent 显式调用**——2026-10-16 起 rescan 永不自动删记录（素材要看得见），
+    这个命令是唯一批量清理口；界面上的 × 仍走工作台的 remove_material（带回收站语义）。
+    """
+    project_dir = os.path.normpath(project_dir)
+    sk = load_skeleton(project_dir)
+    if not isinstance(sk, dict):
+        return 0, []
+    mats = (sk.get("project") or {}).get("materials") or []
+    keep, gone = [], []
+    for m in mats:
+        rel = str(m.get("file", "")).replace("\\", "/")
+        fp = os.path.join(project_dir, rel.replace("/", os.sep)) if rel else ""
+        if rel and not os.path.isfile(fp):
+            gone.append(m.get("name") or rel)
+            continue
+        keep.append(m)
+    if gone:
+        sk["project"]["materials"] = keep
+        _sync_cur_versions(sk)
+        save_skeleton(project_dir, sk)
+    return len(gone), gone
 
 
 # ── 命令行入口（agent 直接调用；输出可用 --json 解析）──────────────────────
@@ -1312,7 +1427,9 @@ def _cli(argv):
     ap.add_argument("--reference", action="store_true",
                     help="只登记原路径不复制（默认复制进 <项目>/素材/）")
     ap.add_argument("--note", default="", help="给这批素材记一句备注")
-    ap.add_argument("--rescan", action="store_true", help="按磁盘重扫、自愈清单")
+    ap.add_argument("--rescan", action="store_true", help="按磁盘重扫、自愈清单（记录永不自动删，缺文件的标 missing）")
+    ap.add_argument("--prune-missing", action="store_true",
+                    help="清掉 file 找不到的素材记录（显式清理口；重扫不会自动删）")
     # ── 会话协议（exe ↔ agent）──
     ap.add_argument("--todos", action="store_true", help="读未处理的待办（agent 用）")
     ap.add_argument("--todo-done", action="store_true", help="把所有待办标记为已完成")
@@ -1457,9 +1574,22 @@ def _cli(argv):
             out.update(ok=False, error="--rescan 需要 --project")
             return 2
         ad, rm, sk = rescan(os.path.normpath(a.project))
-        out["actions"].append({"rescan": a.project, "added": ad, "removed": rm})
+        pj = (sk.get("project") or {})
+        out["actions"].append({"rescan": a.project, "added": ad, "removed": rm,
+                               "moved": pj.get("lastRescanMoved") or 0,
+                               "missing": pj.get("lastRescanMissing") or 0})
         if not a.json:
-            print("[重扫] 补录 %d，剔除 %d" % (ad, rm))
+            print("[重扫] 补录 %d，剔除 %d，同夹改指 %d，文件不在 %d（记录保留，界面会标「文件不在」）"
+                  % (ad, rm, pj.get("lastRescanMoved") or 0, pj.get("lastRescanMissing") or 0))
+
+    if a.prune_missing:
+        if not a.project:
+            out.update(ok=False, error="--prune-missing 需要 --project")
+            return 2
+        n, names = prune_missing(os.path.normpath(a.project))
+        out["actions"].append({"pruneMissing": a.project, "removed": n, "names": names})
+        if not a.json:
+            print("[清理] 移除 %d 条找不到文件的记录：%s" % (n, "、".join(names) or "（无）"))
 
     # 3b) 会话协议：待办 / 回执 / 状态 / 轮次 / 交付接收
     if a.todos or a.todo_done or a.receipt or a.state or a.new_round or a.deliver:

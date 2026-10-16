@@ -8,6 +8,7 @@
   ④ agent 侧    读待办 → 写回执 → 把待办标 done
   ⑤ 收成片      good → 成片/；bad → 废片/日期-废因；状态同步
   ⑥ 重扫自愈    手丢文件进 素材/ → rescan 补齐，且老条目 id 不变
+  ⑥b 素材要看得见 文件被移走：不串版本 / 只记 movedTo / 永不自动删 / prune 显式清（rules 78）
 
 用法：python tools\\联调自检.py [-v]
 退出码：0 = 全部通过；1 = 有失败项。
@@ -193,6 +194,36 @@ def main():
         check("老条目 id 保留（不是整表重建）",
               all(after.get(k) == v for k, v in before.items()),
               "before=%s after=%s" % (before, after))
+
+        # ⑥b 素材要看得见（rules 78，2026-10-16 用户裁定）：不串版本、不顶掉 file、记录永不自己消失
+        print("\n⑥b 素材被移走后的三档处置（rules 78）")
+        org = os.path.join(pd, "素材", "被挪走的.mp3")
+        with open(org, "wb") as fh:
+            fh.write(b"x" * 32)
+        pc.rescan(pd)
+        v2dir = os.path.join(pd, "素材", "v2 换服装")
+        os.makedirs(v2dir, exist_ok=True)
+        os.remove(org)
+        with open(os.path.join(v2dir, "被挪走的.mp3"), "wb") as fh:   # 同名副本进"别的版本夹"
+            fh.write(b"x" * 32)
+
+        def _rec(name):
+            return next((m for m in pc.load_skeleton(pd)["project"]["materials"]
+                         if m.get("name") == name), None)
+
+        pc.rescan(pd)
+        r1 = _rec("被挪走的.mp3") or {}
+        check("v2 有同名副本也不串版本（file 不被改指）",
+              r1.get("file") == "素材/被挪走的.mp3", str(r1))
+        check("别处找到只记 movedTo",
+              (r1.get("movedTo") or "").replace("\\", "/").endswith("v2 换服装/被挪走的.mp3"), str(r1))
+        for _ in range(4):
+            pc.rescan(pd)
+        check("连跑 4 次重扫记录不消失（永不自动删）", _rec("被挪走的.mp3") is not None, "记录被删了")
+        n_prune, names_prune = pc.prune_missing(pd)
+        check("prune-missing 显式清理才移除",
+              n_prune >= 1 and _rec("被挪走的.mp3") is None,
+              "n=%s names=%s" % (n_prune, names_prune))
 
         # ⑦ 指令桥（2026-09-28 融合自妙搭「豆包指令桥」：三通道任务队列）
         print("\n⑦ 指令桥（三通道：cdp / plugin / mcp）")
