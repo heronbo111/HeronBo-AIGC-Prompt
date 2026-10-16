@@ -27,6 +27,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 WORKSPACE = os.path.dirname(os.path.dirname(HERE))          # tools → 仓库 → 工作区根
 DIST = os.path.join(HERE, "dist")
 DEFAULT_OUT = os.path.join(WORKSPACE, "_安装包")
+# 绝不进包（2026-10-16 实测抓到 _internal\feedback.local.json——本机反馈凭据——混了进来）：
+# 本机配置与凭据（*.local.json / *.local.md）、字节码、日志。与 打绿色版.py 同一口径。
+EXCLUDE_SUFFIXES = (".local.json", ".local.md", ".pyc", ".log")
+EXCLUDE_DIRS = {"__pycache__", "_old"}
 
 
 def say(m=""):
@@ -53,14 +57,17 @@ def version_of():
 
 
 def collect(dist_dir):
-    r"""要进包的文件清单（相对 dist 的路径，正斜杠）——只有 exe + _internal\ 两样。"""
+    r"""要进包的文件清单（相对 dist 的路径，正斜杠）——exe + _internal\，剔除本机件。"""
     if not os.path.isfile(os.path.join(dist_dir, "score-tool.exe")):
         return []
     out = ["score-tool.exe"]
     internal = os.path.join(dist_dir, "_internal")
     if os.path.isdir(internal):
-        for dp, _dn, fns in os.walk(internal):
+        for dp, dns, fns in os.walk(internal):
+            dns[:] = [d for d in dns if d not in EXCLUDE_DIRS]
             for fn in sorted(fns):
+                if fn.lower().endswith(EXCLUDE_SUFFIXES):
+                    continue
                 fp = os.path.join(dp, fn)
                 out.append(os.path.relpath(fp, dist_dir).replace(os.sep, "/"))
     return out

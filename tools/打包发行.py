@@ -86,21 +86,28 @@ def _zip_from_dir(zpath, root, prefix="", skip=(), log=print):
 def _zip_workbench(zpath, log=print):
     """把 dist 里的工作台本体打成 zip（2026-10-13 起是 onedir：score-tool.exe + _internal\\）。
 
-    刻意**只收这两样**：dist\\ 里的 *.local.json（本机配置与凭据）、_old\\（旧版备份）、
-    历史 score-tool_旧_*.exe 都不该混进发给用户的更新包。
+    只收 **exe + _internal\\** 两样，且剔除本机件：dist\\ 根的 *.local.json、_old\\、
+    历史 score-tool_旧_*.exe 本来就不在收的范围内；_internal\\ **里面**的 *.local.json
+    （2026-10-16 实测抓到 feedback.local.json——本机反馈凭据——混进来）与 __pycache__\\、
+    *.pyc/*.log 在这里显式剔除——与 打更新包.py 同一口径。
     """
     d = os.path.join(HERE, "dist")
     exe = os.path.join(d, "score-tool.exe")
     if not os.path.isfile(exe):
         raise SystemExit("dist 里没有 score-tool.exe —— 先打包换位：python tools\\打包换位.py")
+    exc_suf = (".local.json", ".local.md", ".pyc", ".log")
+    exc_dir = {"__pycache__", "_old"}
     n = 0
     with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         z.write(exe, "score-tool.exe")
         n += 1
         internal = os.path.join(d, "_internal")
         if os.path.isdir(internal):
-            for dp, _dn, fns in os.walk(internal):
+            for dp, dns, fns in os.walk(internal):
+                dns[:] = [x for x in dns if x not in exc_dir]
                 for fn in sorted(fns):
+                    if fn.lower().endswith(exc_suf):
+                        continue
                     fp = os.path.join(dp, fn)
                     z.write(fp, os.path.relpath(fp, d).replace(os.sep, "/"))
                     n += 1
