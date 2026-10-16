@@ -526,7 +526,10 @@ def electron_host(script):
     （`WorkBuddy.exe` / `ZCode.exe`）。卸载器、更新器之类排除掉。
     """
     d = os.path.dirname(os.path.abspath(script))
-    for _ in range(6):
+    # 2026-10-16：DSH 桌面版自带的 CLI 在 asar **包内**（...\app.asar\dsh\node_modules\...\cli.js），
+    # 到 resources 那一层要走 7 步（lib/dsh-desktop-host/@deepseek-ai/node_modules/dsh/app.asar/
+    # resources）——原来只上溯 6 层会错过它，放宽到 9（对浅层应用没有影响，只是多几次 dirname）。
+    for _ in range(9):
         if not d or os.path.dirname(d) == d:
             break
         if os.path.basename(d).lower() == "resources":
@@ -551,7 +554,15 @@ def lib_runner(script):
 
     优先独立 node；**没有 node 就借该应用自带的 Electron 当 node**（注入
     `ELECTRON_RUN_AS_NODE=1`）——新机器上最省事的一条路，不用额外装 Node.js。
+    ⚠️ 例外（2026-10-16）：脚本在 **app.asar 包内**（DSH 桌面版自带的 CLI 就是）时，
+    **必须用它自己的 Electron 跑**——独立 node 读不穿 asar（asar 是文件，只有 Electron
+    的 fs 补丁认它），装着 Node.js 的机器上硬走 node 会直接报错。
     """
+    if ".asar" in str(script).lower():
+        host = electron_host(script)
+        if host:
+            _ELECTRON_AS_NODE.add(os.path.normcase(host))
+            return host, {"ELECTRON_RUN_AS_NODE": "1"}
     n = node_exe()
     if n and _is_node_exe(n):
         return n, {}
@@ -791,16 +802,55 @@ def _probe_claude():
     return True, exe
 
 
+def dsh_desktop_cli():
+    """DSH **桌面版自带**的命令行入口（cli.js）——用户机器上多半只有桌面版，没有 npm 包。
+
+    怎么发现的（2026-10-16 用户在真机实测反馈"我本机有 DSH 但识别不到"）：
+        <安装根>\\resources\\runtime\\cli\\bin\\dsh.cmd 里写明了启动方式——
+        `ELECTRON_RUN_AS_NODE=1 "<安装根>\\DeepSeek Harness.exe" --expose-internals
+          <安装根>\\resources\\app.asar\\dsh\\node_modules\\@deepseek-ai\\dsh-desktop-host\\lib\\cli.js`
+    所以：用 **dsh.cmd 定位安装根**（它在磁盘上、能 glob），再拼出 exe 与 cli.js。
+    ⚠️ cli.js 在 app.asar **包内**——Python 的 isfile/glob 穿不进去（只有 Electron 自己的 fs 认），
+    所以不对它做存在性检查，只认 dsh.cmd 与宿主 exe 在不在。
+    """
+    cfg = _local_cfg().get("dshDesktop")
+    roots = []
+    if cfg:
+        roots.append(cfg if os.path.isdir(cfg) else os.path.dirname(cfg))
+    hit = _glob_first(_glob_in_roots(("resources", "runtime", "cli", "bin", "dsh.cmd")))
+    if hit:
+        root = hit
+        for _ in range(5):                     # 文件 → bin → cli → runtime → resources → 安装根
+            root = os.path.dirname(root)
+        if root and root not in roots:
+            roots.append(root)
+    for r in roots:
+        exe = os.path.join(r, "DeepSeek Harness.exe")
+        cmd0 = os.path.join(r, "resources", "runtime", "cli", "bin", "dsh.cmd")
+        js = os.path.join(r, "resources", "app.asar", "dsh", "node_modules",
+                          "@deepseek-ai", "dsh-desktop-host", "lib", "cli.js")
+        if os.path.isfile(exe) and os.path.isfile(cmd0):
+            return js
+    return None
+
+
 def dsh_pkg():
     """找 DSH（DeepSeek Harness）的启动脚本。
 
-    DSH 是 npm 包 @deepseek-ai/dsh（用户平时用 `npx @deepseek-ai/dsh web --no-open` 起网页端）。
-    它自带无头档：`dsh --profile headless "<任务>"` —— stderr 流推理、stdout 出最终答复、跑完退出。
-    这里直接找到包里的 lib/bin.js，用 node 调（**不走 npx/cmd**，免得提示词里的引号被 shell 吃掉）。
+    候选顺序（2026-10-16 重排）：
+      ① 本机配置 agent_bridge.local.json 的 "dsh"（显式指定，最高优先）；
+      ② **DSH 桌面版自带的 cli.js**（Electron 当 node 跑；用户机器上常见形态——
+         `npx @deepseek-ai/dsh` 那档 npm 包往往根本没装，老逻辑会误报"没找到"）；
+      ③ npm 包：npx 缓存 / 全局安装。
+    它自带无头档：`dsh --profile headless --json "<任务>"`（run events 走 stdout，跑完退出）。
+    这里直接给出脚本路径，用 node/Electron 调（**不走 npx/cmd**，免得提示词里的引号被 shell 吃掉）。
     """
     cfg = _local_cfg().get("dsh")
     if cfg and os.path.isfile(cfg):
         return cfg
+    desktop = dsh_desktop_cli()
+    if desktop:
+        return desktop
     import glob as _glob
     pats = [os.path.join(os.environ.get("LOCALAPPDATA", ""), "npm-cache", "_npx", "*",
                          "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js"),
@@ -836,20 +886,37 @@ def _probe_zcode():
         return False, ("找到了 CLI 但没东西能跑它：既没有 node，也没在 %s 旁边找到 ZCode 的 exe"
                        % os.path.dirname(cli))
     how = "Electron 当 node（没装 Node.js 也能跑）" if renv else "node"
-    # 就绪检查：CLI 明确要求 ~/.zcode/cli/config.json 里有 provider（2026-09-15 实测报
-    # "Model config is missing"）。顺手查一下，别让用户"选了才发现"。
+    # 就绪检查（2026-10-16 修订）：老版 CLI 要求 ~/.zcode/cli/config.json 里有 provider
+    #（2026-09-15 实测报 "Model config is missing"）；**新版（0.16.9 实测）改用共享登录凭据**——
+    # 桌面端与 CLI 共用 ~/.zcode/v2/credentials.json 的登录态（`zcode login` 写的就是它），
+    # 此时 cli/config.json 里可以没有 provider/model，CLI 照样能跑（用户真机就是这样，
+    # 老判定把"已登录的 ZCode"误报成"没有 provider"）。三种就绪形态都认：
+    #   ① 有 provider（自己填的 API Key 通道）
+    #   ② 有 model（`zcode login` 后它自己写的 "provider/model" 引用，如 zai/glm-5.1）
+    #   ③ 共享登录凭据里已有登录态（新形态）
+    credp = os.path.join(os.path.expanduser("~"), ".zcode", "v2", "credentials.json")
+    cred_ok = False
+    try:
+        cr = json.load(open(credp, encoding="utf-8-sig"))
+        cred_ok = isinstance(cr, dict) and any(
+            str(k).startswith(("oauth:", "project-key-location:")) or k == "zcodejwttoken"
+            for k in cr)
+    except (OSError, ValueError):
+        cred_ok = False
     cfgp = os.path.join(os.path.expanduser("~"), ".zcode", "cli", "config.json")
     try:
         cfg = json.load(open(cfgp, encoding="utf-8-sig"))
     except (OSError, ValueError):
-        return False, ("CLI 找到了（用 %s 跑），但缺 %s：先跑一次 `zcode login`"
-                       "（或把桌面端 ~/.zcode/v2/config.json 的 provider 搬过去）" % (how, cfgp))
-    # 两种就绪形态都认：① 有 provider（自己填的 API Key 通道）
-    # ② 有 model（`zcode login` 后它自己写的 "provider/model" 引用，如 zai/glm-5.1）
-    if cfg.get("provider") or cfg.get("model"):
+        cfg = None
+    if cfg is None:
+        if cred_ok:
+            return True, cli
+        return False, ("CLI 找到了（用 %s 跑），但还没登录也没有 %s：先跑一次 `zcode login`"
+                       % (how, cfgp))
+    if cfg.get("provider") or cfg.get("model") or cred_ok:
         return True, cli
-    return False, ("CLI 找到了（用 %s 跑），但 %s 里没有 provider 或 model（现在只有 %s）；"
-                   "先跑一次 `zcode login`，或把桌面端 ~/.zcode/v2/config.json 的 provider 搬过去"
+    return False, ("CLI 找到了（用 %s 跑），但 %s 里没有 provider 或 model（现在只有 %s）、"
+                   "共享登录凭据也没有——先跑一次 `zcode login`"
                    % (how, cfgp, "/".join(cfg.keys())))
 
 
@@ -869,16 +936,20 @@ def _dsh_note():
 def _probe_dsh():
     pkg = dsh_pkg()
     if not pkg:
-        return False, "没找到 DSH（需要 npx @deepseek-ai/dsh 跑过一次，或全局安装）"
+        return False, ("没找到 DSH（装官方桌面版即可——工作台用桌面版自带的命令行档；"
+                       "或在命令行 npx @deepseek-ai/dsh 跑过一次也行）")
     runner, _renv = lib_runner(pkg)
     if not runner:
-        return False, "DSH 脚本找到了，但本机没有 node（DSH 不是 Electron 应用，必须装 Node.js）"
+        return False, "DSH 脚本找到了，但本机没有 node（装官方桌面版可自带运行时；或装 Node.js）"
     # ⚠️ 命中 npx 缓存 ≠ 装了它（2026-09-22 用户反馈）：「谁以前用 npx 跑过一次」就会在
     # `npm-cache\_npx\…` 留下整包，被当成"装了 DSH 且可用"。这种标成 weak（疑似），
     # 界面显示成"未验证"，要用户点一下「测一下」才认。
     if "npm-cache" in pkg.lower() or "_npx" in pkg.lower():
         return True, ("只找到 npx 缓存里的那份（以前 npx 跑过一次留下的）：%s"
                       "；未验证，点「测一下」确认" % pkg)
+    if os.path.normcase(pkg) == os.path.normcase(str(dsh_desktop_cli() or "")):
+        # 桌面版自带的那档（2026-10-16）：Electron 当 node 跑 asar 里的 cli.js
+        return True, "DSH 桌面版自带的命令行档（Electron 当 node）" + _dsh_note()
     return True, pkg + _dsh_note()
 
 
@@ -1184,8 +1255,8 @@ def quick_check(key):
             pkg = dsh_pkg()
             runner, renv = lib_runner(pkg) if pkg else (None, None)
             if not (pkg and runner):
-                return False, "DSH 的脚本找不到或没有 node 跑它"
-            cmd = [runner, pkg, "--version"]
+                return False, "DSH 的脚本找不到或没有东西能跑它（装官方桌面版可自带运行时）"
+            cmd = [runner, "--expose-internals", pkg, "--version"]
         elif key == "doubaowork":
             js = doubao_js()
             runner, renv = lib_runner(js) if js else (None, None)
@@ -1419,10 +1490,10 @@ def build_cmd_for(key, prompt, session_id=None, cwd=None, permission_mode=None,
     if key == "dsh":
         pkg = dsh_pkg()
         if not pkg:
-            raise RuntimeError("DSH 不可用（没找到 @deepseek-ai/dsh）")
+            raise RuntimeError("DSH 不可用（没找到 DSH 桌面版自带的命令行档，也没有 @deepseek-ai/dsh）")
         runner, _renv = lib_runner(pkg)
         if not runner:
-            raise RuntimeError("DSH 找到了，但没有 node 可跑（先装 Node.js）")
+            raise RuntimeError("DSH 找到了，但没有东西能跑它（装官方桌面版可自带运行时；或装 Node.js）")
         # 2026-10-08 升级：改走 --json（newline-delimited run events）——
         # 实测事件形状（本机 headless --json 跑通）：
         #   {"type":"session","sessionId":"…","cwd":"…"}
@@ -1430,7 +1501,9 @@ def build_cmd_for(key, prompt, session_id=None, cwd=None, permission_mode=None,
         #   {"type":"final","text":"<最终答复>"}
         # 原来 "text" 模式 stderr 只有粗粒度推理，工作台进度区没东西可显示；
         # stream 模式每步都能喂进度（turn/step 计数），最终答复从 final 事件取。
-        cmd = [runner, pkg, "--profile", "headless", "--json", prompt]
+        # 2026-10-16：加 `--expose-internals`（照 DSH 桌面版官方 dsh.cmd 的形状来；
+        # 对独立 node 也是合法 flag，两条形态都无害）。
+        cmd = [runner, "--expose-internals", pkg, "--profile", "headless", "--json", prompt]
         return cmd, "dsh-json"
     if key == "codex":
         exe = codex_exe()
