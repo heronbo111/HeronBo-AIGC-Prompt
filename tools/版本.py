@@ -133,7 +133,7 @@ def current(tools_dir=None, with_hash=False):
     if d.get("version"):
         out = {"version": str(d["version"]), "commit": d.get("commit") or "",
                "builtAt": d.get("builtAt") or "", "source": "exe" if _frozen() else "local",
-               "exe": d.get("exe") or {}, "repo": d.get("repo") or {},
+               "exe": d.get("exe") or {}, "pkg": d.get("pkg") or {}, "repo": d.get("repo") or {},
                "notes": d.get("notes") or ""}
     else:
         ex = exe_path()
@@ -141,12 +141,16 @@ def current(tools_dir=None, with_hash=False):
                "commit": git_commit(tools_dir), "builtAt": _mtime_str(ex),
                "source": "source", "exe": {"name": os.path.basename(ex),
                                            "size": os.path.getsize(ex) if os.path.isfile(ex) else 0,
-                                           "sha256": ""},
+                                           "sha256": ""}, "pkg": {},
                "repo": {"branch": "main", "commit": git_commit(tools_dir)}, "notes": ""}
     if with_hash:
         out["exe"] = dict(out.get("exe") or {})
         ex = exe_path()
-        if os.path.isfile(ex):
+        # 只在"文件里本来就记着 exe"时才按现场重算（老的单文件形态用途）。
+        # ⚠️ onedir（2026-10-16 起）的 _version.json 里 exe 是**故意留空**的（见 write_local）：
+        # 拿现场的残缺主程序去填空，会让「版本号相同」被误判成"远端换过包"（实踩：check 一直报
+        # "要更新"）。新版比对走 pkg 指纹（上面带出来的 pkg 字段），不靠这里。
+        if os.path.isfile(ex) and (out["exe"].get("name") or ""):
             # **每次都按正在跑的这个文件重算**（别信 _version.json 里那份）：
             # 它是打包前写的，装进 exe 之后就已经"过期一轮"；拿它去跟远端比会得出
             # "远端有新版本"的假结论（明明装的就是最新那版）。

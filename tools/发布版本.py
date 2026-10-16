@@ -208,6 +208,9 @@ def gh_publish(tag, target, body, files, force):
             # ⚠️ 大件必须走 curl 流式上传：urllib 整块 sendall 传 694MB 必中途停摆
             # （2026-10-03 实测：直连/代理都 30 分钟写超时重试全灭；同一文件 curl
             #  108 秒、6.7MB/s 直接过）。token 走 -K -（stdin 配置），不进 argv 不外显。
+            # 2026-10-16 加：直连卡死（0 字节/20 秒、curl 挂着不超时）时，可设
+            # HERONBO_UPLOAD_PROXY=http://127.0.0.1:7897 让大件改走本地代理。
+            _proxy = os.environ.get("HERONBO_UPLOAD_PROXY", "").strip()
             for attempt in (1, 2, 3):
                 # ⚠️ 路径要用正斜杠（curl 配置里反斜杠是转义符，"D:\工作台..." 会被吃成
                 #    "D:工作台..."）；配置按 UTF-8 字节喂 stdin（text 模式走 GBK 会把中文路径喂坏）。
@@ -215,6 +218,8 @@ def gh_publish(tag, target, body, files, force):
                 cfg = ('url = "%s"\nheader = "Authorization: token %s"\n'
                        'header = "Content-Type: application/octet-stream"\n'
                        'data-binary = "@%s"\n' % (url, tok, upath))
+                if _proxy:
+                    cfg += 'proxy = "%s"\n' % _proxy
                 try:
                     r = subprocess.run(
                         ["curl", "-sS", "-o", os.devnull, "-w", "%{http_code}",
@@ -280,6 +285,14 @@ def gee_attach(url, tok, name, path):
         return json.loads(r.read() or b"{}")
 
 
+def gee_delete(url, tok):
+    """删掉一个 release（token 走 query，DELETE 不带 body）。"""
+    req = urllib.request.Request(url + "?" + urllib.parse.urlencode({"access_token": tok}),
+                                 method="DELETE")
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return r.status
+
+
 def gee_publish(tag, target, body, files, force):
     tok = credential("gitee.com", username="HeronBo")   # 指定有效凭据条目（默认条目 401，见 credential 注释）
     if not tok:
@@ -288,21 +301,19 @@ def gee_publish(tag, target, body, files, force):
     q = urllib.parse.urlencode({"access_token": tok, "page": 1, "per_page": 100})
     rels = gee_get(base + "/releases?" + q)
     hit = next((x for x in rels if x.get("tag_name") == tag), None)
+    if hit and not force:
+        return "Gitee 已存在 %s（不可变，拒绝覆盖；确需重发请加 --force）" % tag
     if hit:
-        if not force:
-            return "Gitee 已存在 %s（不可变，拒绝覆盖；确需重发请加 --force）" % tag
-        rid = hit["id"]
-        log("  [Gitee] %s 已存在，--force 模式：补传缺失附件" % tag)
-        # 与 gh_publish 同理：已存在也刷 body（防「阴阳版」——2026-10-09 实锤）
-        if hit.get("body") != body:
-            try:
-                gee_post_form(base + "/releases/%s" % rid, {
-                    "access_token": tok, "tag_name": tag, "target_commitish": target,
-                    "name": "HeronBo 视频工作台 %s" % tag, "body": body, "prerelease": "false"})
-                log("  [Gitee] body 与 CHANGELOG 不一致 → 已刷新")
-            except Exception as e:                                  # noqa: BLE001
-                log("  [Gitee] body 刷新失败（附件继续传）：%s" % str(e)[:120])
-    else:
+        # ⚠️ Gitee **删不掉单个附件**、同名附件也不让覆盖——"补传缺失附件"等于旧包永远在
+        #（2026-10-16 重发实踩）。所以 --force 的语义是**删掉整个 release 重建**，
+        # 重建时带上新 body、附件全部重传（新件）。
+        try:
+            gee_delete("%s/releases/%s" % (base, hit["id"]), tok)
+            log("  [Gitee] %s 已存在，--force：已删除旧 release（重建传新件）" % tag)
+        except Exception as e:                                  # noqa: BLE001
+            return "Gitee 删除旧 release 失败：%s" % str(e)[:200]
+        hit = None
+    if not hit:
         hit = gee_post_form(base + "/releases", {
             "access_token": tok, "tag_name": tag, "target_commitish": target,
             "name": "HeronBo 视频工作台 %s" % tag, "body": body, "prerelease": "false"})
