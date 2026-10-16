@@ -589,6 +589,7 @@ def agent_info():
             "chosen": chosen,          # 空 = 还没让用户选过（界面据此决定要不要先问）
             "cfg": cfg_path(),         # 选择记在哪（界面显示出来，方便核对"存住没有"）
             "running": running_desktop(),   # 哪些客户端正开着（自动跟随的依据）
+            "guide": CHANNEL_GUIDE,    # 弹窗第 2/3 页的名录（2026-10-16）
             "list": rows}
 
 
@@ -938,6 +939,52 @@ ADAPTERS = {
     # **本机未实测**（作者机没装）；命令形状照官方文档：-p + --output-format stream-json --verbose。
     "claude": {"label": "Claude Code", "probe": _probe_claude, "proc": ["claude.exe"],
                "transcripts": [(".claude", "projects", "*", "{sid}.jsonl")]},
+}
+
+
+# ── 「agent 通道」弹窗的名录（2026-10-16 用户裁定：弹窗分三页）──────────────────
+# ①可用通道（扫盘扫出来的）②不可用通道（市面主流 agent 都在列，带装法/接法）
+# ③怎么搭新通道（言简意赅：复制一段指令让本机 agent 自己搭）。
+# 名录放这里而不是前端硬编码：装法/接法要跟上面的 ADAPTERS 同步维护——哪天内置了新适配器，
+# 只改这一处。口径：装法给"最通用的一行"（版本会变，以各自官网为准）；接法写清"工作台认它什么"。
+CHANNEL_GUIDE = {
+    # 内置适配（ADAPTERS 里那几家）：缺了就照 get 装；wire 是怎么接通
+    "builtin": {
+        "workbuddy": {
+            "get": "装 WorkBuddy 桌面端即可——它自带 CLI，连 Node.js 都不用装",
+            "wire": "装完点「测一下」；工作台自动认"},
+        "doubaowork": {
+            "get": "装豆包工作官方桌面端（它没有命令行）",
+            "wire": "工作台靠调试端口接管：接管前先退出它，或跑 tools\\doubao_cdp.mjs restart --yes 让它带端口重启"},
+        "zcode": {
+            "get": "装 ZCode 桌面端——安装目录自带 CLI",
+            "wire": "自动认；首次用前确认 ~/.zcode/cli/config.json 已配好 provider"},
+        "codex": {"get": "npm i -g @openai/codex（需要 Node.js）",
+                  "wire": "装完点「测一下」；工作台自动认"},
+        "claude": {"get": "npm i -g @anthropic-ai/claude-code（需要 Node.js）",
+                   "wire": "装完点「测一下」；工作台自动认"},
+        "dsh": {"get": "npx @deepseek-ai/dsh 跑过一次（需要 Node.js）",
+                "wire": "装完点「测一下」；工作台自动认"},
+    },
+    # 其它主流 agent（未内置适配）：都走"一条自定义命令行"接（弹窗第 3 页给了模板）
+    "others": [
+        {"label": "Gemini CLI", "get": "npm i -g @google/gemini-cli",
+         "wire": 'cmd: ["gemini", "-p", "{prompt}"]'},
+        {"label": "Qwen Code", "get": "npm i -g @qwen-code/qwen-code",
+         "wire": 'cmd: ["qwen", "-p", "{prompt}"]'},
+        {"label": "opencode", "get": "npm i -g opencode-ai",
+         "wire": 'cmd: ["opencode", "run", "{prompt}"]'},
+        {"label": "Cursor CLI", "get": "装 cursor-agent（官网一行安装脚本）",
+         "wire": 'cmd: ["cursor-agent", "-p", "{prompt}"]'},
+        {"label": "CodeBuddy", "get": "装 CodeBuddy（腾讯云代码助手）",
+         "wire": 'cmd: ["codebuddy", "-p", "{prompt}"]（参数以它自带 CLI 的 --help 为准）'},
+        {"label": "Aider", "get": "pip install aider-chat",
+         "wire": 'cmd: ["aider", "--message", "{prompt}", "--yes"]'},
+        {"label": "Goose", "get": "装 block/goose（官网安装脚本）",
+         "wire": 'cmd: ["goose", "run", "-t", "{prompt}"]'},
+        {"label": "Cline / Roo Code 等 IDE 插件", "get": "装在 VS Code 里（没有独立 CLI）",
+         "wire": "接不了无头通道（工作台调不动它），只能人机协作"},
+    ],
 }
 
 
