@@ -1193,8 +1193,43 @@ def add_materials(project_dir, paths, copy=True, note="", on_log=None, into=None
     return added, skipped, log
 
 
+def _find_in_project(project_dir, fname):
+    """在项目内按文件名找回素材，返回相对路径（找不到返回 ""）。
+
+    为什么要它（2026-10-13 修用户反馈的"素材丢失"）：rescan 原来"磁盘上找不到就立刻删记录"，
+    可素材常被**移到别处**——agent 把它归进 `平台上传/`、界面移除进了 `_已移除/`、
+    加工产物换到了子目录——文件还在项目里，记录却被永久抹掉，看着就是"素材凭空少了"。
+    先在项目内找一圈：找到就把记录**改指到新位置**（素材不丢、记录还在）。
+    """
+    want = (fname or "").strip().lower()
+    if not want:
+        return ""
+    for sub in (MATERIAL_DIR, "平台上传", "素材/平台上传", "_已移除", "文案"):
+        base = os.path.join(project_dir, sub.replace("/", os.sep))
+        if not os.path.isdir(base):
+            continue
+        for dp, dns, fns in os.walk(base):
+            dns[:] = [d for d in dns if d != "__pycache__"]
+            for fn in fns:
+                if fn.lower() != want:
+                    continue
+                fp = os.path.join(dp, fn)
+                try:
+                    if os.path.isfile(fp):
+                        return os.path.relpath(fp, project_dir).replace(os.sep, "/")
+                except OSError:
+                    continue
+    return ""
+
+
 def rescan(project_dir):
-    """磁盘→清单的自愈重扫：扫 素材/ 与 文案/，按相对路径合并，保留原 id 与人工字段。"""
+    """磁盘→清单的自愈重扫：扫 素材/ 与 文案/，按相对路径合并，保留原 id 与人工字段。
+
+    2026-10-13 改「丢失处理」（修用户反馈的"素材丢失"，该逻辑 09-14 引入）：
+      旧＝磁盘上找不到就**立即删记录**（文件被移走/临时不可见 → 记录永久没了）；
+      新＝① 先在项目内按文件名**找回并改路径**；② 找不到才计一次 `missing`，
+            **连续 3 次扫描都找不到**才移除。临时抖动不再造成永久丢失。
+    """
     project_dir = os.path.normpath(project_dir)
     sk = load_skeleton(project_dir) or {"schema": SCHEMA, "project": {
         "name": os.path.basename(project_dir), "materials": []}}
@@ -1210,7 +1245,7 @@ def rescan(project_dir):
                 continue
             if os.path.isfile(os.path.join(folder, fn)):
                 on_disk.append("%s/%s" % (sub, fn))
-    added = removed = 0
+    added = removed = moved = 0
     seq = len(mats) + 1
     for rel in on_disk:
         if rel in by_file:
@@ -1232,12 +1267,32 @@ def rescan(project_dir):
         added += 1
     keep = []
     for m in mats:
-        fp = os.path.join(project_dir, str(m.get("file", "")).replace("/", os.sep))
-        if m.get("file") and not os.path.isfile(fp):
+        rel = str(m.get("file", ""))
+        if not rel:
+            keep.append(m)
+            continue
+        fp = os.path.join(project_dir, rel.replace("/", os.sep))
+        if os.path.isfile(fp):
+            m.pop("missing", None)
+            keep.append(m)
+            continue
+        hit = _find_in_project(project_dir, os.path.basename(rel))
+        if hit and hit != rel:
+            m["file"] = hit                       # 找回：改指到新位置，记录保住
+            m.pop("missing", None)
+            moved += 1
+            keep.append(m)
+            continue
+        miss = int(m.get("missing") or 0) + 1
+        if miss >= 3:
             removed += 1
             continue
+        m["missing"] = miss
         keep.append(m)
     sk["project"]["materials"] = keep
+    if moved:
+        sk["project"]["lastRescanMoved"] = moved
+        sk["project"]["lastRescanAt"] = datetime.datetime.now().isoformat(timespec="seconds")
     save_skeleton(project_dir, sk)
     return added, removed, sk
 
