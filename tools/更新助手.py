@@ -246,9 +246,9 @@ def clean_stale_mei(max_age_hours=24.0):
 def main(argv=None):
     ap = argparse.ArgumentParser(description="工作台更新助手（由工作台自己拉起）")
     ap.add_argument("--dir", required=True, help="工作台所在目录")
-    ap.add_argument("--src", required=True, help="新下载好的文件（相对 --dir 或绝对路径）")
+    ap.add_argument("--src", help="新下载好的文件（相对 --dir 或绝对路径）；--mode restart 时不需要")
     ap.add_argument("--pid", type=int, default=0, help="旧工作台的进程号（等它退出）")
-    ap.add_argument("--mode", default="apply", choices=["apply", "rollback"])
+    ap.add_argument("--mode", default="apply", choices=["apply", "rollback", "restart"])
     ap.add_argument("--keep", type=int, default=KEEP_DEFAULT)
     ap.add_argument("--timeout", type=float, default=60.0)
     a = ap.parse_args(argv)
@@ -268,6 +268,20 @@ def main(argv=None):
     #   · .zip  → 新版 onedir 整包：解压 → 摊入（exe + _internal）
     #   · 目录   → 回滚（_old\<ts>\）或已解压的包：直接摊入
     #   · 文件   → 老的单文件 exe（兼容期）
+    if (a.mode or "") == "restart":
+        # 纯重启（2026-10-16）：**不换任何文件**，等旧实例退干净 → 起新的。
+        # 用途：界面里「切换 agent 通道」后让工作台以新通道重新搭桥（重启最干净）；
+        # 走的是同一个助手（等退出 / 静置防杀软 / 起不来自动重试一次，这段逻辑全复用）。
+        clean_stale_mei()
+        time.sleep(1.5)
+        pid = start(d)
+        if not alive(pid, timeout=3.0):
+            log(d, "restart: first start died (pid=%s), retrying once" % pid)
+            time.sleep(1.0)
+            pid2 = start(d)
+            if not alive(pid2, timeout=3.0):
+                log(d, "restart: second start died too (pid=%s) - user will start it manually" % pid2)
+        return 0
     srcp = a.src if os.path.isabs(a.src) else os.path.join(d, a.src)
     if os.path.isfile(srcp) and srcp.lower().endswith(".zip"):
         tmp = tempfile.mkdtemp(prefix="heronbo_pkg_")
