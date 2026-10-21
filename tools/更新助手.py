@@ -20,6 +20,7 @@ r"""更新助手：等工作台退出 → 换上新的工作台 → 再把它启
 import argparse
 import ctypes
 import glob
+import json
 import os
 import shutil
 import subprocess
@@ -34,10 +35,15 @@ INTERNAL = "_internal"          # onedir 的依赖目录（2026-10-13）
 
 
 def log(d, msg):
-    """给排障留一份轨迹（纯 ASCII：装机端可能在任何代码页下看它）。"""
+    r"""给排障留一份轨迹。
+
+    2026-10-21：改成 **UTF-8**。原来写 ascii + errors=replace，中文路径全变成 `?`——
+    实踩排查「更新后快捷方式找不到 exe」时，日志里的路径完全不可读（`D:\AI??\???????`），
+    白抓半天。UTF-8 在 Win10+ 记事本/VS Code 里都能正常显示。
+    """
     try:
         p = os.path.join(d, LOG_NAME)
-        with open(p, "a", encoding="ascii", errors="replace", newline="\n") as f:
+        with open(p, "a", encoding="utf-8", errors="replace", newline="\n") as f:
             f.write("[%s] %s\n" % (time.strftime("%Y%m%d-%H%M%S"), msg))
     except OSError:
         pass
@@ -71,6 +77,10 @@ def apply_pkg(d, src_dir, keep=KEEP_DEFAULT, ts=None, move_src=True):
 
     move_src=True 用于「装新版」（src 是解压出来的临时目录，摊完即弃）；
     move_src=False 用于「回滚」（src 是 _old\\<ts>\\ 里的备份，要原地留着）。
+
+    ⚠️ 2026-10-21：**任何一步失败都必须回滚**。用户同事真机实踩——换位中途失败（杀软/占用），
+    旧 exe 已被挪进 _old、新的没放上，桌面快捷方式直接报「找不到该应用程序」。
+    现在失败时把旧 exe/_internal 原样挪回（新放上的先删掉），最坏也是"更新没成功、旧版还在"。
     """
     exe_new = os.path.join(src_dir, "score-tool.exe")
     if not os.path.isfile(exe_new):
@@ -80,13 +90,37 @@ def apply_pkg(d, src_dir, keep=KEEP_DEFAULT, ts=None, move_src=True):
     cur_exe = os.path.join(d, "score-tool.exe")
     cur_int = os.path.join(d, INTERNAL)
     take = shutil.move if move_src else shutil.copy2
+    moved_exe = moved_int = False
+
+    def _rollback():
+        """把旧 exe/_internal 挪回原位（新放上的先删/挪掉）。"""
+        try:
+            b_exe = os.path.join(bak, "score-tool.exe")
+            if moved_exe and os.path.isfile(b_exe):
+                if os.path.isfile(cur_exe):
+                    try:
+                        os.remove(cur_exe)
+                    except OSError:
+                        pass
+                shutil.move(b_exe, cur_exe)
+            b_int = os.path.join(bak, INTERNAL)
+            if moved_int and os.path.isdir(b_int):
+                if os.path.isdir(cur_int):
+                    shutil.rmtree(cur_int, ignore_errors=True)
+                shutil.move(b_int, cur_int)
+            log(d, "apply_pkg 失败已回滚（旧文件都在原位；备份目录 %s）" % bak)
+        except OSError as e2:
+            log(d, "!! 回滚也失败：%s（旧文件在 %s，请手动挪回）" % (e2, bak))
+
     try:
         if os.path.isfile(cur_exe) or os.path.isdir(cur_int):
             os.makedirs(bak, exist_ok=True)
             if os.path.isfile(cur_exe):
                 shutil.move(cur_exe, os.path.join(bak, "score-tool.exe"))
+                moved_exe = True
             if os.path.isdir(cur_int):
                 shutil.move(cur_int, os.path.join(bak, INTERNAL))
+                moved_int = True
         take(exe_new, cur_exe)
         new_int = os.path.join(src_dir, INTERNAL)
         if os.path.isdir(new_int):
@@ -94,7 +128,8 @@ def apply_pkg(d, src_dir, keep=KEEP_DEFAULT, ts=None, move_src=True):
                 shutil.move(new_int, cur_int)
             else:
                 shutil.copytree(new_int, cur_int)
-    except OSError as e:                                          # noqa: BLE001
+    except OSError as e:
+        _rollback()
         return False, "摊入失败（%s）" % e
     log(d, "pkg applied: src=%s backup=%s" % (os.path.basename(src_dir), os.path.basename(bak)))
     tidy_old(d, keep)
@@ -245,13 +280,35 @@ def clean_stale_mei(max_age_hours=24.0):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="工作台更新助手（由工作台自己拉起）")
-    ap.add_argument("--dir", required=True, help="工作台所在目录")
+    # 2026-10-21：**中文路径必须走 --args-file**。exe 经 PyInstaller bootloader 解析的
+    # 命令行参数在中文路径下会乱码（实测 `D:\AI开发\…` 进助手变成 `D:\AI寮€鍙慭…`）——
+    # 助手找不到更新包，换位直接失败（更早的版本还会在失败时把 exe 挪走不挪回）。
+    ap.add_argument("--args-file", help="参数文件（JSON/UTF-8）：{dir,src,pid,mode,keep,timeout}")
+    ap.add_argument("--dir", help="工作台所在目录")
     ap.add_argument("--src", help="新下载好的文件（相对 --dir 或绝对路径）；--mode restart 时不需要")
     ap.add_argument("--pid", type=int, default=0, help="旧工作台的进程号（等它退出）")
     ap.add_argument("--mode", default="apply", choices=["apply", "rollback", "restart"])
     ap.add_argument("--keep", type=int, default=KEEP_DEFAULT)
     ap.add_argument("--timeout", type=float, default=60.0)
     a = ap.parse_args(argv)
+
+    if a.args_file:
+        try:
+            with open(a.args_file, encoding="utf-8") as f:
+                cfg = json.load(f)
+            for k in ("dir", "src", "pid", "mode", "keep", "timeout"):
+                if k in cfg and cfg.get(k) not in (None, ""):
+                    setattr(a, k, cfg[k])
+            try:
+                os.remove(a.args_file)
+            except OSError:
+                pass
+        except (OSError, ValueError) as e:
+            print("读不了参数文件 %s：%s" % (a.args_file, e), file=sys.stderr)
+            return 2
+    if not a.dir:
+        print("缺 --dir（或 --args-file 里的 dir）", file=sys.stderr)
+        return 2
 
     d = os.path.abspath(a.dir)
     log(d, "helper start mode=%s pid=%s src=%s" % (a.mode, a.pid, a.src))
