@@ -429,10 +429,15 @@ def start_prepare(p):
                      finished=round(time.time(), 1))
                 _flow("方案已准备好，等待你确认（未确认不会生成、不扣点）", "done")
             else:
-                _set(running=False, stage="error",
-                     error=r.get("error") or "prepare 没拿到确认清单", result=r,
+                # 2026-10-21：失败文案带上诊断目录（桥会把截图/选择器/输入框文本落盘到那儿），
+                # 用户截个图我们也能顺着原始数据定位（豆包界面改版时唯一有效的排查手段）。
+                _err = r.get("error") or "prepare 没拿到确认清单"
+                _diag = str(r.get("diag") or "").strip()
+                if _diag:
+                    _err = "%s（诊断已保存：%s）" % (_err, _diag)
+                _set(running=False, stage="error", error=_err, result=r,
                      finished=round(time.time(), 1))
-                _flow("准备失败：" + (r.get("error") or "没拿到确认清单"), "think")
+                _flow("准备失败：" + _err, "think")
         except Exception as e:  # noqa: BLE001
             _set(running=False, stage="error", error=str(e), finished=round(time.time(), 1))
             _flow("准备失败：" + str(e), "think")

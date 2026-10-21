@@ -552,6 +552,68 @@ const CLICK_SEND_WAIT = `(async () => {
   return { ok: false };
 })()`;
 
+// ── 2026-10-21（用户同事真机反馈）：**填不进去也照样点发送 = 把输入框里的残留内容发出去**。
+// 现场：新版豆包输入框上 tiptap 写入失败、insertText 也进不去，老代码仍点「发送」→
+// 对话里反复出现「同一段主提示词」，而真正的视频指令一次都没进对话（prepare 干等超时）。
+// 三条对策：①填之前先清空；②填完**读回校验**（必须含本次内容的独特片段），不通过绝不发；
+// ③发送后校验（sends 增加 / 输入框清空 / 忙碌出现），仍没发出就立刻报错。
+const CLEAR_EDITOR = `(() => {
+  const vis = (el) => { const r = el.getBoundingClientRect();
+    return r.width > 60 && r.height > 16 && r.bottom > 0 && r.top < innerHeight; };
+  const all = [...document.querySelectorAll('textarea, [contenteditable="true"], [contenteditable=""]')].filter(vis);
+  if (!all.length) return { ok: false, why: 'no editor' };
+  all.sort((a, b) => { const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+    return (rb.y + rb.height) - (ra.y + ra.height); });
+  const el = all[0];
+  try {
+    const E = el.editor;
+    if (E && E.commands && E.commands.clearContent) { E.chain().focus().clearContent({ emit: false }).run(); }
+    if (el.value !== undefined) { el.value = ''; } else { el.innerText = ''; }
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    return { ok: true, left: String(el.value !== undefined ? el.value : el.innerText || '').length };
+  } catch (e) { return { ok: false, why: String((e && e.message) || e).slice(0, 80) }; }
+})()`;
+
+// 只读诊断快照：关键 testid 的数量、输入框文本、可见按钮（新界面改版时一眼看出是哪个选择器变了）
+const DIAG_UI = `(() => {
+  const ids = {};
+  for (const k of ['send_message', 'receive_message', 'message_text_content',
+                   'chat_input_send_button', 'chat_input_local_break_button']) {
+    ids[k] = document.querySelectorAll('[data-testid="' + k + '"]').length;
+  }
+  const vis = (el) => { const r = el.getBoundingClientRect();
+    return r.width > 60 && r.height > 16 && r.bottom > 0 && r.top < innerHeight; };
+  const eds = [...document.querySelectorAll('textarea, [contenteditable="true"], [contenteditable=""]')].filter(vis);
+  const ed = eds[0] || null;
+  const btns = [...document.querySelectorAll('button, [role="button"]')]
+    .filter((b) => { const r = b.getBoundingClientRect(); return r.width > 10 && r.height > 10; })
+    .slice(0, 40)
+    .map((b) => ({ t: String(b.innerText || b.getAttribute('aria-label') || b.title || '').trim().slice(0, 24),
+                   tid: b.getAttribute('data-testid') || '' }));
+  const sb = document.querySelector('[data-testid="chat_input_send_button"]');
+  const sbr = sb ? sb.getBoundingClientRect() : null;
+  return { url: location.href, title: document.title, testids: ids,
+           sendBtn: sb ? { disabled: !!sb.disabled, w: Math.round(sbr.width), h: Math.round(sbr.height) } : null,
+           editor: ed ? { text: String(ed.value !== undefined ? ed.value : ed.innerText || '').slice(0, 400) } : null,
+           buttons: btns };
+})()`;
+
+/** 失败现场落盘：ui.json（选择器/输入框文本/按钮清单）+ page.png（截图）。
+ *  存 %TEMP%\heronbo_diag\<tag>-<时间>\，调用方把路径写进错误信息——用户截图之外还有原始数据。 */
+async function dumpDiag(c, tag) {
+  const dir = path.join(os.tmpdir(), 'heronbo_diag',
+    tag + '-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19));
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    try { const ui = await c.evalJs(DIAG_UI); if (ui) fs.writeFileSync(path.join(dir, 'ui.json'), JSON.stringify(ui, null, 2), 'utf8'); } catch {}
+    try {
+      const shot = await c.send('Page.captureScreenshot', { format: 'png' }, 20000);
+      if (shot && shot.data) fs.writeFileSync(path.join(dir, 'page.png'), Buffer.from(shot.data, 'base64'));
+    } catch {}
+    return dir;
+  } catch { return ''; }
+}
+
 async function pickChatTarget() {
   const list = await getJson('/json/list');
   if (!Array.isArray(list)) return null;
@@ -1367,6 +1429,89 @@ async function actProbe() {
   return 0;
 }
 
+/** 只读诊断（2026-10-21）：输出关键选择器数量、输入框文本、可见按钮清单。
+ *  豆包界面改版导致「填不进去/读不到回复」时，跑它一次就能定位是哪个 testid 变了。
+ *  前提：豆包正被工作台接管（带调试端口）；没连上就报清楚，绝不动页面。 */
+async function actDoctor() {
+  let c = null;
+  try {
+    const ts = await listChatTargets();
+    if (!ts.length) {
+      log('✗ 没连上豆包聊天页（没开调试端口）——先让工作台接入一次（点「让豆包生成视频」或「叫 agent」），'
+        + '或 node tools\\doubao_cdp.mjs restart --yes');
+      return 3;
+    }
+    c = await attachTarget(ts[0]);
+    const ui = await c.evalJs(DIAG_UI);
+    console.log(JSON.stringify(ui, null, 2));
+    return 0;
+  } catch (e) {
+    log('✗ doctor 出错：' + ((e && e.message) || e));
+    return 1;
+  } finally { try { c && c.close(); } catch {} }
+}
+
+/** 自检（2026-10-21）：界面快照 + 一次「填入→读回→清空」往返，**绝不发送、不产生任何消息**。
+ *  用来判断这台机器的豆包界面还兼不兼容：输入框能不能写进去、发送/回复控件还在不在。
+ *  退出码：0 兼容 ｜ 6 输入框写不进去（界面可能改版）｜ 3 没连上（没调试端口）。 */
+async function actSelftest() {
+  let c = null;
+  try {
+    const ts = await listChatTargets();
+    if (!ts.length) { log('✗ 没连上豆包聊天页（没开调试端口）'); return 3; }
+    c = await attachTarget(ts[0]);
+    const ui = await c.evalJs(DIAG_UI) || {};
+    const ids = ui.testids || {};
+    log('== 界面快照 ==');
+    log(' url: ' + ui.url);
+    log(' 控件：发送键=' + (ids.chat_input_send_button || 0)
+        + ' 中断键=' + (ids.chat_input_local_break_button || 0)
+        + ' 消息气泡=' + (ids.send_message || 0) + '/' + (ids.receive_message || 0));
+    const before = String(await c.evalJs(COMPOSER_TEXT) || '');
+    if (before.trim()) log('· 输入框里现在有 ' + before.length + ' 字（自检会先清空，结束时也清空）');
+    await c.evalJs(CLEAR_EDITOR).catch(() => {});
+    const probe = '工作台自检：这段文字只用于检查输入框，不会发送。';
+    const f = await c.evalJs(FILL_VIA_EDITOR + '(' + JSON.stringify(probe) + ')', 20000).catch(() => null);
+    let how = 'tiptap';
+    let typed = String(await c.evalJs(COMPOSER_TEXT).catch(() => '') || '');
+    if (!(f && f.ok) || !typed.trim()) {
+      how = 'insertText';
+      await c.evalJs(FOCUS_COMPOSER).catch(() => {});
+      await c.send('Input.insertText', { text: probe }, 15000).catch(() => {});
+      await sleep(300);
+      typed = String(await c.evalJs(COMPOSER_TEXT).catch(() => '') || '');
+    }
+    if (!typed.trim()) {
+      how = 'set-value';
+      await c.evalJs(`(() => { const el = document.activeElement; if (!el) return false;
+        if (el.value !== undefined) { el.value = ${JSON.stringify(probe)}; } else { el.innerText = ${JSON.stringify(probe)}; }
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`).catch(() => {});
+      await sleep(200);
+      typed = String(await c.evalJs(COMPOSER_TEXT).catch(() => '') || '');
+    }
+    const ok = typed.indexOf('工作台自检') >= 0;
+    log(ok ? ('✓ 输入框可写入（方式：' + how + '，读回 ' + typed.length + ' 字）')
+           : ('✗ 输入框写不进去（' + how + '）——豆包界面可能改版了'));
+    // 填字后再拍一次快照：发送键通常"有内容才渲染"，空输入框时数量是 0（别看空了就误判）
+    const ui2 = await c.evalJs(DIAG_UI).catch(() => null) || {};
+    const ids2 = ui2.testids || {};
+    log(' 填字后：发送键=' + (ids2.chat_input_send_button || 0)
+        + (ui2.sendBtn ? '（' + (ui2.sendBtn.disabled ? '禁用' : '可点') + '，' + ui2.sendBtn.w + '×' + ui2.sendBtn.h + '）' : '（没渲染）')
+        + ' 消息气泡=' + (ids2.send_message || 0) + '/' + (ids2.receive_message || 0));
+    if (!ids2.chat_input_send_button) log(' ⚠ 有内容却找不到发送键——这台机器的豆包界面与桥不兼容（点发送会点空）');
+    else if (ui2.sendBtn && ui2.sendBtn.disabled) log(' ⚠ 发送键是禁用的（界面可能还在等附件/校验）');
+    await c.evalJs(CLEAR_EDITOR).catch(() => {});
+    const left = String(await c.evalJs(COMPOSER_TEXT).catch(() => '') || '');
+    log(left.trim() ? ('⚠ 收尾没清干净（还剩 ' + left.length + ' 字）——手动清一下输入框')
+                    : '· 输入框已清空（没有发送任何消息）');
+    return ok ? 0 : 6;
+  } catch (e) {
+    log('✗ selftest 出错：' + ((e && e.message) || e));
+    return 1;
+  } finally { try { c && c.close(); } catch {} }
+}
+
 async function actAsk() {
   let prompt = PROMPT;
   if (PROMPT_FILE) {
@@ -1633,8 +1778,21 @@ async function actVideo() {
       const confirmMsg = shortJob
         ? '确认，开始执行——' + roleFix + '整条一次性生成（不要分段、不要拆画面/配音两步），出【一条】' + VRATIO + '、约' + VDURATION + '秒的成片。完成后直接把最终成片发给我（不要自检/质检报告）。'
         : '确认，开始执行——' + roleFix + '按你的执行计划分段生成画面 → 用音色生成配音 → 逐段对齐口型、合成【一条】' + VRATIO + '、约' + VDURATION + '秒的成片。全部完成后，只把最终合成的那条成片发给我（中间的分段画面不用单独交付，也不要自检/质检报告）。';
+      await c.evalJs(CLEAR_EDITOR).catch(() => {});
       const f = await c.evalJs(FILL_VIA_EDITOR + '(' + JSON.stringify(confirmMsg) + ')');
-      if (!f || !f.ok) await c.send('Input.insertText', { text: confirmMsg });
+      if (!f || !f.ok) {
+        await c.evalJs(FOCUS_COMPOSER).catch(() => {});
+        await c.send('Input.insertText', { text: confirmMsg });
+      }
+      const typedC = String(await c.evalJs(COMPOSER_TEXT).catch(() => '') || '');
+      if (!typedC.trim()) {
+        // 2026-10-21：填不进去就不发（老代码会拿输入框里的残留内容顶替——就是"同一段重复出现"的来源）
+        const dir = await dumpDiag(c, 'confirm-fill');
+        step('✗ 确认指令没填进输入框（不会盲发）——诊断：' + (dir || ''));
+        console.log(JSON.stringify({ state: 'error', diag: dir,
+          error: '确认指令没填进豆包输入框（界面可能改版）' }));
+        return 5;
+      }
       const sr = await c.evalJs(CLICK_SEND_WAIT, 20000);
       step('已回确认，等待流水线执行（' + (sr && sr.ok ? '已提交' : '提交异常') + '）…');
       let src = '', candSrc = '', stable = 0, lastBeat = 0, prevTxt = '', srcIsLocalFile = false;
@@ -1779,10 +1937,65 @@ async function actVideo() {
     const req = buildVideoRequest({ prompt, model: VMODEL, ratio: VRATIO, duration: VDURATION,
       images: VIMAGES.map((p) => path.resolve(p)), audio: VAUDIO ? path.resolve(VAUDIO) : '',
       video: VVIDEO ? path.resolve(VVIDEO) : '', pron: pronFor(prompt) });
+    // ── 填入视频请求 → 校验 → 发送 → 校验（2026-10-21 重写；老写法是"填不进去也盲点发送"）──
+    const stP = await c.evalJs(MSG_STATE).catch(() => null) || {};
+    const sendsBefore = Number(stP.sends || 0);
+    const recvsBefore = Number(stP.recvs || 0);
+    await c.evalJs(CLEAR_EDITOR).catch(() => {});
     const fill = await c.evalJs(FILL_VIA_EDITOR + '(' + JSON.stringify(req) + ')', 30000);
-    if (!fill || !fill.ok) await c.send('Input.insertText', { text: req });
-    await sleep(300);
-    await c.evalJs(CLICK_SEND_WAIT, 20000);
+    if (!fill || !fill.ok) {
+      step('tiptap 写入没成（' + ((fill && fill.why) || '?') + '），降级 insertText');
+      await c.evalJs(FOCUS_COMPOSER).catch(() => {});
+      await c.send('Input.insertText', { text: req }, 30000).catch(() => {});
+      await sleep(300);
+    }
+    let typedP = String(await c.evalJs(COMPOSER_TEXT).catch(() => '') || '');
+    if (!typedP.trim()) {
+      // 有些编辑器不吃 insertText：退回"直接塞值 + 触发 input 事件"
+      await c.evalJs(`(() => { const el = document.activeElement; if (!el) return false;
+        if (el.value !== undefined) { el.value = ${JSON.stringify(req)}; } else { el.innerText = ${JSON.stringify(req)}; }
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`).catch(() => {});
+      await sleep(200);
+      typedP = String(await c.evalJs(COMPOSER_TEXT).catch(() => '') || '');
+    }
+    // 读回校验：输入框里必须出现本次请求的独特片段（用主角色的前 16 字），否则绝不点发送
+    const markerP = norm(String(req)).slice(0, 16);
+    if (!typedP.trim() || (markerP && norm(typedP).indexOf(markerP) < 0)) {
+      const dir = await dumpDiag(c, 'prepare-fill');
+      step('✗ 视频指令没填进豆包输入框（输入框现在 ' + typedP.length + ' 字，可能还留着上一条内容）');
+      step('  已放弃发送（不会拿旧内容顶替）。诊断：' + (dir || '(没写成)'));
+      console.log(JSON.stringify({ state: 'error', diag: dir,
+        error: '视频指令没填进豆包输入框（界面可能改版）——没发出去，也不会拿旧内容顶替' }));
+      return 5;
+    }
+    await sleep(200);
+    const srP = await c.evalJs(CLICK_SEND_WAIT, 20000).catch(() => null);
+    if (!(srP && srP.ok)) {
+      step('没点到发送按钮，改用回车');
+      const keyP = (type) => c.send('Input.dispatchKeyEvent',
+        { type, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13,
+          text: type === 'char' ? '\r' : undefined });
+      await c.evalJs(FOCUS_COMPOSER).catch(() => {});
+      await keyP('keyDown').catch(() => {}); await keyP('char').catch(() => {}); await keyP('keyUp').catch(() => {});
+    }
+    // 发送后校验：sends 增加 / 输入框清空 / 忙碌出现 / 回复增加——任一成立才算真的发出去了
+    let sentP = false;
+    for (let k = 0; k < 8; k++) {
+      await sleep(900);
+      const stN = await c.evalJs(MSG_STATE).catch(() => null) || {};
+      const left = String(await c.evalJs(COMPOSER_TEXT).catch(() => '') || '').trim();
+      if (Number(stN.sends || 0) > sendsBefore || !left || stN.running
+          || Number(stN.recvs || 0) > recvsBefore) { sentP = true; break; }
+    }
+    if (!sentP) {
+      const dir = await dumpDiag(c, 'prepare-send');
+      step('✗ 视频请求没发出去（点了发送但消息没出现、输入框也没清空）');
+      step('  诊断：' + (dir || '(没写成)'));
+      console.log(JSON.stringify({ state: 'error', diag: dir,
+        error: '视频请求没发出去（豆包界面没响应/可能改版）' }));
+      return 5;
+    }
     step('已发请求，读取确认清单…');
     if (VVISIBLE) {
       // 非豆包通道：可见窗口交给用户在豆包里手动确认，桥不守着（等出 sid 便于下次找回这段对话就撤）
@@ -1809,6 +2022,10 @@ async function actVideo() {
     // renderer/document 被替换，旧 ws 停在导航前文档、MSG_STATE 永远读不到回复（2026-09-29 实测两次）。
     let text = '', idleSince = 0, sid = '', lastBeat = Date.now();
     const readDeadline = Date.now() + Math.min(TIMEOUT, 600) * 1000;
+    // 2026-10-21：发出去之后**120 秒内一个字都没有**就别干等 8 分钟了——大概率是豆包没处理
+    //（页面有提示/排队/改版）或回复读不到；落盘现场后直接报，用户不用再干等。
+    const firstReplyDeadline = Date.now() + 120 * 1000;
+    let sawAny = false;
     while (Date.now() < readDeadline) {
       await sleep(2500);
       // 每轮按 targetId 从 /json/list 重新解析最新 ws（targetId 不变、ws 指向导航后的新 renderer）
@@ -1823,6 +2040,18 @@ async function actVideo() {
       } catch { rc.close(); continue; }
       rc.close();
       if (!s) continue;
+      if (String(s.lastRecv || '').trim() || Number(s.recvs || 0) > recvsBefore) sawAny = true;
+      if (!sawAny && Date.now() > firstReplyDeadline) {
+        let rc2 = null;
+        try { rc2 = await attachSessionByTarget(TID); } catch {}
+        const dir = rc2 ? await dumpDiag(rc2, 'prepare-noreply') : '';
+        try { rc2 && rc2.close(); } catch {}
+        step('✗ 豆包 120 秒内没有任何回复（消息可能没被处理：页面有提示/排队，或回复读不到）');
+        step('  诊断：' + (dir || '(没写成)'));
+        console.log(JSON.stringify({ state: 'error', diag: dir,
+          error: '豆包 120 秒内没有回复（不是网络问题的话，多半是页面有提示或界面改版）' }));
+        return 5;
+      }
       const t = String(s.lastRecv || '').trim();
       // 无论是否在跑，都持续保留最新可见正文（running 期间也更新，避免临近超时抓空）
       if (t && t !== text) {
@@ -1962,6 +2191,8 @@ async function actWindowGuardTest() {
 async function main() {
   if (action === 'status') return actStatus();
   if (action === 'probe') return actProbe();
+  if (action === 'doctor') return actDoctor();
+  if (action === 'selftest') return actSelftest();
   if (action === 'ask') return actAsk();
   if (action === 'video') return actVideo();
   if (action === 'launch') {

@@ -69,6 +69,8 @@ tools/dist/_wtest.tmp
 # 两样都是产物、不进 git（整目录忽略最省事，也防以后新增产物再漏）。
 tools/dist/_internal/
 tools/dist/_old/
+# 豆包桥的临时 prompt 文件（2026-10-21：dist 里冒出过一个，误入未跟踪列表）
+tools/dist/heronbo_doubao_prompt_*.txt
 # 「检查更新」的远端版本缓存（运行时产物）
 tools/dist/heronbo_version_remote.json
 # 版本身份（2026-09-22）：打包/发行时由 tools\版本.py 生成（记版本号 + exe 哈希），
