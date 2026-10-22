@@ -369,7 +369,7 @@ class Cdp {
 const FIND_COMPOSER = `(() => {
   const vis = (el) => { const r = el.getBoundingClientRect();
     return r.width > 60 && r.height > 16 && r.bottom > 0 && r.top < innerHeight; };
-  const all = [...document.querySelectorAll('textarea, [contenteditable="true"], [contenteditable=""]')];
+  const all = [...document.querySelectorAll('textarea, [contenteditable]:not([contenteditable="false"]), [role="textbox"]')];
   const cands = all.filter(vis).map((el) => {
     const r = el.getBoundingClientRect();
     return { tag: el.tagName.toLowerCase(), cls: String(el.className).slice(0, 80),
@@ -381,7 +381,7 @@ const FIND_COMPOSER = `(() => {
 const FOCUS_COMPOSER = `(() => {
   const vis = (el) => { const r = el.getBoundingClientRect();
     return r.width > 60 && r.height > 16 && r.bottom > 0 && r.top < innerHeight; };
-  const all = [...document.querySelectorAll('textarea, [contenteditable="true"], [contenteditable=""]')].filter(vis);
+  const all = [...document.querySelectorAll('textarea, [contenteditable]:not([contenteditable="false"]), [role="textbox"]')].filter(vis);
   if (!all.length) return null;
   all.sort((a, b) => { const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
     return (rb.y + rb.height) - (ra.y + ra.height) || (rb.width * rb.height) - (ra.width * ra.height); });
@@ -392,7 +392,7 @@ const FOCUS_COMPOSER = `(() => {
 const COMPOSER_TEXT = `(() => {
   const vis = (el) => { const r = el.getBoundingClientRect();
     return r.width > 60 && r.height > 16 && r.bottom > 0 && r.top < innerHeight; };
-  const all = [...document.querySelectorAll('textarea, [contenteditable="true"], [contenteditable=""]')].filter(vis);
+  const all = [...document.querySelectorAll('textarea, [contenteditable]:not([contenteditable="false"]), [role="textbox"]')].filter(vis);
   if (!all.length) return '';
   all.sort((a, b) => { const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
     return (rb.y + rb.height) - (ra.y + ra.height); });
@@ -422,7 +422,7 @@ const CLICK_SEND = `(() => {
 const FILL_VIA_EDITOR = `(text => {
   const r = (el) => el.getBoundingClientRect();
   const vis = (el) => { const b = r(el); return b.width > 60 && b.height > 16 && b.bottom > 0 && b.top < innerHeight; };
-  const eds = [...document.querySelectorAll('textarea,[contenteditable="true"],[contenteditable=""]')].filter(vis);
+  const eds = [...document.querySelectorAll('textarea,[contenteditable]:not([contenteditable="false"]),[role="textbox"]')].filter(vis);
   eds.sort((a, b) => r(b).bottom - r(a).bottom);
   const ed = eds[0]; if (!ed) return { ok: false, why: 'no editor' };
   const E = ed.editor;
@@ -499,7 +499,7 @@ const IS_FRESH = `(() => {
   const r = (el) => el.getBoundingClientRect();
   const vis = (el) => { const b = r(el); return b.width > 60 && b.height > 16; };
   const sidM = location.href.match(/chat\\/(\\d+)/);
-  const eds = [...document.querySelectorAll('textarea,[contenteditable="true"],[contenteditable=""]')].filter(vis);
+  const eds = [...document.querySelectorAll('textarea,[contenteditable]:not([contenteditable="false"]),[role="textbox"]')].filter(vis);
   eds.sort((a, b) => r(b).bottom - r(a).bottom);
   const ed = eds[0];
   const t = ed ? String(ed.value !== undefined ? ed.value : ed.innerText || '') : '';
@@ -560,7 +560,7 @@ const CLICK_SEND_WAIT = `(async () => {
 const CLEAR_EDITOR = `(() => {
   const vis = (el) => { const r = el.getBoundingClientRect();
     return r.width > 60 && r.height > 16 && r.bottom > 0 && r.top < innerHeight; };
-  const all = [...document.querySelectorAll('textarea, [contenteditable="true"], [contenteditable=""]')].filter(vis);
+  const all = [...document.querySelectorAll('textarea, [contenteditable]:not([contenteditable="false"]), [role="textbox"]')].filter(vis);
   if (!all.length) return { ok: false, why: 'no editor' };
   all.sort((a, b) => { const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
     return (rb.y + rb.height) - (ra.y + ra.height); });
@@ -583,7 +583,7 @@ const DIAG_UI = `(() => {
   }
   const vis = (el) => { const r = el.getBoundingClientRect();
     return r.width > 60 && r.height > 16 && r.bottom > 0 && r.top < innerHeight; };
-  const eds = [...document.querySelectorAll('textarea, [contenteditable="true"], [contenteditable=""]')].filter(vis);
+  const eds = [...document.querySelectorAll('textarea, [contenteditable]:not([contenteditable="false"]), [role="textbox"]')].filter(vis);
   const ed = eds[0] || null;
   const btns = [...document.querySelectorAll('button, [role="button"]')]
     .filter((b) => { const r = b.getBoundingClientRect(); return r.width > 10 && r.height > 10; })
@@ -1938,6 +1938,21 @@ async function actVideo() {
       images: VIMAGES.map((p) => path.resolve(p)), audio: VAUDIO ? path.resolve(VAUDIO) : '',
       video: VVIDEO ? path.resolve(VVIDEO) : '', pron: pronFor(prompt) });
     // ── 填入视频请求 → 校验 → 发送 → 校验（2026-10-21 重写；老写法是"填不进去也盲点发送"）──
+    // 2026-10-21 补：**先等输入框就绪再填**——新建/切换会话后页面可能还在渲染，直接填会 `no editor`
+    //（用户同事真机踩到：报"视频指令没填进豆包输入框"，页面里一个可输入元素都没找到）。
+    let focP = null;
+    for (let k = 0; k < 30; k++) {
+      focP = await c.evalJs(FOCUS_COMPOSER).catch(() => null);
+      if (focP) break;
+      await sleep(1000);
+    }
+    if (!focP) {
+      const dir = await dumpDiag(c, 'prepare-no-editor');
+      step('✗ 豆包页面里找不到可输入的框（等了 30 秒）——诊断：' + (dir || '(没写成)'));
+      console.log(JSON.stringify({ state: 'error', diag: dir,
+        error: '豆包页面里找不到输入框（界面可能改版/还在加载）——没发出去' }));
+      return 5;
+    }
     const stP = await c.evalJs(MSG_STATE).catch(() => null) || {};
     const sendsBefore = Number(stP.sends || 0);
     const recvsBefore = Number(stP.recvs || 0);
