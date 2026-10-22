@@ -387,7 +387,10 @@ def _probe_doubaowork():
         return False, ("没找到豆包工作客户端（装官方桌面端即可；装在别处就用 "
                        "agent_bridge.local.json 的 \"doubaowork\" 字段写 DoubaoWork.exe 绝对路径）")
     if not lib_runner(js)[0]:
-        return False, "跑不了桥脚本：需要 Node（没有独立 node 时，本机的 WorkBuddy/ZCode 自带 Electron 也能当 node）"
+        return False, ("跑不了桥脚本：需要 Node——独立 node 没找到（没有独立 node 时，本机的 "
+                       "WorkBuddy/ZCode 自带 Electron 也能当 node）；绿色版/安装版应自带 "
+                       "runtime\\node\\node.exe，若确实没有，可用 agent_bridge.local.json 的 "
+                       "\"node\" 字段指定 node.exe 的绝对路径")
     if _doubaowork_running():
         return True, exe + "（正在运行；接管它要**用调试端口起的**那份，否则先退出重开，见 tools\\doubao_cdp.mjs）"
     return True, exe + "（没在跑：点「出提示词」时我会带调试端口把它拉起来）"
@@ -491,9 +494,14 @@ def node_exe():
             if np == p:
                 break
             p = np
-            c = os.path.join(p, "runtime", "node", "node.exe")
-            if os.path.isfile(c):
-                return c
+            # 2026-10-21 加：绿色版/安装版的布局不一定是 runtime\node\node.exe——
+            # 同事机实测桥报"需要 Node"，包里明明自带（候选只认一种写法就没命中）。
+            for rel in (("runtime", "node", "node.exe"),
+                        ("runtime", "node", "bin", "node.exe"),
+                        ("runtime", "node", "node_modules", "node", "node.exe")):
+                c = os.path.join(p, *rel)
+                if os.path.isfile(c):
+                    return c
     pats = [r"C:\Program Files\nodejs\node.exe", r"C:\Program Files (x86)\nodejs\node.exe",
             os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "nodejs", "node.exe"),
             os.path.join(os.environ.get("ProgramData", ""), "chocolatey", "bin", "node.exe"),
