@@ -185,11 +185,10 @@ def main():
     #   /XD 只挡"复制"，上一轮已经同步进载荷的这些大件得显式删。
     #     · dist\_old                                  工作台旧版备份（打包换位留下的）
     #     · _vendor\node                               与 runtime\node 重复的 node 主本（守卫在同步前已用它补 runtime）
-    #     · _vendor\models\depth-anything-v2-small     转深度片模型（能力包按需下载，用到才拉）
+    #     · （2026-10-22 用户要求：**转深度片模型保留**，不在此列）
     CUT_DIRS = [
         os.path.join(dst, "tools", "dist", "_old"),
         os.path.join(dst, "tools", "_vendor", "node"),
-        os.path.join(dst, "tools", "_vendor", "models", "depth-anything-v2-small"),
     ]
     for d0 in CUT_DIRS:
         if os.path.isdir(d0):
@@ -220,8 +219,6 @@ def main():
            os.path.join(dst, "tools", "dist", "_old"),
            os.path.join(REPO, "tools", "_vendor", "node"),
            os.path.join(dst, "tools", "_vendor", "node"),
-           os.path.join(REPO, "tools", "_vendor", "models", "depth-anything-v2-small"),
-           os.path.join(dst, "tools", "_vendor", "models", "depth-anything-v2-small"),
            ]
     if not dry:
         rc = subprocess.run(cmd).returncode
