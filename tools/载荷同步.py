@@ -25,6 +25,8 @@ REPO = os.path.dirname(HERE)                               # 仓库根
 EXCLUDE_DIRS = {".git", "__pycache__", "build", "_stage", "_release",
                 "wheels", "wheels-heavy", "wheels-stt", "wheels-depth"}
 EXCLUDE_FILES = {"*.local.json", "*.local.md", "*.pyc",
+                 # 2026-10-22 瘦身：ffplay 播放器没人调用（与 打包发行.py 的 FFMPEG_DROP 同口径）
+                 "ffplay.exe",
                  # 历史发布工具：硬编码本机路径，已移出公开仓，新机也用不上
                  "发布完整setup.py", "同步Gitee发行版.py", "重建GitHub v0.4.0.py"}
 
@@ -179,6 +181,23 @@ def main():
                         print("[X] 删不掉 %s：%s" % (p, e))
                         return 3
 
+    # 1.6) 瘦身（2026-10-22，用户问"安装包是不是很多东西没必要"）：
+    #   /XD 只挡"复制"，上一轮已经同步进载荷的这些大件得显式删。
+    #     · dist\_old                                  工作台旧版备份（打包换位留下的）
+    #     · _vendor\node                               与 runtime\node 重复的 node 主本（守卫在同步前已用它补 runtime）
+    #     · _vendor\models\depth-anything-v2-small     转深度片模型（能力包按需下载，用到才拉）
+    CUT_DIRS = [
+        os.path.join(dst, "tools", "dist", "_old"),
+        os.path.join(dst, "tools", "_vendor", "node"),
+        os.path.join(dst, "tools", "_vendor", "models", "depth-anything-v2-small"),
+    ]
+    for d0 in CUT_DIRS:
+        if os.path.isdir(d0):
+            print("[瘦身] %-5s %6d MB  %s" % ("(dry)" if dry else "已删", mib(d0),
+                                             os.path.relpath(d0, pkg)))
+            if not dry:
+                shutil.rmtree(d0, ignore_errors=True)
+
     # 2) 镜像 skill
     xd = [" ".join("/XD " + os.path.join(dst, "tools", d) for d in
                    (".git", "__pycache__", "build", "_stage", "_release"))]
@@ -196,6 +215,13 @@ def main():
            os.path.join(dst, "tools", "_vendor", "wheels-stt"),
            os.path.join(dst, "tools", "_vendor", "wheels-depth"),
            os.path.join(dst, "tools", "_release"),
+           # 2026-10-22 瘦身：这三样大件不同步（载荷侧残留由上面 1.6 显式删）
+           os.path.join(REPO, "tools", "dist", "_old"),
+           os.path.join(dst, "tools", "dist", "_old"),
+           os.path.join(REPO, "tools", "_vendor", "node"),
+           os.path.join(dst, "tools", "_vendor", "node"),
+           os.path.join(REPO, "tools", "_vendor", "models", "depth-anything-v2-small"),
+           os.path.join(dst, "tools", "_vendor", "models", "depth-anything-v2-small"),
            ]
     if not dry:
         rc = subprocess.run(cmd).returncode
