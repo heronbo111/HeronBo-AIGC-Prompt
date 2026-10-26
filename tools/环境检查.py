@@ -36,10 +36,33 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _skill_root():
+    """往上找带 SKILL.md 的那一层（打包后 HERE 在 _internal 里，模型在 skill 根下）。"""
+    d = HERE
+    for _ in range(6):
+        if os.path.isfile(os.path.join(d, "SKILL.md")):
+            return d
+        nd = os.path.dirname(d)
+        if nd == d:
+            break
+        d = nd
+    return os.path.dirname(HERE)
+
+
+SKILL_ROOT = _skill_root()
 YUNET = os.path.join(HERE, "识别工具", "face_detection_yunet_2023mar.onnx")
+YUNET_CANDS = [YUNET,
+               os.path.join(SKILL_ROOT, "tools", "识别工具",
+                            "face_detection_yunet_2023mar.onnx")]
+
 DEPTH_DIR = os.path.join(os.path.expanduser("~"), ".cache", "depth-models", "depth-anything-v2-small")
 # 仓库自带的那份（随 skill 分发，装机即用）
 DEPTH_BUNDLED = os.path.join(HERE, "_vendor", "models", "depth-anything-v2-small")
+DEPTH_CANDS = [DEPTH_DIR, DEPTH_BUNDLED,
+               os.path.join(SKILL_ROOT, "tools", "_vendor", "models",
+                            "depth-anything-v2-small")]
 DEPTH_FILES = ["onnx/model.onnx", "preprocessor_config.json", "config.json"]
 # 走**国内模型镜像**（2026-10-08）：裸连 huggingface.co 实测连不上。
 # ⚠️ hf-mirror 只适合小文件：大件会被 302 到海外 Xet/CAS（`cas-bridge.xethub.hf.co`），
@@ -93,8 +116,17 @@ def py_exe():
 def mod_state(mod):
     """返回 (是否可导入, 版本或错误摘要)。"""
     if getattr(sys, "frozen", False):
-        # 打包版直接在本进程里找：依赖要么已内置（spec 的 hiddenimports），要么就没有，
-        # 不需要另起解释器（也起不来——运行时没有独立 Python）。
+        # 打包版：这些库是给**随包 Python**（runtime\python）跑脚本用的，不是给 exe 自己用的。
+        # 所以要用随包 python 去 import 才算数（2026-10-26 实踩：拿 exe 的 find_spec 判断，
+        # 明明装好的 numpy/cv2 全被报成"未内置"）。
+        exe = py_exe()
+        if exe:
+            r = run([exe, "-c",
+                     "import %s,sys;print(getattr(%s,'__version__','?'))" % (mod, mod)])
+            if r.returncode == 0:
+                v = (r.stdout or "").strip().splitlines()
+                return True, (v[-1] if v else "已安装")
+            return False, "随包 Python 里没有"
         try:
             import importlib.util as _iu
             sp = _iu.find_spec(mod)
@@ -123,9 +155,9 @@ def check_ocr():
 def probe():
     items = []
 
-    def add(name, level, ok, detail, action=""):
+    def add(name, level, ok, detail, action="", target=""):
         items.append({"项": name, "级别": level, "状态": "OK" if ok else "缺",
-                      "详情": detail, "动作": action})
+                      "详情": detail, "动作": action, "可安装": target})
 
     ok = sys.version_info >= (3, 9)
     add("python≥3.9", "必需", ok, "%d.%d.%d" % sys.version_info[:3],
@@ -142,11 +174,11 @@ def probe():
     for mod, level in (("numpy", "可选（对比/画布工具用）"), ("cv2", "可选（遮罩/抽帧用）"),
                        ("sherpa_onnx", "可选（拆解转写）"), ("onnxruntime", "可选（深度视频）")):
         ok, detail = mod_state(mod)
-        add(mod, level, ok, detail, "" if ok else "pip install %s" % PIP_PKGS[mod])
+        add(mod, level, ok, detail, "" if ok else "点右边的「安装」自动补", "pip:" + mod)
 
-    ok = os.path.isfile(YUNET)
-    add("Yunet 人脸模型", "拆解用", ok, "随仓库走",
-        "" if ok else "从仓库补回 tools\\识别工具\\face_detection_yunet_2023mar.onnx")
+    yunet = next((p for p in YUNET_CANDS if os.path.isfile(p)), "")
+    add("Yunet 人脸模型", "拆解用", bool(yunet), ("随包" if yunet else "缺文件"),
+        "" if yunet else "安装包自带；缺了说明安装不完整，重装一次即可")
 
     ok, detail = check_ocr()
     add("系统 OCR（WinRT）", "拆解用", ok, detail, "" if ok else "Windows 设置里装中文语言/OCR 组件")
@@ -156,11 +188,12 @@ def probe():
     add("pywebview（工作台独立窗口，界面默认入口）", "源码运行用", ok, detail,
         "" if ok else "pip install pywebview（或直接用 dist 目录里的 score-tool.exe，里面已带）")
 
-    model = os.path.join(DEPTH_DIR, "model.onnx")
-    ok = os.path.isfile(model) and os.path.getsize(model) > 90 * 1024 * 1024
+    model = next((os.path.join(d, "model.onnx") for d in DEPTH_CANDS
+                  if os.path.isfile(os.path.join(d, "model.onnx"))), "")
+    ok = bool(model) and os.path.getsize(model) > 90 * 1024 * 1024
     add("Depth-Anything-V2-Small", "深度视频", ok,
-        ("%.0f MB" % (os.path.getsize(model) / 1048576)) if os.path.isfile(model) else "未下载",
-        "" if ok else "python tools\\环境检查.py --models（HF 需代理，见 playbooks.md 第三部分）")
+        ("%.0f MB" % (os.path.getsize(model) / 1048576)) if model else "未下载",
+        "" if ok else "点右边的「下载」自动拉（国内镜像优先）", "model:depth")
     return items
 
 
@@ -315,3 +348,22 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def install_item(name):
+    """装一个可选项。name: pip:<模块> 或 model:depth。"""
+    name = (name or "").strip()
+    if name.startswith("pip:"):
+        mod = name.split(":", 1)[1]
+        pkg = PIP_PKGS.get(mod)
+        if not pkg:
+            return {"ok": False, "msg": "不认识的项：%s" % mod}
+        exe = py_exe() or sys.executable
+        r = run([exe, "-m", "pip", "install", "--upgrade", pkg], timeout=1800)
+        tail = ((r.stdout or "") + (r.stderr or "")).strip().splitlines()[-3:]
+        return {"ok": r.returncode == 0,
+                "msg": "%s：%s" % (pkg, " / ".join(tail) or "完成")}
+    if name == "model:depth":
+        ok = do_models()
+        return {"ok": ok, "msg": "深度模型已就绪" if ok else "下载没成功（网络不通？稍后再试）"}
+    return {"ok": False, "msg": "不认识的项：%s" % name}
