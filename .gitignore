@@ -125,3 +125,8 @@ tools/_stage_build.log
 # 两样都不进 git（否则等于把技能在仓库里存两份）。
 npm/skill/
 npm/*.tgz
+# 一次性脚本/临时抓取（2026-10-26）
+_tmp/
+
+# 检查更新时落在仓库根的远端版本缓存（运行时产物）
+/heronbo_version_remote.json
