@@ -19,7 +19,7 @@ PNG = os.path.join(HERE, "工作台_256.png")
 # 「快捷方式和安装包的图标不一样大」：之前安装包用 art\setup.ico（白圆底、画面小），
 # 程序/快捷方式用盒子图，两个风格并存。现在统一：一次生成，两处一起写。
 SRC = os.path.join(os.path.dirname(HERE), "assets", "logo.png")
-SETUP_ICO = r"D:\HeronBo-Build\art\setup.ico"
+SETUP_ICO = os.path.join(os.path.dirname(HERE), "..", "HeronBo-Workbench", "installer", "art", "setup.ico")
 
 BG = (47, 111, 237)          # 强调蓝（浅色主题的 accent）
 FG = (255, 255, 255)         # 四栏用白
