@@ -130,3 +130,6 @@ _tmp/
 
 # 检查更新时落在仓库根的远端版本缓存（运行时产物）
 /heronbo_version_remote.json
+# README 用的图（logo/截图）要进仓库
+!assets/logo.png
+!assets/*.png

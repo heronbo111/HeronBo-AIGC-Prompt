@@ -1,214 +1,188 @@
-# HeronBo-AIGC-Prompt
+<div align="center">
+<img src="assets/logo.png" width="84" alt="HeronBo" />
 
-AI 视频提示词生成 + 成片六维评价工具。把「文案/台词 + 素材（图片/视频/音频）」整理成可直接粘贴到生成平台的提示词，并附成片评分工具。
+# HeronBo・AI 视频提示词
 
-## 一、这是什么 / 能做什么
+**把文案和素材，变成一段可以直接粘贴的生成指令。**
 
-**核心铁律：只生成提示词文字，不提交生成、不消耗任何积分**；视频生成由用户自己在平台网页操作。交付物中不会出现 CLI 命令 / 积分价格 / 队列信息。只有用户明确要求代提交时才动手（先报单价 → 确认 → 执行 → 如实报告消耗）。
+[![version](https://img.shields.io/badge/version-0.6.5-blue?style=flat-square)](CHANGELOG.md)
+[![platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4?style=flat-square)](#)
+[![agent skill](https://img.shields.io/badge/agent-skill-7c5cff?style=flat-square)](#)
+[![license](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 
-### 覆盖四大类
+写视频提示词 · 拆解二创成片 · 六维评分复盘 · 越用越准
 
-| 大类 | 典型需求 | 备注 |
-|---|---|---|
-| **图生视频** | 给图片让它动起来；含**道具/主体替换** | 图片是唯一锚 |
-| **文生视频** | 什么素材都不给，只有一段文字 | 需把人物/场景/动作/镜头/风格全写进文字 |
-| **参考视频生视频** | 照某段视频的运镜/动作/节奏，生成新画面 | 只管动作与节奏 |
-| **参考视频替换生视频** | 保留原片动作构图，把里面的人/物换掉 | 难度分 L1–L4 |
-| （音乐二创/翻唱） | 给音乐，做卡点/配口型 | 参考视频类的特例 |
+</div>
 
-### 三条附加能力
+---
 
-- **拆解 AI 二创/爆款成片**：读片三问 + 机器证据 + 拆解报告 + 复现路线
-- **越用越准**：内置「反馈优化循环」——每次成片反馈都会沉淀为已验证规则
-- **模型无关**：提示词文本对即梦/小云雀/updream 通用
+## 这是什么
 
-### 触发与交付
+给 agent 的一套视频提示词工作法：读你的文案与素材（图片 / 视频 / 音频 / 文本），产出**可以直接粘进即梦、Seedance 等平台生成框**的提示词，并把每次成片的评分沉淀成规则，下一轮写得更准。
 
-1. 触发：直接说「帮我写提示词 / 把这段台词变成 Seedance 提示词 / 做分镜提示词 / 把视频里的人换成另一个 / 拆解这条二创」
-2. 交付物 = 提示词 + 素材清单（+ 拼接说明）；生成在平台网页操作
-3. 成片出来后必须弹出评分窗口进行六维评分
-4. 评分会被自动回收，下次会话按反馈循环写进规则并记账
-5. 给 agent 反馈后自动更新规则，越用越准
+它同时带一个 Windows 图形工作台：四栏流程板、豆包与即梦两条生成通道、成片评分、在线更新。
 
-## 二、安装 / 换机 / 自检
+![工作台](assets/screenshot-workbench.png)
 
-### 放置位置（新对话自动识别）
+**它不做什么**（硬规矩）：
 
-| 运行环境 | 目录 |
+- 只产出提示词文字，**不替你提交生成、不消耗积分**；生成在平台网页上由你自己点
+- 需要代提交时，先报价 → 你确认 → 才执行，事后如实报消耗
+- 交付物里不出现命令行、单价、队列信息
+
+## 安装
+
+最省事的方式，是把仓库链接丢给你的 agent：
+
+```text
+帮我安装这个 skill：https://github.com/heronbo111/HeronBo-AIGC-Prompt
+```
+
+或者用 npm（自动装进本机已存在的 agent skills 目录）：
+
+```bash
+npm i -g heronbo-aigc-prompt
+
+# 想指定目录：
+HERONBO_SKILL_DIRS="D:/某处/skills" npm i -g heronbo-aigc-prompt
+```
+
+或者手动装：
+
+```bash
+git clone https://github.com/heronbo111/HeronBo-AIGC-Prompt.git
+cd HeronBo-AIGC-Prompt
+
+# 以 ZCode 为例（其它 agent 见下面的「装到哪」）
+mkdir -p ~/.zcode/skills/heronbo-aigc-prompt
+cp -r SKILL.md references samples tools ~/.zcode/skills/heronbo-aigc-prompt/
+```
+
+国内访问 GitHub 慢的话，可以走 Gitee 镜像：
+
+```bash
+git clone https://gitee.com/HeronBo/HeronBo-AIGC-Prompt.git
+```
+
+> 没装 git 也行：直接下源码 zip
+> `https://gitee.com/HeronBo/HeronBo-AIGC-Prompt/repository/archive/main.zip`，
+> 解压后跑 `python 安装向导.py`——它会问你装到哪个 agent、项目库放哪，再一步到位。
+
+### 想用图形工作台
+
+去 [Releases](https://github.com/heronbo111/HeronBo-AIGC-Prompt/releases) 下完整安装包（约 620 MB，依赖全封装，离线可用）：
+
+| 文件 | 用途 |
 |---|---|
-| ZCode 客户端 | `C:\Users\你的用户名\.zcode\skills\HeronBo-AIGC-Prompt\` |
-| Codex CLI | `C:\Users\你的用户名\.codex\skills\HeronBo-AIGC-Prompt\` |
-| DeepSeek Harness（DSH） | `C:\Users\你的用户名\.dsh\skills\HeronBo-AIGC-Prompt\` |
-| 豆包（个人版） | `C:\Users\你的用户名\Doubao\skills\HeronBo-AIGC-Prompt\` |
-| 豆包工作（企业版） | `%LOCALAPPDATA%\DoubaoWork\User Data\<profile>\.doubaowork\agent_mode\workspace\.user_skills\HeronBo-AIGC-Prompt\` |
+| `HeronBo-Workbench-Setup-v*.exe` | 新机安装 / 重装（卸载项、开始菜单与桌面快捷方式） |
+| `HeronBo-Workbench-Portable-v*.zip` | 解压即用，不写注册表 |
+| `HeronBo-Workbench-Update-v*.zip` | 给「检查更新」用，一般不用手动碰 |
 
-> 豆包家两个客户端**都可能有多份 profile**（`Default` / `Profile 2` …），**真在用的那个不一定叫 `Default`**
-> ——`Default` 里可能只是几周前的空壳。所以技能目录这里写 `<profile>` 占位，工作台侧是带通配去找的。
+安装器默认目录是 **`C:\Program Files\HeronBo Workbench`**，目录页可以改（换 D 盘、避开带空格的路径都行）。装完从开始菜单或桌面图标启动；装好的程序里已带 Python、Node、ffmpeg 与模型，不需要另装开发环境。
 
-### 安装向导：先问你装哪（2026-09-22 起）
+## 装到哪
 
-装 skill / 放项目**都会先问位置**，不再默认塞进固定目录：
-
-```bash
-python 安装向导.py            # 问两件事：①skill 装到哪（按本机 agent 给默认值）②项目项目库放哪
-python 安装向导.py --list     # 只看各 harness 的默认目录
-```
-
-它会：选位置（ZCode / WorkBuddy / Codex / DSH / 豆包 / 豆包工作 默认目录或自定义）→ 没下载就浅克隆（`--depth 1`，
-没 git 就直接下 gitee 的 zip 源码包，**不用装 git**）→ 写项目库 → 可选给其它 agent 建 junction
-（一份实体多处可用）→ 可选接着跑 `tools\部署.py all --yes`。
-
-### 下载（任选其一，都只要最新一层）
-
-```bash
-git clone --depth 1 https://gitee.com/HeronBo/HeronBo-AIGC-Prompt.git      # 国内，浅克隆约 13MB
-git clone --depth 1 https://github.com/heronbo111/HeronBo-AIGC-Prompt.git   # GitHub（已公开）
-# 没装 git：直接下 zip（解压后跑 python 安装向导.py）
-# https://gitee.com/HeronBo/HeronBo-AIGC-Prompt/repository/archive/main.zip
-```
-
-### 一键安装（新机最短路径）
-
-**双击仓库根的 `一键安装.cmd`**，或者：
-
-```bash
-python tools\部署.py all --yes
-```
-
-它会：找 Python → 用仓库自带的离线 wheel 装必需依赖 → 接 agent 通道并真跑一句验证连通 → 建桌面快捷方式 → 把工作台弹出来。
-
-### 怎么拿到工作台（推荐：完整安装包）
-
-**普通用户 / 不想装环境：直接下载完整安装包，双击即装。** v0.4.0 起，安装包已把嵌入式 Python、
-便携 Node、ffmpeg、深度模型、语音转写和全部依赖封进去（约 792MB），离线机器装完即用，**不需要 Python/Git**。
-
-| 你要什么 | 怎么做 |
+| agent | 技能目录 |
 |---|---|
-| **安装 / 使用工作台（推荐）** | 到 Release 下载 `HeronBo视频工作台_完整版_Setup_v0.4.0.exe`，双击安装（可选安装位置、桌面快捷方式） |
-| **更新工作台** | 工作台标题条右侧「检查更新」→「下载并重启」，自动下载、校验、换位、重启（弹窗可「回滚到上一版」） |
-| 我这版是哪一版 | 看「检查更新」旁版本号；命令行 `python tools\版本.py`（current / remote / check） |
-| 只要核心（出提示词 + 评分） | 完整包已包含，装上即可 |
+| ZCode | `~/.zcode/skills/heronbo-aigc-prompt/` |
+| Claude Code | `~/.claude/skills/heronbo-aigc-prompt/` |
+| Codex CLI | `~/.codex/skills/heronbo-aigc-prompt/` |
+| DeepSeek Harness（DSH） | `~/.dsh/skills/heronbo-aigc-prompt/` |
+| WorkBuddy / agents | `~/.agents/skills/heronbo-aigc-prompt/` |
+| 豆包工作（企业版） | `%LOCALAPPDATA%\DoubaoWork\User Data\<profile>\.doubaowork\agent_mode\workspace\.user_skills\heronbo-aigc-prompt\` |
 
-- Release 页面（GitHub，含完整安装包与 score-tool 内核）：
-  https://github.com/heronbo111/HeronBo-AIGC-Prompt/releases/tag/v0.4.0
-- Gitee 因附件单文件 **100MB 上限**无法托管完整包；Gitee 发行版 v0.4.0 放了 score-tool 内核，
-  完整包请走上面的 GitHub 链接：https://gitee.com/HeronBo/HeronBo-AIGC-Prompt/releases
+`~` 就是 `C:\Users\你的用户名`。豆包家可能有多个 profile（`Default` / `Profile 2`…），**真在用的那个不一定叫 `Default`**，装错位置就识别不到。
 
-**开发者 / 想从源码运行**：clone 仓库（`--depth 1`）后跑 `python tools\部署.py all --yes`，
-或 `python tools\环境检查.py` 自行联网装依赖（完整包已内含的离线大件不再随 Release 提供）。
-
-### exe 被杀软 / Defender 删了（2026-09-22 实测）
-
-打包是 PyInstaller onefile 且未签名，Defender 启发式容易误报。装机端跑：
+装完想确认？任选其一：
 
 ```bash
-python tools/deploy.py defender          # 只检查：exe 还在不在、保护历史有没有动过它
-python tools/deploy.py defender --yes    # 提权把工作台目录加进白名单（UAC 点「是」）
+python tools\环境检查.py        # 逐项自检运行时与可选依赖
+python tools\首次配置.py        # 已配置 exit 0；未配置 exit 1
 ```
 
-然后二选一：到「Windows 安全中心 → 保护历史」把隔离的程序**还原**；
-或重新下载完整安装包（见上「怎么拿到工作台」）**重装一份**。加过白名单后不会再删。
-要彻底除名可向微软提交误报申诉（https://www.microsoft.com/en-us/wdsi/filesubmission）。
+## 使用
 
-**工作台窗口一片空白？** 那是 WebView2 运行库坏了（注册表写着装了、目录里 `msedgewebview2.exe` 却没了）——
-`python tools\部署.py check` 会报出来，`python tools\部署.py wx --yes` 一条命令修好；工作台现在还会
-**自动退到 Edge 窗口**，不会再晾你一个白窗。整条新机流程见 `docs/新机部署.md`。
+直接说你要什么，不需要记命令。
 
-### 让工作台调得动本机 agent（搭桥）
+| 你说 | 会发生什么 |
+|---|---|
+| 帮我把这段台词做成 Seedance 提示词 | 先问清画面锚点与限制，再给可整段粘贴的提示词 + 素材清单 |
+| 用这张图做图生视频，让人物走起来 | 以图片为唯一锚，写动作 / 镜头 / 风格，并给参数与首尾帧建议 |
+| 照这条片子的运镜，拍一条新的 | 先拆参考片的动作与节奏，再按同样运镜写新提示词 |
+| 把这条片子里的人换成另一个人 | 保留动作与构图，只换主体；先判难度 L1–L4 |
+| 拆解这条爆款二创 | 读片三问 + 机器证据（抽帧 / 转写）+ 拆解报告 + 复现路线 |
+| 成片出来了，帮我评分 | 弹六维评分（口型 / 台词 / 动作 / 形象 / 语速 / 卡点），结果写回项目并进规则 |
 
-工作台「出提示词 / 评价反哺」需要一个能被**无头调用**的 agent 通道（WorkBuddy / ZCode / 豆包工作 /
-Claude Code / Codex / DSH，装哪个用哪个；**个人版豆包没有无头通道**，接不了）。
-新机上把 `docs/新机部署.md` 的任务书**整段复制给本机 agent**，它照步骤做即可：
-· 机器上只有豆包工作 → 用 **5.6 节**（装技能 + 搭桥一步到位，不需要装 Node/npm）；
-· 有 WorkBuddy/ZCode/Codex 或要多通道 → 用 **5.5 节**「搭桥任务提示词」。
-装好的工作台里，「agent 通道」弹窗（零可用时）也有同款「复制搭桥任务」按钮。
-逐机探测与优先级规则见 `docs/新机部署.md` 第 5 节。
-**只拿到本仓库链接的 agent**：读 `docs/新机部署.md`，第 0 节末尾有按场景选节的指引。
+## 能做什么
 
-### 换机四件套（必做，约 5 分钟）
+| 大类 | 典型需求 |
+|---|---|
+| **图生视频** | 给图片让它动起来；含道具 / 主体替换 |
+| **文生视频** | 什么素材都不给，只有一段文字 |
+| **参考视频生视频** | 照某段视频的运镜 / 动作 / 节奏，生成新画面 |
+| **参考视频替换生视频** | 保留原片动作构图，把里面的人 / 物换掉 |
+| 音乐二创 | 卡点 / 配口型（参考视频类的特例） |
 
-0. **环境检查（第一件事）**：`python tools\环境检查.py` —— 逐项自检 python≥3.9 / ffmpeg / ffprobe / WebView2 / pywebview，以及**按需**的 numpy / opencv / sherpa-onnx（拆解转写，SenseVoice）/ onnxruntime（深度视频）/ Yunet 人脸模型 / 系统 OCR / Depth 模型，缺什么就打印该装什么。
-   装缺项：**先问用户**，同意后 `python tools\环境检查.py --install --yes`（**仓库自带必需依赖离线包**；本机开发目录的 `tools/_vendor/` 另含 ffmpeg 与深度模型可离线装，公开 clone 无大件、由脚本联网获取——普通用户直接用完整安装包即可）；模型另跑 `--models`（Depth，约 99MB）与 `--warm-asr`（预下转写模型，约 461MB）——**两者都走国内模型镜像（modelscope.cn 优先、hf-mirror.com 兜底，裸连即可，不用挂代理）**。**装软件必须用户同意，不许静默安装。**
-1. **问项目位置**：agent 问「请问您要把项目建在哪里？您提供好素材后，我会自动将其进行归类」→ `python tools\首次配置.py --project "<项目目录>"` 建框架（`文案/素材/成片/废片/评价/备注`）+ 自动归类素材 + 写入 `references/paths.local.md`（已 gitignore，不进仓库）。
-2. **问平台（可选装 CLI）**：agent 问「你主要用哪个平台做 AI 视频？即梦 / 小云雀 / updream」→ 按 `references/platforms.md` 检测：
-   - 即梦 = `dreamina`（官方脚本 `curl -fsSL https://jimeng.jianying.com/cli | bash`；Windows 用 Git Bash 或按官方指引）；
-   - 小云雀 = `pippit-tool-cli`（`npm i -g @pippit-dev/cli`，使用时需 `XYQ_ACCESS_KEY`，用户自行申请、不要写进仓库）；
-   - updream = 暂无公开 CLI → **不装**，网页操作。
-   **只有用户指定、且该平台确实有 CLI 时才装**；不检测账号、不代登录。
-3. **装依赖**：跑第 0 件即可一次看全：python、ffmpeg、numpy/opencv、可选 sherpa-onnx（转写，SenseVoice）与 onnxruntime（深度视频）；Edge/Chrome（必须 localhost 方式打开，file:// 无法写入本地目录）。**不检测即梦账号**，账号由用户自己登录。
+附加能力：**拆解成片**（机器证据 + 报告）、**反馈优化循环**（每条评分都变成下一轮的规则）、**模型无关**（同一段提示词对即梦 / 小云雀 / updream 通用）。
 
-### 自检清单
+## 目录结构
 
-- `python tools\首次配置.py`（无参）：已配置 exit 0；未配置 exit 1
-- `python tools\评价回收.py` 能列出待吸收评价
-- `tools\score_gui.cmd` 能弹出评分窗口
-
-## 三、目录结构
-
-```
-HeronBo-AIGC-Prompt/
-├── SKILL.md                       # 技能工作流
-├── README.md                      # 本文件
-├── AGENTS.md                      # 多 agent 协作约定
-├── TODO.md                        # 待办入口
-├── references/                    # 规则、模板、平台信息
-│   ├── rules.md                   # 硬规则与已验证规律
-│   ├── prompt-templates.md        # 提示词模板
-│   ├── playbooks.md               # 实战手册
-│   ├── platforms.md               # 平台与 CLI + 模型限额
-│   ├── samples-db.md              # 项目库对照
-│   ├── paths.md                   # 路径表模板
-│   ├── rules.local.md             # 本机规则覆盖层
-│   └── paths.local.md             # 本机路径配置
-├── tools/                         # 工具链
-│   ├── score_gui.pyw              # 六维评分窗口
-│   ├── score_core.py              # 评分核心
-│   ├── 环境检查.py                # 环境自检
-│   ├── 首次配置.py                # 落位/平台登记
-│   ├── 评价回收.py                # 待吸收评价清单
-│   ├── 成片拆解.py                # 二创/成片机器证据
-│   ├── 深度视频.py                # 黑白深度视频
-│   └── 人物遮罩.py                # 人物区糊掉、场景保留
-└── samples/                       # 规律数据仓库版
+```text
+SKILL.md              技能正文（agent 读这一份就能干活）
+references/           规则库：平台参数、模型限额、拆解口径、playbooks
+samples/              样板项目与评价数据（脱敏）
+tools/                工作台后端、素材识别、拆解、评分、打包与发版脚本
+  workbench/          工作台界面（本地服务 + 独立窗口）
+  _vendor/            随包运行时大件（ffmpeg / 模型 / 轮子，不进 git）
+docs/                 新机部署、后台并发方案等文档
+npm/                  技能层 npm 分发包（heronbo-aigc-prompt）
+CHANGELOG.md          更新记录
 ```
 
-### 各目录要点
+## 换机、白名单与搭桥
 
-- **references/**：写提示词前只读本次相关条目；rules.md 顶部有规则索引
-- **tools/**：本地预处理与评价工具，都不提交生成、不消耗积分
-- **samples/**：仓库内为脱敏示例，真实数据存各机本机项目库
+- **杀软删了 exe**：没有代码签名证书，新程序容易被误判。加白名单与还原步骤：
+  `python tools\deploy.py defender --yes`（UAC 点「是」），再到「Windows 安全中心 → 保护历史」还原，或直接重装一次。
+- **窗口一片空白**：WebView2 运行库坏了。`python tools\部署.py check` 会报出来，`python tools\部署.py wx --yes` 修；工作台也会自动退到 Edge 窗口。
+- **让工作台调得动本机 agent**：需要一个能被无头调用的通道（WorkBuddy / ZCode / 豆包工作 / Claude Code / Codex / DSH）。新机照 `docs/新机部署.md` 的任务书整段复制给 agent 即可；工作台的「agent 通道」弹窗里也有同款「复制搭桥任务」。
+- **想从源码跑**：`python tools\部署.py all --yes`（用仓库自带离线 wheel 装依赖、接通道、建快捷方式、弹出工作台）。
 
-## 四、参与贡献
+## 常见问题
 
-1. 使用并反馈：成片反馈/六维评分是规则更新的唯一来源
-2. 本地优化写 `references/*.local.md`（gitignored），git pull 不会冲突
-3. 大视频（成片/废片）不进仓库；真实数据只存各机本机项目库
+**「检查更新」提示但装不上** —— 0.6.2 及更早是单文件形态，第一次会下到一份「需要重装一次」的说明，按提示装一次完整安装包，之后就能在线更新。
 
-### 作者侧：改完怎么发出去
+**打开后说没配置项目库** —— 项目库就是"放各个项目的那一层目录"。在「首次配置」页选一次即可，记在本机 `references/paths.local.md`（不进仓库、不上传）。
 
-工具更新一律走 `tools\推送.py`：
+**即梦会扣积分吗** —— 会。所以「即梦一键生成」提交前先出报价，你点确认才扣；事后用余额差告诉你这一单花了多少。只想省钱就用它写提示词。
+
+**技能里的 Python 脚本跑不起来** —— 需要 Python 3.9+。跑 `python tools/环境检查.py` 看缺什么；安装版工作台自带运行时，也可以在「首次配置」页一键补齐。
+
+## 参与贡献
+
+1. 使用并反馈：成片反馈与六维评分是规则更新的唯一来源
+2. 本地优化写 `references/*.local.md`（gitignored），`git pull` 不会冲突
+3. 大视频（成片 / 废片）不进仓库，真实数据只存各机本机项目库
+
+作者侧改完这样发：
 
 ```bash
-# 1) 先体检
-python tools\推送.py --dry --msg "说明" tools/score_core.py README.md
-
-# 2) 体检通过就真发
-python tools\推送.py --msg "评分：口型同步判据补一条" tools/score_core.py README.md
+python tools\推送.py --dry --msg "说明" tools/score_core.py README.md   # 先体检
+python tools\推送.py       --msg "说明" tools/score_core.py README.md   # 再发
 ```
 
-## 五、特技（可直接抄的硬口径）
+## 硬口径（可直接抄）
 
 - 规则优先级：用户实测 > 模板 > 推断
-- 引用一致性：提示词里写的每个 @视频1/@图片1 必须真实存在于上传素材
-- 负面词每段写死：无字幕 / 无运镜 / 无AI畸变
-- 生成类禁止写"参考视频/视频1"；替换类提示词宜短
-- 平台无关：提示词文本对即梦/小云雀/updream 通用
-- 交付物只出提示词：不出现 CLI 命令/积分价格/队列信息
+- 引用一致性：提示词里的每个 `@视频1` / `@图片1` 必须真实存在于上传素材
+- 负面词每段写死：无字幕 / 无运镜 / 无 AI 畸变
+- 生成类禁止写"参考视频 / 视频1"；替换类提示词宜短
+- 平台无关：提示词文本对即梦 / 小云雀 / updream 通用
+- 交付物只出提示词：不出现 CLI 命令 / 积分价格 / 队列信息
 
-## 六、开源许可证
+## 许可证
 
-MIT License，见 [LICENSE](LICENSE)。
+[MIT](LICENSE)
 
-## 七、更新记录
+## 更新记录
 
-对使用者有意义的变化按时间倒序记在 [CHANGELOG.md](CHANGELOG.md)。当前版本见 SKILL.md 的 version 字段。
+见 [CHANGELOG.md](CHANGELOG.md)；当前版本看 `SKILL.md` 的 `version` 字段。
