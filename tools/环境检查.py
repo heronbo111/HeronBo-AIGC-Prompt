@@ -76,8 +76,31 @@ def has_bin(name):
     return shutil.which(name)
 
 
+def py_exe():
+    """真·Python 解释器。打包版里 `sys.executable` 是工作台自己——
+    拿它跑 `-c` 会再起一个工作台窗口（2026-10-26 实测：自检时把主程序自己顶掉了）。"""
+    if not getattr(sys, "frozen", False):
+        return sys.executable
+    base = os.path.dirname(sys.executable)
+    for c in (os.path.join(base, "runtime", "python", "python.exe"),
+              os.path.join(base, "..", "runtime", "python", "python.exe"),
+              os.path.join(base, "python.exe")):
+        if os.path.isfile(c):
+            return os.path.abspath(c)
+    return ""
+
+
 def mod_state(mod):
     """返回 (是否可导入, 版本或错误摘要)。"""
+    if getattr(sys, "frozen", False):
+        # 打包版直接在本进程里找：依赖要么已内置（spec 的 hiddenimports），要么就没有，
+        # 不需要另起解释器（也起不来——运行时没有独立 Python）。
+        try:
+            import importlib.util as _iu
+            sp = _iu.find_spec(mod)
+        except Exception as e:                                   # noqa: BLE001
+            return False, "探测失败：%s" % str(e)[:80]
+        return (sp is not None), ("内置" if sp is not None else "未内置")
     r = run([sys.executable, "-c",
              "import %s,sys;print(getattr(%s,'__version__','?'))" % (mod, mod)])
     if r.returncode == 0:
@@ -143,7 +166,7 @@ def probe():
 
 def do_pip(pkgs, assume_yes):
     print("\n[安装] pip：%s" % " ".join(pkgs))
-    cmd = [sys.executable, "-m", "pip", "install", "--upgrade"] + pkgs
+    cmd = [py_exe() or sys.executable, "-m", "pip", "install", "--upgrade"] + pkgs
     if assume_yes:
         cmd.insert(3, "-q")
     r = subprocess.run(cmd)
@@ -188,7 +211,7 @@ def do_models():
             print("  下载 %s" % url)
             code = ("import urllib.request;"
                     "urllib.request.urlretrieve(%r, %r);print('ok')" % (url, dst))
-            r = run([sys.executable, "-c", code])
+            r = run([py_exe() or sys.executable, "-c", code])
             if "ok" in (r.stdout or ""):
                 ok = True
                 break

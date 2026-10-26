@@ -24,7 +24,7 @@ REPO = os.path.dirname(HERE)                               # 仓库根
 
 EXCLUDE_DIRS = {".git", "__pycache__", "build", "_stage", "_release",
                 "wheels", "wheels-heavy", "wheels-stt", "wheels-depth"}
-EXCLUDE_FILES = {"*.local.json", "*.local.md", "*.pyc",
+EXCLUDE_FILES = {"*.local.json", "*.local.md", "*.pyc", "*.tgz",
                  # 2026-10-22 瘦身：ffplay 播放器没人调用（与 打包发行.py 的 FFMPEG_DROP 同口径）
                  "ffplay.exe",
                  # 历史发布工具：硬编码本机路径，已移出公开仓，新机也用不上
@@ -189,6 +189,8 @@ def main():
     CUT_DIRS = [
         os.path.join(dst, "tools", "dist", "_old"),
         os.path.join(dst, "tools", "_vendor", "node"),
+        # npm 分发产物（2026-10-26）：skill/ 是打npm包.py 现拷的副本，安装包里不需要第二份
+        os.path.join(dst, "npm", "skill"),
     ]
     for d0 in CUT_DIRS:
         if os.path.isdir(d0):
@@ -205,6 +207,8 @@ def main():
            "/XD", ".git", "__pycache__", "build", "_stage", "_release",
            os.path.join(dst, "tools", ".git"),
            # wheels* 按目录名排除（源侧与目的侧都跳过）
+           os.path.join(REPO, "npm", "skill"),
+           os.path.join(dst, "npm", "skill"),
            os.path.join(REPO, "tools", "_vendor", "wheels"),
            os.path.join(REPO, "tools", "_vendor", "wheels-heavy"),
            os.path.join(REPO, "tools", "_vendor", "wheels-stt"),

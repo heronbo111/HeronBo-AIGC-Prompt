@@ -1,0 +1,28 @@
+{
+  "name": "heronbo-aigc-prompt",
+  "version": "0.6.5",
+  "description": "HeronBo 视频提示词 skill：把文案/素材变成可直接生成的视频指令（即梦 / Seedance 等平台），含素材识别、提示词起草与体检工具。",
+  "keywords": [
+    "ai-video",
+    "prompt",
+    "jimeng",
+    "seedance",
+    "skill",
+    "agent"
+  ],
+  "bin": {
+    "heronbo-skill": "bin/install.js"
+  },
+  "files": [
+    "skill/",
+    "bin/",
+    "README.md"
+  ],
+  "scripts": {
+    "postinstall": "node bin/install.js"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "license": "SEE LICENSE IN skill/LICENSE"
+}
