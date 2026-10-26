@@ -87,7 +87,27 @@ except Exception:
     pass
 
 
+def _no_window():
+    """GUI 程序里起控制台子进程时的"别弹黑窗"参数（2026-10-26 用户要求）。
+
+    工作台是窗口程序（无控制台），它调 powershell / pip / 各种 CLI 时 Windows 会
+    给每个子进程新建一个黑窗——首次配置里逐项自检，就变成一串黑窗一闪一闪。
+    """
+    if os.name != "nt":
+        return {}
+    try:
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0
+        return {"creationflags": 0x08000000, "startupinfo": si}   # CREATE_NO_WINDOW
+    except Exception:                                            # noqa: BLE001
+        return {"creationflags": 0x08000000}
+
+
 def run(cmd, **kw):
+    kw = dict(kw)
+    for k, v in _no_window().items():
+        kw.setdefault(k, v)
     try:
         return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
                               errors="replace", **kw)
@@ -202,7 +222,7 @@ def do_pip(pkgs, assume_yes):
     cmd = [py_exe() or sys.executable, "-m", "pip", "install", "--upgrade"] + pkgs
     if assume_yes:
         cmd.insert(3, "-q")
-    r = subprocess.run(cmd)
+    r = subprocess.run(cmd, **_no_window())
     return r.returncode == 0
 
 

@@ -15,6 +15,11 @@ import zlib
 HERE = os.path.dirname(os.path.abspath(__file__))
 ICO = os.path.join(HERE, "工作台.ico")
 PNG = os.path.join(HERE, "工作台_256.png")
+# 仓库自带的品牌图（盒子 logo）。默认就用它生成图标——2026-10-26 用户反馈
+# 「快捷方式和安装包的图标不一样大」：之前安装包用 art\setup.ico（白圆底、画面小），
+# 程序/快捷方式用盒子图，两个风格并存。现在统一：一次生成，两处一起写。
+SRC = os.path.join(os.path.dirname(HERE), "assets", "logo.png")
+SETUP_ICO = r"D:\HeronBo-Build\art\setup.ico"
 
 BG = (47, 111, 237)          # 强调蓝（浅色主题的 accent）
 FG = (255, 255, 255)         # 四栏用白
@@ -125,39 +130,62 @@ def _write_ico(blobs):
         offset += len(data)
     for _s, data in blobs:
         out.write(data)
-    io.open(ICO, "wb").write(out.getvalue())
+    data = out.getvalue()
+    io.open(ICO, "wb").write(data)
     io.open(PNG, "wb").write(dict(blobs)[max(dict(blobs))])
     print("已生成：%s（%d 尺寸，%d 字节）" % (ICO, len(blobs), os.path.getsize(ICO)))
     print("已生成：%s" % PNG)
+    # 安装包图标跟着一起换，避免"安装包一个样子、快捷方式另一个样子"
+    try:
+        if os.path.isdir(os.path.dirname(SETUP_ICO)):
+            io.open(SETUP_ICO, "wb").write(data)
+            print("已生成：%s（安装包 SetupIconFile）" % SETUP_ICO)
+    except OSError as e:
+        print("[!] 写安装包图标失败：%s" % e)
+
+
+def _blobs_from_png(src, sizes, margin=0.03):
+    """裁掉透明边 → 留 margin 安全边 → 逐档 LANCZOS 缩放，返回 [(size, png_bytes)]。"""
+    from io import BytesIO
+    from PIL import Image
+
+    im = Image.open(src).convert("RGBA")
+    bb = im.getchannel("A").getbbox()
+    if bb:
+        im = im.crop(bb)                                  # 画面占比最大化
+    top = max(sizes)
+    inner = int(top * (1 - margin * 2))
+    w, h = im.size
+    k = min(inner / float(w), inner / float(h))
+    im = im.resize((max(1, int(w * k)), max(1, int(h * k))), Image.LANCZOS)
+    base = Image.new("RGBA", (top, top), (0, 0, 0, 0))
+    base.alpha_composite(im, ((top - im.width) // 2, (top - im.height) // 2))
+    out = []
+    for s in sizes:
+        buf = BytesIO()
+        base.resize((s, s), Image.LANCZOS).save(buf, format="PNG")
+        out.append((s, buf.getvalue()))
+    return out
 
 
 def main():
     import argparse
     ap = argparse.ArgumentParser(description="生成工作台图标")
-    ap.add_argument("--from", dest="src", default="", help="用现成图片做图标（jpg/png 都行）")
+    ap.add_argument("--from", dest="src", default="", help="用现成图片做图标（默认 assets/logo.png）")
     ap.add_argument("--keep-bg", action="store_true", help="保留原图背景（默认把纯白背景抠成透明）")
     a = ap.parse_args()
     sizes = [16, 24, 32, 48, 64, 128, 256]
-    if a.src:
-        if not os.path.isfile(a.src):
-            raise SystemExit("找不到图片：%s" % a.src)
-        _write_ico(_pngs_from_image(a.src, sizes, keep_bg=a.keep_bg))
+    src = a.src or (SRC if os.path.isfile(SRC) else "")
+    if src:
+        if not os.path.isfile(src):
+            raise SystemExit("找不到图片：%s" % src)
+        try:
+            _write_ico(_blobs_from_png(src, sizes))
+        except ImportError:                                # 没装 Pillow 就退回 ffmpeg
+            _write_ico(_pngs_from_image(src, sizes, keep_bg=a.keep_bg))
         return
     blobs = [(s, png_bytes(s)) for s in sizes]
-    blobs = [(s, png_bytes(s)) for s in sizes]
-    io.open(PNG, "wb").write(dict(blobs)[256])
-    out = io.BytesIO()
-    out.write(struct.pack("<HHH", 0, 1, len(blobs)))            # ICONDIR
-    offset = 6 + 16 * len(blobs)
-    for s, data in blobs:
-        out.write(struct.pack("<BBBBHHII", s if s < 256 else 0, s if s < 256 else 0,
-                              0, 0, 1, 32, len(data), offset))
-        offset += len(data)
-    for _s, data in blobs:
-        out.write(data)
-    io.open(ICO, "wb").write(out.getvalue())
-    print("已生成：%s（%d 尺寸，%d 字节）" % (ICO, len(blobs), os.path.getsize(ICO)))
-    print("已生成：%s" % PNG)
+    _write_ico(blobs)
 
 
 if __name__ == "__main__":
