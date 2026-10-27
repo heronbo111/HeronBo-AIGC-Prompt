@@ -22,7 +22,8 @@ import time
 import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_SRC = r"D:\HeronBo-Build\pkg-real"
+DEFAULT_SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "..", "HeronBo-Workbench", "installer", "pkg-real")
 # 默认落到工作区的 `_安装包\`（2026-10-13 用户反馈"产物在哪、我找不到"）——
 # 那是他收安装包的地方；放在构建目录里他翻不到。--out 可覆盖。
 DEFAULT_OUT = os.path.join(os.path.dirname(os.path.dirname(HERE)), "_安装包")
