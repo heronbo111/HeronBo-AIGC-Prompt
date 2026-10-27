@@ -144,26 +144,35 @@ def _write_ico(blobs):
         print("[!] 写安装包图标失败：%s" % e)
 
 
-def _blobs_from_png(src, sizes, margin=0.03):
-    """裁掉透明边 → 留 margin 安全边 → 逐档 LANCZOS 缩放，返回 [(size, png_bytes)]。"""
+def _blobs_from_png(src, sizes, margin=0.02, logo_ratio=0.62):
+    """圆白底 + 中间放大版工作台 logo（2026-10-27 用户指定）。
+
+    之前是透明底直接放 logo，桌面上看着"没底、显小"；现在统一成
+    白色圆盘（占满图标区）+ 中间 62% 的 logo，安装包/快捷方式/任务栏一致。
+    """
     from io import BytesIO
-    from PIL import Image
+    from PIL import Image, ImageDraw
 
     im = Image.open(src).convert("RGBA")
     bb = im.getchannel("A").getbbox()
     if bb:
-        im = im.crop(bb)                                  # 画面占比最大化
+        im = im.crop(bb)
     top = max(sizes)
-    inner = int(top * (1 - margin * 2))
+    # 1) 白色圆盘（留一点透明外边，避免贴边发毛）
+    plate = Image.new("RGBA", (top, top), (0, 0, 0, 0))
+    d = ImageDraw.Draw(plate)
+    pad = int(top * margin)
+    d.ellipse([pad, pad, top - 1 - pad, top - 1 - pad], fill=(255, 255, 255, 255))
+    # 2) logo 居中放大到 logo_ratio
+    inner = int(top * logo_ratio)
     w, h = im.size
     k = min(inner / float(w), inner / float(h))
-    im = im.resize((max(1, int(w * k)), max(1, int(h * k))), Image.LANCZOS)
-    base = Image.new("RGBA", (top, top), (0, 0, 0, 0))
-    base.alpha_composite(im, ((top - im.width) // 2, (top - im.height) // 2))
+    logo = im.resize((max(1, int(w * k)), max(1, int(h * k))), Image.LANCZOS)
+    plate.alpha_composite(logo, ((top - logo.width) // 2, (top - logo.height) // 2))
     out = []
     for s in sizes:
         buf = BytesIO()
-        base.resize((s, s), Image.LANCZOS).save(buf, format="PNG")
+        plate.resize((s, s), Image.LANCZOS).save(buf, format="PNG")
         out.append((s, buf.getvalue()))
     return out
 
