@@ -116,7 +116,20 @@ def run(cmd, **kw):
 
 
 def has_bin(name):
-    return shutil.which(name)
+    """PATH 里找；找不到再看随包那份（安装包自带 tools\_vendor\ffmpeg\bin）。
+
+    2026-10-27 实踩：装机后 ffmpeg 就在 skill 目录里，但没进系统 PATH，
+    自检报"缺"，agent 于是让用户手动下载安装，白等半天。
+    """
+    p = shutil.which(name)
+    if p:
+        return p
+    for d in (os.path.join(HERE, "_vendor", "ffmpeg", "bin"),
+              os.path.join(SKILL_ROOT, "tools", "_vendor", "ffmpeg", "bin")):
+        c = os.path.join(d, name + (".exe" if os.name == "nt" else ""))
+        if os.path.isfile(c):
+            return c
+    return None
 
 
 def py_exe():
