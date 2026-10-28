@@ -43,6 +43,9 @@
 ```bash
 npm i -g heronbo-aigc-prompt
 
+# npm 11+ 默认不跑 postinstall，要显式放行一次（否则包装上了、skill 不会拷进 agent）：
+npm i -g --allow-scripts=heronbo-aigc-prompt heronbo-aigc-prompt
+
 # 想指定目录：
 HERONBO_SKILL_DIRS="D:/某处/skills" npm i -g heronbo-aigc-prompt
 ```
