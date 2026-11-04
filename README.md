@@ -20,9 +20,9 @@
 
 给 agent 的一套视频提示词工作法：读你的文案与素材（图片 / 视频 / 音频 / 文本），产出**可以直接粘进即梦、Seedance 等平台生成框**的提示词，并把每次成片的评分沉淀成规则，下一轮写得更准。
 
-它同时带一个 Windows 图形工作台：四栏流程板、豆包与即梦两条生成通道、成片评分、在线更新。
+它同时带一个 Windows 图形创作台：四栏流程板、豆包与即梦两条生成通道、成片评分、在线更新。
 
-![工作台](assets/screenshot-workbench.png)
+<img src="assets/screenshot-workbench.svg" alt="创作台" width="760" />
 
 **它不做什么**（硬规矩）：
 
@@ -71,7 +71,7 @@ git clone https://gitee.com/HeronBo/HeronBo-AIGC-Prompt.git
 > `https://gitee.com/HeronBo/HeronBo-AIGC-Prompt/repository/archive/main.zip`，
 > 解压后跑 `python 安装向导.py`——它会问你装到哪个 agent、项目库放哪，再一步到位。
 
-### 想用图形工作台
+### 想用图形创作台
 
 去 [Releases](https://github.com/heronbo111/HeronBo-AIGC-Prompt/releases) 下完整安装包（约 620 MB，依赖全封装，离线可用）：
 
