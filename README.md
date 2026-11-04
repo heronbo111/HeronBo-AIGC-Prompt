@@ -5,7 +5,7 @@
 
 **Turn scripts and assets into production-ready video prompts.**
 
-[![version](https://img.shields.io/badge/version-0.6.5-blue?style=flat-square)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.6.6-blue?style=flat-square)](CHANGELOG.md)
 [![platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4?style=flat-square)](#)
 [![agent skill](https://img.shields.io/badge/agent-skill-7c5cff?style=flat-square)](#)
 [![license](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
