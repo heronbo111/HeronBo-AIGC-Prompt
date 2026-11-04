@@ -128,7 +128,7 @@ def main(argv):
         return 1
     items = scan(root)
     if not items:
-        print("[评价回收] %s 下没有找到 评价/*.json —— 先让用户用评价工具打分。" % root)
+        print("[评价回收] %s 下没有找到 评价/*.json —— 先让用户用评分窗口打分。" % root)
         return 0
     ledger = load_ledger()
     absorbed = set(ledger["absorbed"])
