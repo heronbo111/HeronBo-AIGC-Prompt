@@ -1,7 +1,7 @@
 # 贡献指南（给人类）
 
 > **AI agent 请读 [`AGENTS.md`](AGENTS.md)**——那份是给 agent 的运行手册（命令、目录地图、红线）。
-> 这份是�serving人类的贡献政策：你想改这个仓库，流程与边界在这里。
+> 这份是给人类的贡献政策：你想改这个仓库，流程与边界在这里。
 
 ## 这个仓库是什么
 
@@ -36,19 +36,19 @@ git push gitee HEAD:main && git push github HEAD:main
 
 ### 提交信息写法（对齐公开仓库）
 
-标题用 `类型: 一句话`，讲**对使用者有什么用**；需要展开时按固定三段写，每条以「新增…／修复…／优化…」开头：
+提交信息**用英文**（2026-11-04 起全仓统一）：标题 `type: one-line summary`，讲**对使用者有什么用**；需要展开时按固定三段写（New / Fixed / Improved）：
 
 ```text
-feat: 工作台动作流按环境自动适配
+feat: auto-detect the workbench action-flow channel per machine
 
-✨ 新增功能
-- 新增动作流通道自动探测：本机装了哪家 AI 工具就读哪家的过程，换机器不用改代码
+New
+- Detect which AI tool is installed and follow its process; no code changes when switching machines
 
-🐞 修复问题
-- 修复动作流一直空白的问题
+Fixed
+- Fix the action flow staying blank
 
-🚀 优化改进
-- 工作台改用固定端口，重启后主题与提示音设置不再丢失
+Improved
+- Use a fixed port so theme and sound settings survive a restart
 ```
 
 - **同一批多处改动合成一条提交**。
