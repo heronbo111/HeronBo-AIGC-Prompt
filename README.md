@@ -134,8 +134,8 @@ python tools\首次配置.py        # 已配置 exit 0；未配置 exit 1
 SKILL.md              技能正文（agent 读这一份就能干活）
 references/           规则库：平台参数、模型限额、拆解口径、playbooks
 samples/              样板项目与评价数据（脱敏）
-tools/                工作台后端、素材识别、拆解、评分、打包与发版脚本
-  workbench/          工作台界面（本地服务 + 独立窗口）
+tools/                创作台后端、素材识别、拆解、评分、打包与发版脚本
+  workbench/          创作台界面（本地服务 + 独立窗口）
   _vendor/            随包运行时大件（ffmpeg / 模型 / 轮子，不进 git）
 docs/                 新机部署、后台并发方案等文档
 npm/                  技能层 npm 分发包（heronbo-aigc-prompt）
@@ -146,9 +146,9 @@ CHANGELOG.md          更新记录
 
 - **杀软删了 exe**：没有代码签名证书，新程序容易被误判。加白名单与还原步骤：
   `python tools\deploy.py defender --yes`（UAC 点「是」），再到「Windows 安全中心 → 保护历史」还原，或直接重装一次。
-- **窗口一片空白**：WebView2 运行库坏了。`python tools\部署.py check` 会报出来，`python tools\部署.py wx --yes` 修；工作台也会自动退到 Edge 窗口。
-- **让工作台调得动本机 agent**：需要一个能被无头调用的通道（WorkBuddy / ZCode / 豆包工作 / Claude Code / Codex / DSH）。新机照 `docs/新机部署.md` 的任务书整段复制给 agent 即可；工作台的「agent 通道」弹窗里也有同款「复制搭桥任务」。
-- **想从源码跑**：`python tools\部署.py all --yes`（用仓库自带离线 wheel 装依赖、接通道、建快捷方式、弹出工作台）。
+- **窗口一片空白**：WebView2 运行库坏了。`python tools\部署.py check` 会报出来，`python tools\部署.py wx --yes` 修；创作台也会自动退到 Edge 窗口。
+- **让创作台调得动本机 agent**：需要一个能被无头调用的通道（WorkBuddy / ZCode / 豆包工作 / Claude Code / Codex / DSH）。新机照 `docs/新机部署.md` 的任务书整段复制给 agent 即可；创作台的「agent 通道」弹窗里也有同款「复制搭桥任务」。
+- **想从源码跑**：`python tools\部署.py all --yes`（用仓库自带离线 wheel 装依赖、接通道、建快捷方式、弹出创作台）。
 
 ## 常见问题
 
@@ -158,7 +158,7 @@ CHANGELOG.md          更新记录
 
 **即梦会扣积分吗** —— 会。所以「即梦一键生成」提交前先出报价，你点确认才扣；事后用余额差告诉你这一单花了多少。只想省钱就用它写提示词。
 
-**技能里的 Python 脚本跑不起来** —— 需要 Python 3.9+。跑 `python tools/环境检查.py` 看缺什么；安装版工作台自带运行时，也可以在「首次配置」页一键补齐。
+**技能里的 Python 脚本跑不起来** —— 需要 Python 3.9+。跑 `python tools/环境检查.py` 看缺什么；安装版创作台自带运行时，也可以在「首次配置」页一键补齐。
 
 ## 参与贡献
 
