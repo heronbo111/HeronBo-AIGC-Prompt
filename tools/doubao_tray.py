@@ -34,7 +34,7 @@ import threading
 from ctypes import wintypes
 
 _EXE = "DoubaoWork.exe"
-SW_HIDE, SW_SHOW, SW_RESTORE = 0, 5, 9
+SW_HIDE, SW_SHOW, SW_RESTORE, SW_SHOWNOACTIVATE = 0, 5, 9, 4
 SWP_NOSIZE, SWP_NOMOVE, SWP_NOZORDER = 0x1, 0x2, 0x4
 SWP_NOACTIVATE = 0x10
 GWL_EXSTYLE = -20
@@ -43,7 +43,7 @@ WS_EX_APPWINDOW = 0x00040000
 OFFSCREEN_X, OFFSCREEN_Y = -3200, -3200
 
 _lock = threading.Lock()
-_st = {"icon": None, "want_hidden": False}   # NotifyIcon 实例 + 是否处于"收进托盘"模式
+_st = {"icon": None, "want_hidden": False, "guard": False}   # NotifyIcon 实例 + 静默模式 + 守场线程
 
 
 # ---------------- Win32：找窗口 / 收进托盘 / 放出来 ----------------
@@ -119,7 +119,9 @@ def hide_all():
             h = int(h)
             try:
                 if user32.IsIconic(h):
-                    user32.ShowWindow(h, SW_RESTORE)
+                    # 2026-11-09：不用 SW_RESTORE（会激活窗口、抢焦点）。SW_SHOWNOACTIVATE
+                    # 在最小化态下还原到原尺寸，但不把窗口带到前台。
+                    user32.ShowWindow(h, SW_SHOWNOACTIVATE)
             except Exception:  # noqa: BLE001
                 pass
             if _apply_tool(user32, h):
@@ -257,18 +259,43 @@ def _ensure_icon(exe_path=""):
     return True
 
 
-def hide_async(exe_path="", wait_secs=60):
-    """起个短命线程：等豆包窗口出现就收进托盘+设托盘图标（桥拉起豆包有延迟，轮询到 wait_secs）。
+def _silent_guard():
+    """无托盘图标的静默守场：豆包后续再冒新窗（newWindow / 重启）也持续加 TOOLWINDOW
+    并挪屏外。只调 Win32，不建 NotifyIcon，不进通知区、不闪任何 GUI。"""
+    try:
+        while _st.get("want_hidden"):
+            try:
+                user32 = ctypes.windll.user32
+                for h in _taskbar_windows():
+                    _apply_tool(user32, int(h))
+            except Exception:  # noqa: BLE001
+                pass
+            time.sleep(3.0)
+    finally:
+        _st["guard"] = False
+
+
+def hide_async(exe_path="", wait_secs=60, icon=False):
+    """起个短命线程：等豆包窗口出现就收进后台+按需设托盘图标（桥拉起豆包有延迟，轮询到 wait_secs）。
 
     挂点：① agent_bridge 走豆包通道起一轮 ask 时；② wb_video prepare/confirm 后台任务启动时。
     --visible（跳转豆包界面手动模式）**不要调这个**——那扇窗就是要给用户看的。
+
+    2026-11-09 用户口径：CDP 后台生成要**纯静默**——不在通知区显示图标、不进任务栏、
+    不抢焦点、GUI 没有任何相关表现。所以 `icon` 默认 False，且即使不建托盘图标，
+    也起一个静默守场线程持续压新窗（不用等用户点托盘）。
     """
     def _job():
         deadline = time.time() + max(5, int(wait_secs))
         while time.time() < deadline:
             if _doubao_windows(True):
                 hide_all()
-                _ensure_icon(exe_path)
+                if icon:
+                    _ensure_icon(exe_path)
+                if not _st.get("guard"):
+                    _st["guard"] = True
+                    threading.Thread(target=_silent_guard, daemon=True,
+                                     name="doubao-silent-guard").start()
                 return
             time.sleep(0.6)
     threading.Thread(target=_job, daemon=True, name="doubao-tray-hide").start()

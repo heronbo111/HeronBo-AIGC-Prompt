@@ -1543,7 +1543,7 @@ def build_cmd_for(key, prompt, session_id=None, cwd=None, permission_mode=None,
             if _d not in sys.path:
                 sys.path.insert(0, _d)
             import doubao_tray as _dtray
-            _dtray.hide_async(doubaowork_exe() or "")
+            _dtray.hide_async(doubaowork_exe() or "", icon=False)
         except Exception:  # noqa: BLE001
             pass
         js = doubao_js()
@@ -1863,8 +1863,8 @@ def no_window_kwargs():
 
 
 def ask(prompt, session_id=None, cwd=None, timeout=DEFAULT_TIMEOUT,
-        permission_mode="acceptEdits", tools=None, on_line=None, on_raw=None, extra=None,
-        agent=None):
+        permission_mode="acceptEdits", tools=None, on_line=None, on_raw=None,
+        extra=None, agent=None, on_start=None):
     """叫 agent 干一件事（**边跑边回调每一行**，界面靠它显示实时进度）。
 
     返回 dict: {ok, agent, session_id, text, res, returncode, cmd, error, seconds}
@@ -1908,6 +1908,11 @@ def ask(prompt, session_id=None, cwd=None, timeout=DEFAULT_TIMEOUT,
         return {"ok": False, "error": "起不来：%s" % e, "session_id": session_id,
                 "text": "", "cmd": cmd, "agent": key}
     _CURRENT["proc"] = p
+    if on_start:
+        try:
+            on_start(p)          # 只用于把子进程 pid 记进任务账本；回调失败不拖死本轮
+        except Exception:        # noqa: BLE001
+            pass
     killed = {"timeout": False}
 
     def _kill():

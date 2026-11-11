@@ -20,6 +20,7 @@ import re
 import json
 import math
 import time
+import shutil
 import subprocess
 import threading
 
@@ -50,7 +51,157 @@ _STATE = {
     "running": False, "stage": "", "sid": "", "confirmText": "", "events": [],
     "params": {}, "result": None, "video": "", "error": "", "estimate": None,
     "started": 0, "finished": 0,
+    # ── 进度（2026-11-11 用户要求："生视频超过二十分钟不返回，加个进度条"）──────
+    # 按桥的里程碑 + 历史成片耗时折算 pct/eta，前端任务窗画条（慢片也看得出在动）
+    "pct": 0, "eta": 0, "stageName": "", "elapsed": 0, "etaLeft": 0, "over": 0,
+    "pctFloor": 0,
 }
+
+# 里程碑：桥的过程行 → (下限百分比, 阶段名)。只在对应 stage 生效。
+_MARKS = {
+    "prepare": [
+        (r"开始准备视频方案", 3, "读取素材与参数"),
+        (r"正在接入固定会话|固定会话已就绪|接入会话", 9, "接入豆包会话"),
+        (r"已填入\s*\d+\s*字|灌入提示词", 22, "灌入提示词"),
+        (r"点了发送按钮|已发送（|改用回车发送", 32, "已发送给豆包"),
+        (r"它开始答了|等待豆包答复|已等待\s*\d+\s*s", 40, "豆包在读素材"),
+        (r"正在写…（", 48, "豆包在写方案"),
+        (r"答完了（用时", 64, "方案已写好"),
+        (r"确认清单|等待你确认", 78, "确认清单已就绪"),
+    ],
+    "confirm": [
+        (r"已回确认|确认已提交", 26, "确认已提交"),
+        (r"流水线执行中|豆包：|生成中", 34, "豆包侧生成中"),
+        (r"成片已出现在豆包工作区|取回|成片已生成", 90, "取回成片"),
+    ],
+}
+
+_ETA_FILE = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
+                         "HeronBo", "video_eta.json")
+
+
+def _eta_default(stage, p):
+    """无历史时的兜底估时（超时后条会继续蠕）。"""
+    dur = int((p or {}).get("duration") or 15)
+    if stage == "prepare":
+        imgs = len((p or {}).get("images") or []) + (1 if (p or {}).get("image") else 0)
+        return 100 + 10 * max(0, imgs)
+    if "2.5" in str((p or {}).get("model") or ""):
+        return max(240, 30 * dur)
+    return max(170, 19 * dur)
+
+
+def _eta_hist(stage, p):
+    """历史成片中位耗时，同模型同时长档优先。"""
+    try:
+        data = json.load(open(_ETA_FILE, encoding="utf-8"))
+    except Exception:                                            # noqa: BLE001
+        return 0.0, 0
+    if not isinstance(data, list):
+        return 0.0, 0
+    model = str((p or {}).get("model") or "")
+    dur = int((p or {}).get("duration") or 0)
+    same = [float(x.get("seconds") or 0) for x in data
+            if x.get("stage") == stage and x.get("model") == model and int(x.get("duration") or 0) == dur]
+    same = [v for v in same if 20 < v < 7200]
+    if len(same) >= 1:
+        same.sort()
+        return same[len(same) // 2], len(same)
+    allv = [float(x.get("seconds") or 0) for x in data if x.get("stage") == stage]
+    allv = [v for v in allv if 20 < v < 7200]
+    if allv:
+        allv.sort()
+        return allv[len(allv) // 2], len(allv)
+    return 0.0, 0
+
+
+def _record_video_eta(stage, p, seconds, ok):
+    try:
+        os.makedirs(os.path.dirname(_ETA_FILE), exist_ok=True)
+        data = []
+        if os.path.isfile(_ETA_FILE):
+            try:
+                data = json.load(open(_ETA_FILE, encoding="utf-8"))
+            except Exception:                                    # noqa: BLE001
+                data = []
+        if not isinstance(data, list):
+            data = []
+        data.append({"at": time.strftime("%Y-%m-%d %H:%M:%S"), "stage": stage,
+                     "model": str((p or {}).get("model") or ""),
+                     "duration": int((p or {}).get("duration") or 0),
+                     "seconds": round(float(seconds), 1), "ok": bool(ok)})
+        del data[:-60]                       # 只留最近 60 条
+        json.dump(data, open(_ETA_FILE, "w", encoding="utf-8"), ensure_ascii=False)
+    except Exception:                                            # noqa: BLE001
+        pass
+
+
+def _recompute_prog_locked():
+    """里程碑下限 + 段内指数逼近，算生视频 pct/剩余。"""
+    st = _STATE
+    stage = st.get("stage") or ""
+    if stage not in _MARKS:
+        return
+    started = st.get("started") or time.time()
+    el = max(0.0, time.time() - started)
+    floor, name = 0, st.get("stageName") or ("准备中" if stage == "prepare" else "生成中")
+    for e in (st.get("events") or [])[-80:]:
+        msg = e.get("msg") or ""
+        for rx, pct, nm in _MARKS[stage]:
+            if re.search(rx, msg) and pct > floor:
+                floor, name = pct, nm
+    eta = float(st.get("eta") or 0) or _eta_default(stage, st.get("params") or {})
+    if stage == "prepare":
+        curve = 12 + 66 * (1 - math.exp(-1.9 * el / max(1.0, eta)))
+        if el > eta:                                 # 迟迟不回也继续蠕
+            curve = max(curve, 88.0 - 6.0 * math.exp(-(el - eta) / max(45.0, eta)))
+        curve = min(90.0, curve)                     # 没拿到清单前别显得快完了
+    else:
+        base = max(float(floor), 26.0)
+        curve = base + (88.0 - base) * (1 - math.exp(-1.45 * el / max(1.0, eta)))
+        if el > eta:                                 # 超时往 94 蠕
+            curve = max(curve, 94.0 - 7.0 * math.exp(-(el - eta) / max(60.0, eta)))
+    pct = min(95.0, max(float(floor), curve, float(st.get("pct") or 0)))
+    # 剩余 = 预计总时长 - 已用（超时后写"已超出"由前端读 over）
+    st["pct"] = round(pct, 1)
+    st["pctFloor"] = floor
+    st["stageName"] = name
+    st["elapsed"] = round(el)
+    st["eta"] = round(eta)
+    st["etaLeft"] = round(max(0.0, eta - el))
+    st["over"] = round(max(0.0, el - eta)) if st.get("running") else 0
+
+
+def _prog_loop(gen):
+    """每秒重算一次，豆包不吐心跳时条也在动。"""
+    while True:
+        with _LOCK:
+            if _PROG_GEN["n"] != gen:
+                return                       # 换了一轮，线程收工
+            if not _STATE.get("running") or _STATE.get("stage") not in _MARKS:
+                return
+            _recompute_prog_locked()
+        time.sleep(1.0)
+
+
+_PROG_GEN = {"n": 0}
+
+
+def _done_set(stage, ok=True, **kw):
+    """收尾：停线程、记这一轮真实耗时。"""
+    with _LOCK:
+        el = max(0.0, time.time() - (_STATE.get("started") or time.time()))
+        prev = _STATE.get("stage") or ""
+        eta = float(_STATE.get("eta") or 0)
+        upd = {"running": False, "stage": stage, "finished": round(time.time(), 1),
+               "elapsed": round(el), "etaLeft": 0,
+               "pct": 100.0 if ok else min(99.0, float(_STATE.get("pct") or 0)),
+               "over": 0 if ok else round(max(0.0, el - eta))}
+        upd.update(kw)
+        _STATE.update(upd)
+        _PROG_GEN["n"] += 1
+        params = dict(_STATE.get("params") or {})
+    _record_video_eta(prev, params, el, ok)
 
 
 # ---------------- 状态 ----------------
@@ -73,6 +224,10 @@ def _log(msg):
         _STATE["events"].append({"t": round(time.time(), 1), "msg": s})
         if len(_STATE["events"]) > 400:
             del _STATE["events"][:-400]
+        try:
+            _recompute_prog_locked()      # 里程碑一到立刻跳
+        except Exception:                 # noqa: BLE001
+            pass
     _flow(s)
 
 
@@ -86,6 +241,68 @@ def snapshot():
         return json.loads(json.dumps(_STATE))
 
 
+def exported_paths():
+    """本进程自己取回过的成片路径（只用于 `/api/video/play` 的窄白名单）。
+
+    豆包会把成片以本地文件卡片交付在 `~/DoubaoWork/chats/...`，也可能落在用户
+    自己选的交接目录；不能只按固定根目录放行，否则前端拿到 done 却播不出来。
+    """
+    with _LOCK:
+        out = []
+        v = str(_STATE.get("video") or "").strip()
+        if v:
+            out.append(v)
+        r = _STATE.get("result") or {}
+        if isinstance(r, dict):
+            v2 = str(r.get("video") or "").strip()
+            if v2:
+                out.append(v2)
+        return out
+
+
+def _stash_final(pdir, src):
+    """把成片落到项目 `成片/`，保证前端回显时文件一定还在、一定在读白名单内。
+
+    2026-11-05 用户报「豆包生成成功但工作台不显示成片」：桥返回的是豆包工作区
+    原路径（或用户自选交接目录），文件被豆包清理/移动后 `/api/video/play` 就 404。
+    这里优先硬链接（同盘几乎零成本），跨盘再复制；已在项目内则原样返回。
+    """
+    src = str(src or "").strip()
+    if not src or not os.path.isfile(src):
+        return src
+    pdir = str(pdir or "").strip()
+    if not pdir:
+        return src
+    try:
+        src_real = os.path.realpath(src)
+        pdir_real = os.path.realpath(pdir)
+        if src_real.startswith(pdir_real + os.sep):
+            return src
+    except OSError:
+        pass
+    dst_dir = os.path.join(pdir, "成片")
+    try:
+        os.makedirs(dst_dir, exist_ok=True)
+        name = os.path.basename(src) or "final.mp4"
+        dst = os.path.join(dst_dir, name)
+        base, ext = os.path.splitext(name)
+        i = 1
+        while os.path.exists(dst) and os.path.realpath(dst) != os.path.realpath(src):
+            dst = os.path.join(dst_dir, "%s_%d%s" % (base, i, ext))
+            i += 1
+        if os.path.realpath(dst) == os.path.realpath(src):
+            return dst
+        try:
+            os.link(src, dst)          # 同盘硬链接：不占额外空间，删除原文件也不影响
+        except OSError:
+            shutil.copy2(src, dst)     # 跨盘/文件系统不支持硬链接：复制一份
+        return dst
+    except OSError as e:
+        _log("成片落盘失败（继续用原路径）：%s" % e)
+        return src
+
+
+
 def is_busy():
     with _LOCK:
         return _STATE["running"]
@@ -97,7 +314,16 @@ def _reset(stage, params):
             "running": True, "stage": stage, "sid": "", "confirmText": "",
             "events": [], "params": params or {}, "result": None, "video": "",
             "error": "", "estimate": params.get("estimate") if params else None,
-            "started": round(time.time(), 1), "finished": 0})
+            "started": round(time.time(), 1), "finished": 0,
+            "pct": 0, "pctFloor": 0, "elapsed": 0,
+            "stageName": "读取素材与参数" if stage == "prepare" else "确认已提交"})
+        _hist, _n = _eta_hist(stage, params or {})
+        _STATE["eta"] = round(_hist or _eta_default(stage, params or {}))
+        _STATE["etaLeft"] = _STATE["eta"]
+        _STATE["over"] = 0
+        _PROG_GEN["n"] += 1
+        _gen = _PROG_GEN["n"]
+    threading.Thread(target=_prog_loop, args=(_gen,), daemon=True).start()
 
 
 # ---------------- 规则17：估时 ----------------
@@ -415,18 +641,16 @@ def start_prepare(p):
                         pass
             elif _tray:
                 try:                               # 后台驱动：豆包窗口收进托盘，任务栏不再挂窗
-                    _tray.hide_async(ab.doubaowork_exe() if ab else "")
+                    _tray.hide_async(ab.doubaowork_exe() if ab else "", icon=False)
                 except Exception:  # noqa: BLE001
                     pass
             r = _run_video(args)
             if r.get("state") == "manual":
-                _set(running=False, stage="manual", sid=r.get("sid", ""), result=r,
-                     finished=round(time.time(), 1))
+                _done_set("manual", sid=r.get("sid", ""), result=r, stageName="等待你在界面确认")
                 _flow("已打开生成平台界面——请在窗口里核对确认清单并手动确认执行", "done")
             elif r.get("state") == "await_confirm" and r.get("confirmText"):
-                _set(running=False, stage="await_confirm", sid=r.get("sid", ""),
-                     confirmText=r.get("confirmText", ""), result=r,
-                     finished=round(time.time(), 1))
+                _done_set("await_confirm", sid=r.get("sid", ""), stageName="看起来没问题 → 等你确认",
+                          confirmText=r.get("confirmText", ""), result=r)
                 _flow("方案已准备好，等待你确认（未确认不会生成、不扣点）", "done")
             else:
                 # 2026-10-21：失败文案带上诊断目录（桥会把截图/选择器/输入框文本落盘到那儿），
@@ -435,11 +659,10 @@ def start_prepare(p):
                 _diag = str(r.get("diag") or "").strip()
                 if _diag:
                     _err = "%s（诊断已保存：%s）" % (_err, _diag)
-                _set(running=False, stage="error", error=_err, result=r,
-                     finished=round(time.time(), 1))
+                _done_set("error", ok=False, error=_err, result=r, stageName="准备失败")
                 _flow("准备失败：" + _err, "think")
         except Exception as e:  # noqa: BLE001
-            _set(running=False, stage="error", error=str(e), finished=round(time.time(), 1))
+            _done_set("error", ok=False, error=str(e), stageName="准备失败")
             _flow("准备失败：" + str(e), "think")
 
     threading.Thread(target=_job, daemon=True).start()
@@ -466,21 +689,25 @@ def start_confirm(p):
                 args += ["--out", p["outPath"]]
             if _tray:
                 try:                               # 生成阶段同样把豆包收进托盘
-                    _tray.hide_async(ab.doubaowork_exe() if ab else "")
+                    _tray.hide_async(ab.doubaowork_exe() if ab else "", icon=False)
                 except Exception:  # noqa: BLE001
                     pass
             r = _run_video(args)
-            if r.get("state") == "done" and r.get("video"):
-                _set(running=False, stage="done", video=r.get("video"), result=r,
-                     finished=round(time.time(), 1))
-                _flow("成片已生成：" + r.get("video", ""), "done")
+            v = str(r.get("video") or r.get("videoPath") or r.get("path") or r.get("file") or "").strip()
+            if r.get("state") == "done" and v:
+                local = _stash_final(p.get("project"), v)
+                if local and local != v:
+                    r["sourceVideo"] = v
+                    r["video"] = local
+                _done_set("done", video=local or v, result=r, stageName="成片已生成")
+                _flow("成片已生成：" + (local or v), "done")
             else:
-                _set(running=False, stage="error",
-                     error=r.get("error") or "confirm 没拿到成片（可能超时）", result=r,
-                     finished=round(time.time(), 1))
+                _done_set("error", ok=False,
+                          error=r.get("error") or "confirm 没拿到成片（可能超时）", result=r,
+                          stageName="没拿到成片")
                 _flow("生成失败：" + (r.get("error") or "没拿到成片（可能超时）"), "think")
         except Exception as e:  # noqa: BLE001
-            _set(running=False, stage="error", error=str(e), finished=round(time.time(), 1))
+            _done_set("error", ok=False, error=str(e), stageName="生成失败")
             _flow("生成失败：" + str(e), "think")
 
     threading.Thread(target=_job, daemon=True).start()
@@ -492,7 +719,7 @@ def cancel_now(sid):
         r = _run_video(["--stage", "cancel", "--sid", sid, "--timeout", 30])
     except Exception as e:  # noqa: BLE001
         r = {"ok": False, "error": str(e)}
-    _set(running=False, stage="cancelled", error="", finished=round(time.time(), 1))
+    _done_set("cancelled", ok=False, error="", stageName="已取消")
     _flow("已取消视频任务", "think")
     return {"ok": True, "state": "cancelled", "sid": sid, "result": r}
 
@@ -581,5 +808,8 @@ def api_dismiss(pdir, b):
         if _STATE.get("running"):
             return {"ok": False, "error": "任务还在跑，不能清"}
         _STATE.update({"stage": "", "sid": "", "confirmText": "", "video": "",
-                       "error": "", "result": None, "params": {}, "events": []})
+                       "error": "", "result": None, "params": {}, "events": [],
+                       "pct": 0, "pctFloor": 0, "stageName": "", "elapsed": 0,
+                       "etaLeft": 0, "over": 0})
+        _PROG_GEN["n"] += 1
     return {"ok": True}

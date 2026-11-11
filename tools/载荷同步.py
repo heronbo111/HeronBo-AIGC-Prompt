@@ -43,7 +43,7 @@ MUST_HAVE = [
     r"tools\doubao_cdp.mjs",
     r"tools\_version.json",
     r"tools\agent_bridge.py",
-    r"tools\workbench\app.js",
+    r"tools\workbench\index.html",
 ]
 # 载荷里必须存在的运行时（相对载荷根）
 MUST_RUNTIME = [r"runtime\node\node.exe", r"runtime\python\python.exe"]

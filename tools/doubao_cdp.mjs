@@ -81,7 +81,7 @@ const step = (...a) => log('· ' + a.map((x) => String(x)).join(' '));
 const PORT_ENV = opt('port', process.env.HERONBO_DOUBAO_PORT || '');
 let PORT = Number(PORT_ENV || 9333);            // 可能在 ensureAttached 里被改成别的空闲口
 const PORT_RANGE = 12;                           // 往后再试这么多个口（别的机器上 9333 可能被占）
-const STATE_FILE = path.join(os.tmpdir(), 'heronbo_doubao_cdp.json');
+const STATE_FILE = process.env.HERONBO_CDP_STATE || path.join(os.tmpdir(), 'heronbo_canvas_cdp.json');
 const IDLE = Number(opt('idle', 8));
 const TIMEOUT = Number(opt('timeout', 600));
 const NO_LAUNCH = has('no-launch');
@@ -103,8 +103,14 @@ const VVIDEO = opt('video');
 const VMODEL = opt('model');
 const VRATIO = opt('ratio');
 const VDURATION = opt('duration');
+const VMATCHB64 = opt('match-b64');
+const VMATCH = VMATCHB64 ? Buffer.from(VMATCHB64, 'base64').toString('utf8') : opt('match');          // collect 用：按提示词片段定位是哪个会话
+const VQUALITY = opt('quality');            // 1K / 2K / 4K：写进生成指令，让豆包按这个清晰度出
+const VCOUNT = Number(opt('count')) || 1;   // 图片一次要几张
 const VSID = opt('sid');
 const VOUT = opt('out');
+const VKIND = opt('kind', 'image');       // media 动作：image | video
+const VSESSION = String(opt('session') || '').replace(/[^A-Za-z0-9._-]/g, '').slice(0, 64);
 
 // 固定候选表**只作最后的兜底**（2026-10-06 降级）：它只覆盖 E:\ / F:\ / Program Files 这些
 // 老位置，新机装在 D:\DoubaoWork 这类自由位置全落空 → 搭桥死环。真找法按 EXE 的解析顺序：
@@ -976,8 +982,12 @@ async function ensureBrowserWindow(b, opts = {}) {
     const w = await windowedPages(b);
     if (w.length) {
       const mine = w.find((x) => x.targetId === newId);
-      return { ok: true, created: true, windowId: (mine || w[0]).windowId,
-               targetId: (mine || w[0]).targetId, openedTargetId: newId, openedUrl: want };
+      const win = mine || w[0];
+      // 2026-11-09：窗口一出现就挪到屏外，别等 16 秒轮询完才收——
+      // 那段时间用户在任务栏能看到新窗闪一下。
+      await parkWindowOffscreen(b, win.windowId);
+      return { ok: true, created: true, windowId: win.windowId,
+               targetId: win.targetId, openedTargetId: newId, openedUrl: want };
     }
   }
   return { ok: false, why: '开出来的豆包窗口没出现（newWindow:true 返回了 ' + newId + '，但读不到窗口）' };
@@ -1081,8 +1091,10 @@ async function dedupeSidTabs(c, sid) {
    ④ 回收同类旧会话（没记过 sid 时的兜底；找到顺手把 sid 也记下）
    ⑤ 实在没有才新建隐藏离屏窗（sid 要等第一句话发出去才有，由调用方回填 state） */
 async function acquireSession(kind, opts = {}) {
-  const keyT = kind === 'video' ? 'videoTarget' : 'askTarget';
-  const keyS = kind === 'video' ? 'videoSid' : 'askSid';
+  const prefix = opts.session || VSESSION || '';
+  // 同一个画布固定同一段会话：Agent 和生图/生视频共用 sessionSid。
+  const keyT = prefix ? prefix + ':sessionTarget' : (kind === 'video' ? 'videoTarget' : 'askTarget');
+  const keyS = prefix ? prefix + ':sessionSid' : (kind === 'video' ? 'videoSid' : 'askSid');
   const st0 = stateRead();
   if (st0[keyT]) {
     const c = await attachSessionByTarget(st0[keyT]).catch(() => null);
@@ -1096,25 +1108,29 @@ async function acquireSession(kind, opts = {}) {
     const c = await openSessionBySid(st0[keyS]).catch(() => null);
     if (c) { stateWrite(Object.assign(stateRead(), { [keyT]: c.targetId })); dedupeSidTabs(c, st0[keyS]); return c; }
   }
-  const list = await getJson('/json/list');
-  const RE_KW = kind === 'video'
-    ? /视频参考|执行计划|口播|视频/
-    : /提示词|口播|视频|参考|prompt/i;
-  // 只回收自动化产生的正式 chat 会话：排除主对话（标题「开发与调试」）、排除空白/非 chat 页
-  const cands = (list || []).filter((x) => x.type === 'page' && x.webSocketDebuggerUrl
-    && /doubaowork-chat\/chat\/\d+/.test(x.url || '')
-    && !/开发与调试/.test(x.title || '')
-    && RE_KW.test(x.title || ''));
-  if (cands.length) {
-    const t = cands[cands.length - 1];     // 列表顺序≈创建顺序，取最近一个
-    const tid = t.targetId || t.id;
-    const c = await attachSessionByTarget(tid).catch(() => null);
-    if (c) {
-      const m = String(t.url || '').match(/chat\/(\d+)/);
-      const patch = { [keyT]: tid };
-      if (m) patch[keyS] = m[1];           // 顺手把 sid 也记住，下次重启就能按 sid 重开
-      stateWrite(Object.assign(stateRead(), patch));
-      return c;
+  // 指定了画布会话（--session）时，首次必须新建一段干净会话；
+  // 不能按标题回收别人的对话，否则两个画布会串台。
+  if (!prefix) {
+    const list = await getJson('/json/list');
+    const RE_KW = kind === 'video'
+      ? /视频参考|执行计划|口播|视频/
+      : /提示词|口播|视频|参考|prompt/i;
+    // 只回收自动化产生的正式 chat 会话：排除主对话（标题「开发与调试」）、排除空白/非 chat 页
+    const cands = (list || []).filter((x) => x.type === 'page' && x.webSocketDebuggerUrl
+      && /doubaowork-chat\/chat\/\d+/.test(x.url || '')
+      && !/开发与调试/.test(x.title || '')
+      && RE_KW.test(x.title || ''));
+    if (cands.length) {
+      const t = cands[cands.length - 1];     // 列表顺序≈创建顺序，取最近一个
+      const tid = t.targetId || t.id;
+      const c = await attachSessionByTarget(tid).catch(() => null);
+      if (c) {
+        const m = String(t.url || '').match(/chat\/(\d+)/);
+        const patch = { [keyT]: tid };
+        if (m) patch[keyS] = m[1];           // 顺手把 sid 也记住，下次重启就能按 sid 重开
+        stateWrite(Object.assign(stateRead(), patch));
+        return c;
+      }
     }
   }
   // ⑤ 实在没有才新建。⚠️ 2026-10-08 用户裁定（"生视频和出提示词必须在同一台电脑"）：
@@ -1148,6 +1164,89 @@ const VIDEO_STATE = `(() => {
   const text = (last.querySelector('[data-testid="message_text_content"]') || last).innerText.trim();
   if (v) return { has: true, src: v.currentSrc || v.src, ready: v.readyState, dur: v.duration };
   return { has: false, running, text: text.slice(-220) };
+})()`;
+const MEDIA_STATE = `(() => {
+  const recvs = [...document.querySelectorAll('[data-testid="receive_message"]')];
+  const last = recvs[recvs.length - 1];
+  const busy = !!document.querySelector('[data-testid="chat_input_local_break_button"]');
+  if (!last) return { images: [], videos: [], busy, text: '' };
+  const vis = el => { try { const r = el.getBoundingClientRect(); if (r.width >= 72 && r.height >= 72) return true; } catch (e) {} return (el.naturalWidth || 0) >= 512 || (el.videoWidth || 0) >= 256; };
+  const uniq = arr => { const m = new Map(); for (const x of arr) if (x.src && !m.has(x.src)) m.set(x.src, x); return [...m.values()]; };
+  const images = uniq([...last.querySelectorAll('img')].filter(vis).map(img => {
+    const r = img.getBoundingClientRect();
+    return { src: img.currentSrc || img.src, w: img.naturalWidth || Math.round(r.width), h: img.naturalHeight || Math.round(r.height) };
+  }).filter(x => x.src && /^(blob:|https?:|data:image)/.test(x.src) && !/^data:image\/svg/i.test(x.src)));
+  const videos = uniq([...last.querySelectorAll('video')].map(v => {
+    const source = v.querySelector('source');
+    return {
+      src: v.currentSrc || v.src || (source && source.src) || '',
+      sourceSrc: source ? (source.src || '') : '',
+      w: v.videoWidth || 0, h: v.videoHeight || 0, duration: v.duration || 0,
+    };
+  }).filter(x => x.src));
+  const textEl = last.querySelector('[data-testid="message_text_content"]') || last;
+  return { images, videos, busy, text: String(textEl.innerText || '').trim().slice(-600) };
+})()`;
+const MEDIA_STATE_WIDE = `(() => {
+  // 兜底：整页深扫（含 shadow DOM）。豆包有时把结果卡片挂在 receive_message 之外，
+  // 或者消息被折叠，只扫最后一条会一直判定"没有结果"。
+  const deep = (root, out) => { try { for (const el of root.querySelectorAll('*')) { out.push(el); if (el.shadowRoot) deep(el.shadowRoot, out); } } catch (e) {} return out; };
+  const all = deep(document.body, []);
+  const uniq = arr => { const m = new Map(); for (const x of arr) if (x.src && !m.has(x.src)) m.set(x.src, x); return [...m.values()]; };
+  const vis = el => { try { const r = el.getBoundingClientRect(); if (r.width >= 128 && r.height >= 128) return true; } catch (e) {} return (el.naturalWidth || 0) >= 256 || (el.videoWidth || 0) >= 256; };
+  const images = uniq(all.filter(el => el.tagName === 'IMG').filter(vis).map(img => {
+    const r = img.getBoundingClientRect();
+    return { src: img.currentSrc || img.src, w: img.naturalWidth || Math.round(r.width), h: img.naturalHeight || Math.round(r.height) };
+  }).filter(x => x.src && /^(blob:|https?:|data:image)/.test(x.src) && !/^data:image\/svg/i.test(x.src) && !/avatar|emoji|icon|logo/i.test(x.src)));
+  const videos = uniq(all.filter(el => el.tagName === 'VIDEO').map(v => {
+    const source = v.querySelector('source');
+    return {
+      src: v.currentSrc || v.src || (source && source.src) || '',
+      sourceSrc: source ? (source.src || '') : '',
+      w: v.videoWidth || 0, h: v.videoHeight || 0, duration: v.duration || 0,
+    };
+  }).filter(x => x.src));
+  return { images, videos };
+})()`;
+const LOGIN_PROBE = `(() => {
+  const vis = el => { try { const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return r.width > 2 && r.height > 2 && s.visibility !== 'hidden' && s.display !== 'none'; } catch { return false; } };
+  const controls = [...document.querySelectorAll('button,[role="button"],a')].filter(vis);
+  const loginBtn = controls.some(el => /^(登录|立即登录|扫码登录|登录以解锁|手机号登录)/.test(String(el.innerText || '').trim()));
+  const pwd = [...document.querySelectorAll('input[type="password"]')].some(vis);
+  const url = location.href;
+  const body = String(document.body ? document.body.innerText : '').slice(0, 800);
+  return { loginUI: loginBtn || pwd || /client-login|passport|扫码登录|手机号登录/.test(url + ' ' + body), url, title: document.title };
+})()`;
+const CONFIRM_UI = `(() => {
+  const vis = el => { try { const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return r.width > 2 && r.height > 2 && s.visibility !== 'hidden' && s.display !== 'none'; } catch { return false; } };
+  const text = el => String(el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+  const isQuestion = t => /是否|吗[？?]?$|[？?]/.test(t);
+  const wants = ['按要求生成', '按此要求', '按以上参数生成', '立即生成', '确认并生成', '确认生成'];
+  const priority = t => { for (let i = 0; i < wants.length; i += 1) if (t.includes(wants[i])) return i; return 999; };
+  // 豆包的确认卡片可能挂在 shadow DOM 里，普通 querySelectorAll 看不到。
+  const deep = (root, out) => {
+    try { for (const el of root.querySelectorAll('*')) { out.push(el); if (el.shadowRoot) deep(el.shadowRoot, out); } } catch (e) {}
+    return out;
+  };
+  const all = deep(document.body, []);
+  const click = el => {
+    let node = el;
+    for (let i = 0; i < 6 && node && node !== document.body; i += 1) {
+      if (node.matches && node.matches('button,[role="button"],[class*="cursor-pointer"],[role="option"],[role="menuitem"]')) { node.click(); return true; }
+      node = node.parentElement;
+    }
+    return false;   // 找不到按钮祖先就跳过，别去点普通文本
+  };
+  const cands = all.filter(vis).map(el => ({ el, t: text(el), n: el.querySelectorAll('*').length, p: priority(text(el)) }))
+    .filter(x => x.t.length <= 60 && !/[{}]/.test(x.t) && !isQuestion(x.t) && x.p < 999)
+    .sort((a, b) => a.p - b.p || a.n - b.n);
+  for (const x of cands) { if (click(x.el)) return x.t.slice(0, 80); }
+  for (const el of all.filter(vis)) {
+    if (!el.matches || !el.matches('button,[role="button"]')) continue;
+    const t = text(el);
+    if (t === '确认' || t === '确定' || t === '继续') { if (click(el)) return t; }
+  }
+  return '';
 })()`;
 // 页面内 fetch 视频 → 分块 base64 读回写盘（兼容 blob: 与 http）
 async function downloadMedia(cdp, srcUrl, outPath) {
@@ -1234,11 +1333,11 @@ async function launchApp() {
   return { ok: false, why: '起了但调试端口没通（客户端可能屏蔽了该开关）' };
 }
 
-/** 把"我们刚拉起"的客户端窗口移出视野并最小化（绝不动用户已在看的窗口）：
- *  命令行已给离屏坐标，这里再用 CDP 强制最小化兜底。配合抗节流开关，后台仍正常工作。
- *  2026-10-10（m11686 2.2）：改为**所有 page 窗口**逐个收起（首轮只有主窗，重启后
- *  可能带着历史标签页一起回来），并把窗口移回屏外原点——有的客户端会忽略 minimized
- *  但尊重 bounds。 */
+/** 把"我们刚拉起"的客户端窗口移出视野并**保持 normal**（绝不动用户已在看的窗口）：
+ *  命令行已给离屏坐标，这里再用 CDP 强制移到 -32000 屏外兜底。
+ *  2026-11-09 修：以前这里把窗口设成 `minimized`——`doubao_tray.py` 与 `createIsolatedChat`
+ *  都实测过「最小化会冻结豆包 7 分 22 秒、Runtime.evaluate 不返回」，而且最小化/还原
+ *  本身会抢焦点、在任务栏闪。现在只移出视野，不改变窗口状态。 */
 async function hideLaunchedWindow() {
   const ver = await getJson('/json/version');
   if (!ver || !ver.webSocketDebuggerUrl) return;
@@ -1253,7 +1352,7 @@ async function hideLaunchedWindow() {
       const w = await b.send('Browser.getWindowForTarget', { targetId: tid }).catch(() => null);
       if (w && w.windowId !== undefined) {
         await b.send('Browser.setWindowBounds', { windowId: w.windowId,
-          bounds: { windowState: 'minimized', left: -32000, top: -32000 } }).catch(() => {});
+          bounds: { windowState: 'normal', left: -32000, top: -32000, width: 1000, height: 700 } }).catch(() => {});
       }
     }
   } finally { b.close(); }
@@ -1527,7 +1626,7 @@ async function actAsk() {
   // 固定会话：复用锁定的 ask 会话（→回收同类→才新建隐藏窗），不再每次新建/弹新窗
   try {
     step('正在接入固定会话…');
-    cdp = await acquireSession('ask');
+    cdp = await acquireSession('ask', { session: VSESSION });
     step('固定会话已就绪');
   } catch (e) {
     log('✗ 固定会话接不上：' + ((e && e.message) || e));
@@ -1649,7 +1748,9 @@ async function actAsk() {
     }
     // 固定会话：拿到真实 sid 就记进 state——App 重启后靠它按 sid 重开同一段对话（ask 通道）
     if (sid && /^\d+$/.test(String(sid))) {
-      stateWrite(Object.assign(stateRead(), { askSid: String(sid) }));
+      stateWrite(Object.assign(stateRead(), {
+        [(VSESSION ? VSESSION + ':sessionSid' : 'askSid')]: String(sid),
+      }));
     }
     // 认准会话落哪个 profile（多 profile 时 Default 常是旧壳）；仅在拿到数字 sid 时。
     if (sid && /^\d+$/.test(String(sid))) {
@@ -1736,6 +1837,581 @@ async function actAsk() {
 }
 
 // ---------- 视频生成动作（prepare / confirm / cancel） ----------
+async function actLogin() {
+  const at = await ensureAttached({ launch: false });
+  if (!at.ok) {
+    console.log(JSON.stringify({ cdp: false, running: false, loggedIn: false, why: at.why }));
+    return 0;
+  }
+  const list = await getJson('/json/list');
+  const pages = (list || []).filter((t) => t.type === 'page' && t.webSocketDebuggerUrl);
+  const results = [];
+  for (const p of pages) {
+    let probe = null;
+    try {
+      const c = await attachTarget(p);
+      probe = await c.evalJs(LOGIN_PROBE, 10000);
+      c.close();
+    } catch (e) {
+      probe = { error: (e && e.message) || String(e) };
+    }
+    results.push({ url: p.url || '', title: p.title || '', probe });
+  }
+  const chat = results.find((r) => /doubaowork-chat\/chat/.test(r.url) || /豆包工作/.test(r.title));
+  const loginPage = results.some((r) => r.probe && r.probe.loginUI);
+  const loggedIn = Boolean(chat && chat.probe && !chat.probe.loginUI
+    && !results.some((r) => /client-login|passport|login/i.test(r.url)));
+  console.log(JSON.stringify({
+    cdp: true,
+    running: true,
+    loggedIn,
+    pageUrl: chat ? chat.url : (results[0] ? results[0].url : ''),
+    pages: results.map((r) => ({ url: r.url, title: r.title, loginUI: !!(r.probe && r.probe.loginUI) })),
+  }));
+  return 0;
+}
+
+async function actShow() {
+  const at = await ensureAttached({ launch: true });
+  if (!at.ok) {
+    console.log(JSON.stringify({ ok: false, error: at.why }));
+    return 0;
+  }
+  const ver = await getJson('/json/version');
+  if (!ver || !ver.webSocketDebuggerUrl) {
+    console.log(JSON.stringify({ ok: false, error: '拿不到浏览器级 CDP 连接' }));
+    return 0;
+  }
+  const b = new Cdp(ver.webSocketDebuggerUrl);
+  await b.connect();
+  try {
+    const list = await getJson('/json/list');
+    const pages = (list || []).filter((t) => t.type === 'page');
+    for (const p of pages) {
+      const tid = p.targetId || p.id;
+      const w = await b.send('Browser.getWindowForTarget', { targetId: tid }).catch(() => null);
+      if (w && w.windowId !== undefined) {
+        await b.send('Browser.setWindowBounds', {
+          windowId: w.windowId,
+          bounds: { windowState: 'normal', left: 80, top: 80, width: 1120, height: 780 },
+        }).catch(() => {});
+      }
+      const c = await attachTarget(p).catch(() => null);
+      if (c) {
+        await c.send('Page.bringToFront').catch(() => {});
+        c.close();
+      }
+    }
+  } finally {
+    b.close();
+  }
+  console.log(JSON.stringify({ ok: true }));
+  return 0;
+}
+
+async function actMedia() {
+  let prompt = PROMPT;
+  if (PROMPT_FILE) {
+    try { prompt = fs.readFileSync(PROMPT_FILE, 'utf8'); }
+    catch (e) { console.log(JSON.stringify({ state: 'error', error: '读不到 --prompt-file：' + e.message })); return 2; }
+  }
+  if (!prompt || !prompt.trim()) {
+    console.log(JSON.stringify({ state: 'error', error: '缺提示词' }));
+    return 2;
+  }
+  const kind = VKIND === 'video' ? 'video' : 'image';
+  const ratio = VRATIO || '1:1';
+  const duration = Number(VDURATION) || 5;
+  const outDir = VOUT || path.join(os.tmpdir(), 'heronbo_media_' + Date.now());
+  fs.mkdirSync(outDir, { recursive: true });
+  // 视频 / 音频参考单独走 --video / --audio：绝不能并进 --image（豆包读不了），
+  // 但也必须一起进下面 refText 的清单，否则提示词里写着"音色参考"却没有对应文件。
+  const imageRefs = VIMAGES.map((p) => path.resolve(p));
+  const videoRefs = kind === 'video' && VVIDEO ? [path.resolve(VVIDEO)] : [];
+  const audioRefs = kind === 'video' && VAUDIO ? [path.resolve(VAUDIO)] : [];
+  const refs = [...imageRefs, ...videoRefs, ...audioRefs];
+  const intro = '【直接执行任务】这是一个直接生成' + (kind === 'video' ? '视频' : '图片')
+    + '的任务，不是写提示词/出方案。请用你内置的' + (kind === 'video' ? '视频' : '图片')
+    + '能力直接生成；不要只回复方案，不要转交即梦或任何外部平台。';
+  const qualityLine = VQUALITY ? (kind === 'video' ? '\n分辨率：' : '\n清晰度：') + VQUALITY : '';
+  const countLine = kind === 'image' && VCOUNT > 1 ? '\n出图张数：' + VCOUNT + ' 张（输出 ' + VCOUNT + ' 张不同的图）' : '';
+  const MODEL_LABELS = {
+    'seedance_2.5': 'Seedance 2.5',
+    'seedance_2.0': 'Seedance 2.0',
+    'seedance_2.0_fast': 'Seedance 2.0 Fast',
+    'seedream_5.0_flash': 'Seedream 5.0 Flash',
+    'seedream_5.0_pro': 'Seedream 5.0 Pro',
+    'seedream_4.5': 'Seedream 4.5',
+    'seedaudio_t2a': 'Seed-Audio（文生音频）',
+    'seedaudio_a2a': 'Seed-Audio（参考音频生音频）',
+  };
+  const modelLabel = VMODEL && VMODEL !== 'auto' ? (MODEL_LABELS[VMODEL] || VMODEL) : '';
+  const modelLine = modelLabel ? '\n生成模型：' + modelLabel : '';
+  const spec = kind === 'video'
+    ? '生成内容：' + prompt + '\n画面比例：' + ratio + '\n时长：约 ' + duration + ' 秒' + qualityLine + modelLine
+    : '生成内容：' + prompt + '\n画面比例：' + ratio + qualityLine + countLine + modelLine;
+  const refText = refs.length
+    ? '\n【本地参考素材（务必先逐张读取以下绝对路径，再开始生成；不能以“会话里没有文件”为由要求重新上传）】\n'
+      + refs.map((p, i) => {
+        const name = path.basename(p).replace(/\.[a-z0-9]+$/i, '');
+        const isVideoRef = /^参考视频/.test(name);
+        const isAudioRef = /^参考音频/.test(name);
+        const role = name.replace(/^参考(?:图|视频|音频)\d+_/, '').replace(/_/g, ' ');
+        const tag = isVideoRef ? '参考视频：参考它的运镜、动作节奏与构图' : isAudioRef ? '参考音频：参考音色 / 配乐风格' : '';
+        const note = [tag, role].filter(Boolean).join('；');
+        return (i + 1) + '. ' + p + (note ? '（' + note + '）' : '');
+      }).join('\n')
+      + '\n参考图：严格保持人物长相 / 商品外观 / 文字内容一致；参考视频：参考其运镜、动作节奏与构图；参考音频：参考音色与配乐风格。'
+    : '';
+  const fullPrompt = intro + '\n\n' + spec + refText;
+  // 新会话首条消息后页面会导航到 /chat/<sid>，旧 CDP target 可能失效；
+  // 用一个只出现在本条消息里的内部编号，发完再靠它把新会话找回来。
+  const nonce = 'hbc' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  const promptWithNonce = fullPrompt + '\n\n（内部任务号：' + nonce + '，请忽略）';
+  const fail = (msg, extra = {}) => {
+    console.log(JSON.stringify(Object.assign({ state: 'error', error: String(msg || '') }, extra)));
+    return 0;
+  };
+
+  const at = await ensureAttached({ launch: !NO_LAUNCH });
+  if (!at.ok) return fail(at.why || '豆包工作连不上');
+  let cdp = null;
+  try {
+    cdp = await acquireSession('video', { visible: false, session: VSESSION });
+    if (!VSESSION) await ensureFreshChat(cdp).catch(() => false);
+    let foc = null;
+    for (let i = 0; i < 20; i += 1) {
+      foc = await cdp.evalJs(FOCUS_COMPOSER).catch(() => null);
+      if (foc) break;
+      await sleep(1000);
+    }
+    if (!foc) return fail('豆包工作没登录或不在对话页（先在客户端里扫码登录）');
+    const before = await cdp.evalJs(MEDIA_STATE).catch(() => null) || { images: [], videos: [] };
+    const beforeSrc = new Set([...(before.images || []), ...(before.videos || [])].map((x) => x.src));
+    const st0 = await cdp.evalJs(MSG_STATE).catch(() => null) || {};
+    const sendsBefore = Number(st0.sends || 0);
+    const recvsBefore = Number(st0.recvs || 0);
+    await cdp.evalJs(CLEAR_EDITOR).catch(() => {});
+    const fill = await cdp.evalJs(FILL_VIA_EDITOR + '(' + JSON.stringify(promptWithNonce) + ')', 30000);
+    if (!fill || !fill.ok) {
+      await cdp.evalJs(FOCUS_COMPOSER).catch(() => {});
+      await cdp.send('Input.insertText', { text: promptWithNonce }, 30000).catch(() => {});
+      await sleep(300);
+    }
+    let typed = String(await cdp.evalJs(COMPOSER_TEXT).catch(() => '') || '');
+    if (!typed.trim()) {
+      await cdp.evalJs(`(() => { const el = document.activeElement; if (!el) return false;
+        if (el.value !== undefined) el.value = ${JSON.stringify(promptWithNonce)}; else el.innerText = ${JSON.stringify(promptWithNonce)};
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`).catch(() => {});
+      await sleep(200);
+      typed = String(await cdp.evalJs(COMPOSER_TEXT).catch(() => '') || '');
+    }
+    if (!typed.trim()) return fail('提示词塞不进豆包输入框（界面可能改版）');
+    await sleep(300);
+    const sr = await cdp.evalJs(CLICK_SEND_WAIT, 20000).catch(() => null);
+    if (!(sr && sr.ok)) {
+      const key = (type) => cdp.send('Input.dispatchKeyEvent', {
+        type, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13,
+        text: type === 'char' ? '\r' : undefined,
+      });
+      await cdp.evalJs(FOCUS_COMPOSER).catch(() => {});
+      await key('keyDown').catch(() => {});
+      await key('char').catch(() => {});
+      await key('keyUp').catch(() => {});
+    }
+    let sent = false;
+    for (let k = 0; k < 10; k += 1) {
+      await sleep(900);
+      const st = await cdp.evalJs(MSG_STATE).catch(() => null) || {};
+      const left = String(await cdp.evalJs(COMPOSER_TEXT).catch(() => '') || '').trim();
+      if (Number(st.sends || 0) > sendsBefore || !left || st.running || Number(st.recvs || 0) > recvsBefore) {
+        sent = true;
+        break;
+      }
+    }
+    if (!sent) return fail('请求没发出去（豆包界面没响应）');
+    // 新会话首条消息后会导航到 /chat/<sid>，旧 target 可能失效：用 nonce 找回新会话。
+    let located = null;
+    for (let k = 0; k < 4 && !located; k += 1) {
+      located = await locateSentTarget(nonce, 10000).catch(() => null);
+      if (!located) await sleep(800);
+    }
+    if (located && located.cdp) {
+      try { cdp.close(); } catch { /* ignore */ }
+      cdp = located.cdp;
+      if (located.sid) {
+        const st = stateRead();
+        st[VSESSION ? VSESSION + ':sessionSid' : 'videoSid'] = located.sid;
+        if (VSESSION) st[VSESSION + ':sessionTarget'] = cdp.targetId;
+        stateWrite(st);
+      }
+      step('已接管生成会话' + (located.sid ? '：' + located.sid : ''));
+    }
+    // 后台标签页不会渲染消息列表（图片也就读不到）：发完把它带到前台再轮询。
+    // 2026-11-09：只有用户明确要走 --visible（跳转豆包界面手动确认）才允许置前；
+    // 工作台/画布的后台生成一律不碰 OS 焦点。后台页靠 setFocusEmulation +
+    // setWebLifecycleState('active') 保持渲染（prepare 阶段已设）。
+    if (VVISIBLE) {
+      try { await cdp.send('Page.bringToFront', {}); step('已切到生成会话，开始盯结果…'); } catch (e) { /* ignore */ }
+    } else {
+      await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
+      await cdp.send('Page.setWebLifecycleState', { state: 'active' }).catch(() => {});
+      step('已接管生成会话（静默），开始盯结果…');
+    }
+    // 豆包有时先弹“是否按以上参数开始生成视频？”——自动点「按此要求」。
+    const confirmOnce = async () => {
+      try {
+        const hit = await cdp.evalJs(CONFIRM_UI, 8000).catch(() => '');
+        if (hit) step('已点确认：' + hit);
+        return hit;
+      } catch { return ''; }
+    };
+    await confirmOnce();
+    step('已发送，等' + (kind === 'video' ? '视频' : '图片') + '结果（' + Math.round(Math.min(TIMEOUT, kind === 'video' ? 900 : 300)) + ' 秒上限）…');
+
+    // 豆包把消息渲染在「用户正开着的那个标签页」上；桥接自己开的后台页常常是空的。
+    // 自己这页扫不到时，去同一段会话的其它标签页里找，命中就把连接切过去。
+    const scanSiblingTabs = async (sid) => {
+      if (!sid) return [];
+      const pages = await getJson('/json/list').catch(() => []);
+      const cands = (pages || []).filter((t) => t.type === 'page'
+        && String(t.url || '').indexOf('chat/' + sid) >= 0
+        && (!cdp || t.id !== cdp.targetId));
+      for (const cand of cands) {
+        const c2 = await attachSessionByTarget(cand.id).catch(() => null);
+        if (!c2) continue;
+        let hit = [];
+        try {
+          await sleep(400);
+          const st2 = await c2.evalJs(MEDIA_STATE).catch(() => null);
+          hit = st2 ? ((kind === 'video' ? st2.videos : st2.images) || []) : [];
+          if (!hit.length) {
+            const w2 = await c2.evalJs(MEDIA_STATE_WIDE).catch(() => null);
+            hit = w2 ? ((kind === 'video' ? w2.videos : w2.images) || []) : [];
+          }
+          hit = hit.filter((x) => !beforeSrc.has(x.src));
+        } catch (e) {
+          hit = [];
+        }
+        if (hit.length) {
+          try { if (cdp) cdp.close(); } catch (e) { /* ignore */ }
+          cdp = c2;
+          return hit;
+        }
+        try { c2.close(); } catch (e) { /* ignore */ }
+      }
+      return [];
+    };
+
+    // 生成页会跳转/重建 target，手上的连接经常说没就没；
+    // 这里按「当前连接 → nonce 定位 → 所有 chat 页」依次找一个能 eval 的。
+    const readStateRobust = async () => {
+      const tryRead = async (conn) => (conn ? conn.evalJs(MEDIA_STATE).catch(() => null) : null);
+      let st = await tryRead(cdp);
+      if (st) return st;
+      const again = await locateSentTarget(nonce, 8000).catch(() => null);
+      if (again && again.cdp) {
+        st = await tryRead(again.cdp);
+        if (st) {
+          try { if (cdp) cdp.close(); } catch (e) { /* ignore */ }
+          cdp = again.cdp;
+          step('重新接管生成会话，继续等结果…');
+          return st;
+        }
+        try { again.cdp.close(); } catch (e) { /* ignore */ }
+      }
+      const pages = await getJson('/json/list').catch(() => []);
+      const cands = (pages || []).filter((t) => t.type === 'page' && /chat\/\d+/.test(String(t.url || ''))
+        && (!cdp || t.id !== cdp.targetId));
+      for (const cand of cands) {
+        const c2 = await attachSessionByTarget(cand.id).catch(() => null);
+        if (!c2) continue;
+        st = await tryRead(c2);
+        if (st) {
+          try { if (cdp) cdp.close(); } catch (e) { /* ignore */ }
+          cdp = c2;
+          step('换到另一个会话标签页继续等：' + String(cand.id).slice(0, 6));
+          return st;
+        }
+        try { c2.close(); } catch (e) { /* ignore */ }
+      }
+      return null;
+    };
+
+    const startedAt = Date.now();
+    const deadline = startedAt + Math.min(TIMEOUT, kind === 'video' ? 900 : 300) * 1000;
+    let state = null;
+    let sig = '';
+    let stableAt = 0;
+    let failure = '';
+    let ticks = 0;
+    let misses = 0;
+    while (Date.now() < deadline) {
+      await sleep(2500);
+      ticks += 1;
+      state = await readStateRobust();
+      if (!state) {
+        misses += 1;
+        if (misses >= 3) {
+          const again = await locateSentTarget(nonce, 8000).catch(() => null);
+          if (again && again.cdp) {
+            try { cdp.close(); } catch { /* ignore */ }
+            cdp = again.cdp;
+            misses = 0;
+            step('重新接管生成会话，继续等结果…');
+          }
+        }
+        continue;
+      }
+      misses = 0;
+      // 新会话会跳转 URL，但旧 target 有时还活着（能 eval、看不到新消息）：
+      // 每 3 拍确认一次 nonce 还在页面上，不在就重新接管。
+      if (ticks % 3 === 0) {
+        const hasNonce = await cdp.evalJs(
+          `(() => (document.body ? document.body.innerText : '').includes(${JSON.stringify(nonce)}))()`, 6000,
+        ).catch(() => true);
+        if (!hasNonce) {
+          const again = await locateSentTarget(nonce, 8000).catch(() => null);
+          if (again && again.cdp) {
+            try { cdp.close(); } catch { /* ignore */ }
+            cdp = again.cdp;
+            if (again.sid) {
+              const st = stateRead();
+              st[VSESSION ? VSESSION + ':sessionSid' : 'videoSid'] = again.sid;
+              if (VSESSION) st[VSESSION + ':sessionTarget'] = cdp.targetId;
+              stateWrite(st);
+            }
+            step('会话已跳转，重新接管：' + (again.sid || ''));
+            continue;
+          }
+        }
+      }
+      let list = (kind === 'video' ? state.videos : state.images).filter((x) => !beforeSrc.has(x.src));
+      if (!list.length && Date.now() - startedAt > 8000) {
+        // 最后一条消息里没找到结果时，整页深扫兜底（排除发送前就存在的素材）。
+        const wide = await cdp.evalJs(MEDIA_STATE_WIDE).catch(() => null);
+        const wideList = wide ? ((kind === 'video' ? wide.videos : wide.images) || []).filter((x) => !beforeSrc.has(x.src)) : [];
+        if (wideList.length) list = wideList;
+      }
+      if (!list.length && ticks % 4 === 0 && Date.now() - startedAt > 12000) {
+        const href = String(await cdp.evalJs('location.href').catch(() => '') || '');
+        const m = href.match(/chat\/(\d+)/);
+        if (m) {
+          const sib = await scanSiblingTabs(m[1]);
+          if (sib.length) { list = sib; step('在同一会话的另一个标签页里发现了结果，改从那边取'); }
+        }
+      }
+      if (!list.length && ticks % 2 === 1) await confirmOnce();
+      if (ticks % 8 === 0) step('等待中… 媒体 ' + list.length + ' 个，busy=' + state.busy);
+      const nextSig = list.map((x) => x.src).join('|');
+      if (list.length) {
+        if (nextSig !== sig) { sig = nextSig; stableAt = Date.now(); }
+        if (!state.busy && Date.now() - stableAt > 3000) break;
+      } else if (!state.busy && state.text
+        && /失败|无法|不支持|不能生成|抱歉|未生成|没有权限|额度|登录/.test(state.text)
+        && Date.now() - startedAt > 15000) {
+        failure = state.text;
+        break;
+      }
+    }
+    let list = state
+      ? (kind === 'video' ? state.videos : state.images).filter((x) => !beforeSrc.has(x.src))
+      : [];
+    if (!list.length && Date.now() - startedAt > 8000) {
+      const wide = await cdp.evalJs(MEDIA_STATE_WIDE).catch(() => null);
+      if (wide) list = ((kind === 'video' ? wide.videos : wide.images) || []).filter((x) => !beforeSrc.has(x.src));
+    }
+    if (!list.length) return fail(failure || '没等到生成结果（可能在排队 / 未登录 / 客户端不支持）', { text: state ? state.text : '' });
+    const files = [];
+    const allFiles = [];
+    for (const m of list.slice(0, 8)) {
+      let ext = '.png';
+      if (kind === 'video') ext = '.mp4';
+      else {
+        try {
+          const u = new URL(m.src);
+          const e = path.extname(u.pathname).toLowerCase();
+          if (/^\.(png|jpe?g|webp|gif)$/.test(e)) ext = e;
+        } catch { /* blob: 默认 png */ }
+      }
+      const file = path.join(outDir, 'media-' + (allFiles.length + 1) + ext);
+      try {
+        let bytes = 0;
+        const directUrl = (kind === 'video' && /^https?:/i.test(m.sourceSrc || '')) ? m.sourceSrc : m.src;
+        if (/^https?:/i.test(directUrl)) {
+          step('下载媒体 ' + directUrl.slice(0, 70) + '…');
+          // CDN 直链：Node 直接下，比在页面里转 base64 快一个数量级（视频尤其明显）。
+          const r = await fetch(directUrl);
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          const buf = Buffer.from(await r.arrayBuffer());
+          fs.writeFileSync(file, buf);
+          bytes = buf.length;
+        } else {
+          bytes = await downloadMedia(cdp, m.src, file);
+        }
+        allFiles.push({ path: file, bytes, w: m.w || 0, h: m.h || 0, duration: m.duration || 0 });
+      } catch (e) {
+        step('下载媒体失败：' + ((e && e.message) || e));
+      }
+    }
+    // 页面上同时有占位图/缩略图/图标：只保留真正的成品。
+    const valid = allFiles.filter((f) => (kind === 'video'
+      ? f.bytes >= 100 * 1024
+      : f.bytes >= 20 * 1024 && (f.w >= 512 || !f.w)));
+    const finalFiles = valid.length
+      ? valid
+      : (allFiles.length ? [allFiles.slice().sort((a, b) => b.bytes - a.bytes)[0]] : []);
+    if (!finalFiles.length) return fail('拿到了媒体地址但下载失败');
+    if (VSESSION) {
+      try {
+        const href = String(await cdp.evalJs('location.href').catch(() => '') || '');
+        const m = href.match(/chat\/(\d+)/);
+        if (m) {
+          const st = stateRead();
+          st[VSESSION + ':sessionSid'] = m[1];
+          st[VSESSION + ':sessionTarget'] = cdp.targetId;
+          stateWrite(st);
+        }
+      } catch { /* ignore */ }
+    }
+    console.log(JSON.stringify({ state: 'done', kind, files: finalFiles, text: (state.text || '').slice(0, 300) }));
+    return 0;
+  } catch (e) {
+    return fail((e && e.message) || String(e));
+  } finally {
+    try { if (cdp) cdp.close(); } catch { /* ignore */ }
+  }
+}
+
+async function actCollect() {
+  // 只取结果、不发送：豆包那边已经出图但画布没收到时的补救。
+  const kind = VKIND === 'video' ? 'video' : 'image';
+  const outDir = VOUT || path.join(os.tmpdir(), 'heronbo_media_' + Date.now());
+  fs.mkdirSync(outDir, { recursive: true });
+  const st = stateRead();
+  const sid = String(st[VSESSION + ':sessionSid'] || '').trim();
+  const dbg = [];
+  const failWith = (msg) => {
+    console.log(JSON.stringify({ state: 'error', error: String(msg || '') + '（' + dbg.join(' / ') + '）' }));
+    return 0;
+  };
+  const at = await ensureAttached({ launch: !NO_LAUNCH });
+  if (!at.ok) return failWith(at.why || '豆包工作连不上');
+  let cdp = null;
+  const scan = async (conn) => {
+    const read = async () => {
+      const state = await conn.evalJs(MEDIA_STATE).catch(() => null);
+      let list = state ? ((kind === 'video' ? state.videos : state.images) || []) : [];
+      if (!list.length) {
+        const wide = await conn.evalJs(MEDIA_STATE_WIDE).catch(() => null);
+        list = wide ? ((kind === 'video' ? wide.videos : wide.images) || []) : [];
+      }
+      return list;
+    };
+    let list = await read();
+    if (!list.length) { await sleep(1200); list = await read(); }
+    return list;
+  };
+  try {
+    cdp = await acquireSession('video', { visible: false, session: VSESSION });
+    dbg.push('target=' + (cdp && cdp.targetId));
+    let list = [];
+    for (let tick = 0; tick < 6 && !list.length; tick += 1) {
+      if (tick) await sleep(1200);
+      list = await scan(cdp);
+    }
+    if (!list.length && VSID) {
+      // 优先按任务记录的会话 id 找：那张图一定在这段对话里。
+      const pages = await getJson('/json/list').catch(() => []);
+      const cands = (pages || []).filter((t) => t.type === 'page' && String(t.url || '').indexOf('chat/' + VSID) >= 0);
+      dbg.push('sid=' + VSID + ' cands=' + cands.length);
+      for (const cand of cands) {
+        const c4 = await attachSessionByTarget(cand.id).catch(() => null);
+        if (!c4) continue;
+        const l4 = await scan(c4);
+        dbg.push('page:' + String(cand.id).slice(0, 6) + '=' + l4.length);
+        if (l4.length) {
+          try { if (cdp) cdp.close(); } catch (e) { /* ignore */ }
+          cdp = c4;
+          list = l4;
+          break;
+        }
+        try { c4.close(); } catch (e) { /* ignore */ }
+      }
+    }
+    if (!list.length && VMATCH) {
+      const pages = await getJson('/json/list').catch(() => []);
+      const cands = (pages || []).filter((t) => t.type === 'page' && /doubaowork-chat\/chat\/\d+/.test(String(t.url || '')));
+      dbg.push('match=' + VMATCH.slice(0, 12) + ' cands=' + cands.length);
+      for (const cand of cands) {
+        const c3 = await attachSessionByTarget(cand.id).catch(() => null);
+        if (!c3) continue;
+        const hit = await c3.evalJs(`(() => { const norm = (s) => String(s || '').replace(/[\\s@，。；、！？,.!?]/g, ''); return norm(document.body ? document.body.innerText : '').includes(norm(${JSON.stringify(VMATCH)})); })()`).catch(() => false);
+        if (!hit) { try { c3.close(); } catch (e) { /* ignore */ } continue; }
+        const l3 = await scan(c3);
+        dbg.push('hit:' + String(cand.id).slice(0, 6) + '=' + l3.length);
+        if (l3.length) {
+          try { if (cdp) cdp.close(); } catch (e) { /* ignore */ }
+          cdp = c3;
+          list = l3;
+          break;
+        }
+        try { c3.close(); } catch (e) { /* ignore */ }
+      }
+    }
+    if (!list.length && sid) {
+      // acquireSession 可能把重复标签页去重掉，手上的连接就废了；按 sid 直接找页面再扫。
+      const pages = await getJson('/json/list').catch(() => []);
+      const cands = (pages || []).filter((t) => t.type === 'page' && String(t.url || '').indexOf('chat/' + sid) >= 0);
+      dbg.push('sid=' + sid + ' cands=' + cands.length);
+      for (const cand of cands) {
+        const c2 = await attachSessionByTarget(cand.id).catch(() => null);
+        if (!c2) { dbg.push('attach-fail:' + String(cand.id).slice(0, 6)); continue; }
+        const l2 = await scan(c2);
+        dbg.push('page:' + String(cand.id).slice(0, 6) + '=' + l2.length);
+        if (l2.length) {
+          try { cdp.close(); } catch (e) { /* ignore */ }
+          cdp = c2;
+          list = l2;
+          break;
+        }
+        try { c2.close(); } catch (e) { /* ignore */ }
+      }
+    }
+    if (!list.length) return failWith('当前会话里没有可取的' + (kind === 'video' ? '视频' : '图片'));
+    const files = [];
+    for (const m of list.slice(-4)) {
+      const file = path.join(outDir, 'media-' + (files.length + 1) + (kind === 'video' ? '.mp4' : '.png'));
+      try {
+        let bytes = 0;
+        const directUrl = (kind === 'video' && /^https?:/i.test(m.sourceSrc || '')) ? m.sourceSrc : m.src;
+        if (/^https?:/i.test(directUrl)) {
+          const r = await fetch(directUrl);
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          const buf = Buffer.from(await r.arrayBuffer());
+          fs.writeFileSync(file, buf);
+          bytes = buf.length;
+        } else {
+          bytes = await downloadMedia(cdp, m.src, file);
+        }
+        files.push({ path: file, bytes, w: m.w || 0, h: m.h || 0, duration: m.duration || 0 });
+      } catch (e) {
+        step('下载失败：' + ((e && e.message) || e));
+      }
+    }
+    const valid = files.filter((f) => (kind === 'video' ? f.bytes >= 100 * 1024 : f.bytes >= 20 * 1024));
+    const finalFiles = valid.length ? valid : files.slice(-1);
+    if (!finalFiles.length) return failWith('取到了地址但下载失败');
+    console.log(JSON.stringify({ state: 'done', kind, files: finalFiles }));
+    return 0;
+  } catch (e) {
+    return failWith((e && e.message) || String(e));
+  } finally {
+    try { if (cdp) cdp.close(); } catch { /* ignore */ }
+  }
+}
+
 async function actVideo() {
   let prompt = PROMPT;
   if (PROMPT_FILE) {
@@ -2209,6 +2885,10 @@ async function main() {
   if (action === 'doctor') return actDoctor();
   if (action === 'selftest') return actSelftest();
   if (action === 'ask') return actAsk();
+  if (action === 'media') return actMedia();
+  if (action === 'collect') return actCollect();
+  if (action === 'login') return actLogin();
+  if (action === 'show') return actShow();
   if (action === 'video') return actVideo();
   if (action === 'launch') {
     if (await cdpReady()) { log('· 调试端口已在：' + PORT); return 0; }

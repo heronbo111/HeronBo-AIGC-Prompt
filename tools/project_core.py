@@ -77,6 +77,29 @@ TEXT_EXT = {".txt", ".md", ".json", ".csv", ".srt", ".ass"}
 BIG_FILE_MB = 500                 # 超过这个体积给警告（不硬拒绝，用户可能就是要投大视频）
 HASH_LIMIT_MB = 256               # 小于此体积算全量 sha1；更大的只算「首尾 1MB + 体积」的快指纹
 
+
+def safe_project_name(name):
+    """项目名只能是**单层目录名**：带 / 或 \\ 的一律拒绝。
+
+    2026-11 QA 实测：`new_project` 把 name 原样交给 build_skeleton，传 `..\\逃逸`
+    会建到项目库外面去；这里在核心层再兜一次，调用方忘了校验也不会越界。
+    """
+    s = str(name or "").strip()
+    s = s.replace("\\", "/")
+    if "/" in s:
+        return ""
+    s = re.sub(r'[<>:"|?*\x00-\x1f]', "", s).strip(" ._-")
+    if s in ("", ".", ".."):
+        return ""
+    return s[:80]
+
+
+def _same_path_or_under(root, path):
+    """路径是否等于 root 或位于 root 之下（大小写按 Windows 口径）。"""
+    r = os.path.normcase(os.path.realpath(os.path.abspath(str(root or ""))))
+    p = os.path.normcase(os.path.realpath(os.path.abspath(str(path or ""))))
+    return bool(r and p and (p == r or p.startswith(r + os.sep)))
+
 ASK_PLACE = "请问您要把项目建在哪里？您提供好素材后，我会自动将其进行归类"
 
 
@@ -407,11 +430,11 @@ def ensure_project(project_dir, dirs=None):
 # 为什么不做成"程序调 API、agent 调 API"：两边都可能不在、都可能被关掉。
 # 把状态放磁盘上，谁先起来谁读盘，就永远不会丢件，也不需要两边同时在线。
 #
-#   <项目>/_会话/
-#   ├── 状态.json      程序写：exe 是否在跑、当前阶段、agent 会话 id、本轮编号
-#   ├── 待办.jsonl     程序写：用户的反馈/请求（agent 读一条处理一条，处理完标 done）
-#   ├── 回执.jsonl     agent 写：我做了什么、产出了哪些文件（程序读来显示）
-#   └── 轮次/001-反馈.txt  每轮用户反馈原文留档（agent 复盘用）
+# <项目>/_会话/
+# ├── 状态.json      程序写：exe 是否在跑、当前阶段、agent 会话 id、本轮编号
+# ├── 待办.jsonl     程序写：用户的反馈/请求（agent 读一条处理一条，处理完标 done）
+# ├── 回执.jsonl     agent 写：我做了什么、产出了哪些文件（程序读来显示）
+# └── 轮次/001-反馈.txt  每轮用户反馈原文留档（agent 复盘用）
 SESSION_DIR = "_会话"
 UPLOAD_DIR = "平台上传"          # 2026-09-17 用户要求：skill 已支持多平台，不再叫"即梦上传"
 UPLOAD_DIR_OLD = "即梦上传"      # 老项目里仍是这个名字 → **读的时候两个都认**，不必强迁
@@ -717,11 +740,16 @@ def accept_deliverables(project_dir, paths, verdict="good", note="", on_log=None
 
     project_dir = os.path.normpath(project_dir)
     ensure_project(project_dir)
+    if skeleton_error(project_dir):
+        emit("!! 框架.json 损坏（%s）：先备份并修复它，或删掉后重建项目；本轮没有收片"
+             % skeleton_error(project_dir))
+        return [], log
     sub = "成片" if verdict == "good" else "废片"
     folder = os.path.join(project_dir, sub)
     os.makedirs(folder, exist_ok=True)
     today = datetime.date.today().isoformat()
     placed = []
+    errors = []
     for src in collect_files(paths):
         base = os.path.basename(src)
         if verdict == "bad":                      # 废片：文件名=日期-废因
@@ -733,10 +761,13 @@ def accept_deliverables(project_dir, paths, verdict="good", note="", on_log=None
             shutil.copy2(src, os.path.join(folder, dst_name))
         except (OSError, shutil.Error) as e:
             emit("跳过 %s（复制失败：%s）" % (base, e))
+            errors.append("%s：%s" % (base, e))
             continue
         rel = "%s/%s" % (sub, dst_name)
         placed.append(rel)
         emit("已接收 → %s" % rel)
+    if not placed and errors:
+        emit("!! 一个文件都没收进来：%s" % "；".join(errors[:3]))
     if placed:
         sk = load_skeleton(project_dir) or {"schema": SCHEMA, "project": {}}
         g = sk["project"].setdefault("generated", [])
@@ -756,7 +787,28 @@ def skeleton_path(project_dir):
     return os.path.join(project_dir, SKELETON_JSON)
 
 
+_SKELETON_ERRORS = {}
+
+
+def _skey(project_dir):
+    return os.path.normcase(os.path.abspath(str(project_dir or "")))
+
+
+def skeleton_error(project_dir):
+    """这个项目的 框架.json 是不是坏了（不存在 ≠ 坏，空字符串表示没有坏）。"""
+    key = _skey(project_dir)
+    if key not in _SKELETON_ERRORS:
+        load_skeleton(project_dir)      # 主动读一次，别依赖调用方先读过
+    return _SKELETON_ERRORS.get(key, "")
+
+
 def load_skeleton(project_dir):
+    """读框架。返回 None 有两种含义：文件不存在（正常新建）或 JSON 损坏。
+
+    2026-11 QA 实测：原实现把这两种都 return None，调用方 `or {}` 一兜，
+    坏文件就被当成空项目重建，用户原来的框架直接没了。这里把损坏原因记下来，
+    写入口（save_fields / accept_deliverables）先检查 skeleton_error 再决定。
+    """
     p = skeleton_path(project_dir)
     if not os.path.isfile(p):                      # 旧项目还在用 框架.json
         legacy = os.path.join(os.path.normpath(project_dir), "框架.json")
@@ -764,8 +816,14 @@ def load_skeleton(project_dir):
             p = legacy
     try:
         with open(p, encoding="utf-8-sig") as f:
-            return json.load(f)
-    except (FileNotFoundError, ValueError, OSError):
+            sk = json.load(f)
+        _SKELETON_ERRORS.pop(_skey(project_dir), None)
+        return sk
+    except FileNotFoundError:
+        _SKELETON_ERRORS.pop(_skey(project_dir), None)
+        return None
+    except (ValueError, OSError) as e:
+        _SKELETON_ERRORS[_skey(project_dir)] = str(e) or "读不出来"
         return None
 
 
@@ -780,7 +838,15 @@ def build_skeleton(root, name, platform="", project_dir=None, register=True):
     """
     log = []
     root = ensure_root(root)
-    project_dir = os.path.normpath(project_dir or os.path.join(root, name))
+    if project_dir is None:
+        name = safe_project_name(name)
+        if not name:
+            raise ValueError("项目名不合法：不能为空，也不能带 / 或 \\ 等路径分隔符")
+        project_dir = os.path.normpath(os.path.join(root, name))
+    else:
+        project_dir = os.path.normpath(project_dir)
+        if not _same_path_or_under(root, project_dir) or os.path.normcase(project_dir) == os.path.normcase(root):
+            raise ValueError("项目目录必须在项目库内，且不能是项目库根目录：%s" % project_dir)
     existed = os.path.exists(project_dir)
     ensure_project(project_dir)
 
@@ -835,6 +901,7 @@ def save_skeleton(project_dir, sk):
             f.write("\n")
     except OSError:
         return None
+    _SKELETON_ERRORS.pop(_skey(project_dir), None)
     legacy = os.path.join(project_dir, "骨架.json")   # 旧命名的残留，写成功后清掉
     if os.path.isfile(legacy):
         try:
@@ -953,6 +1020,10 @@ def _clean_name(s):
     """把候选名洗成"能当项目名"的样子：去扩展名/去标点后半句/去噪声后缀。"""
     s = re.sub(r"[\r\n\t]+", " ", str(s or "")).strip()
     s = re.sub(r"\.(txt|md|png|jpe?g|webp|mp4|mov|mkv|mp3|wav|m4a)$", "", s, flags=re.I)
+    # 2026-11 QA 实测：废因里带 `/` 时，`日期-废因.mp4` 会被当成子目录，
+    # shutil.copy2 失败但外层仍报「已收」；这里把路径分隔符和 Windows 非法字符一起洗掉。
+    s = s.replace("/", " ").replace("\\", " ")
+    s = re.sub(r'[<>:"|?*\x00-\x1f]+', " ", s)
     # 只取第一个标点之前 —— 避免把整句文案吞成项目名
     for ch in "，。、；：！？,;:!?（(【[":
         if ch in s:
@@ -1094,7 +1165,9 @@ def collect_files(paths):
             out.append(p)
         elif os.path.isdir(p):
             for dirpath, dirnames, filenames in os.walk(p):
-                dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+                # `_已移除/`、`_已删除/` 是回收区，不是素材；用户把整个素材夹拖进来时
+                # 递归进去会把删掉的文件又登记回来（2026-11-05 实测的“删了又出现”）。
+                dirnames[:] = [d for d in dirnames if not d.startswith((".", "_"))]
                 for fn in sorted(filenames):
                     if not fn.startswith("."):
                         out.append(os.path.join(dirpath, fn))

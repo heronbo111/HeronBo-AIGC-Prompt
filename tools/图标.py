@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""生成工作台图标（纯标准库，不依赖 Pillow）。
+"""生成工作台图标（纯标准库 + Pillow；Pillow 缺失时退回 ffmpeg）。
 
-图形：圆角方块 + 四根竖条 —— 就是工作台的四栏（窄/窄/宽/窄），一眼认得出。
+图形：整张原图 + 四角透明圆角（不抠图、不垫白盘、不加工主体）。
 输出：
-    tools/工作台.ico        （16/32/48/64/128/256 多尺寸，PNG 载荷；Win10/11 与 PyInstaller 都认）
+    tools/工作台.ico        （16/24/32/48/64/128/256 多尺寸，PNG 载荷；Win10/11 与 PyInstaller 都认）
     tools/工作台_256.png    （给文档/README 用）
 用法：python tools\\图标.py
 """
@@ -144,35 +144,39 @@ def _write_ico(blobs):
         print("[!] 写安装包图标失败：%s" % e)
 
 
-def _blobs_from_png(src, sizes, margin=0.02, logo_ratio=0.62):
-    """圆白底 + 中间放大版工作台 logo（2026-10-27 用户指定）。
+def _blobs_from_png(src, sizes, logo_ratio=1.0, radius_ratio=0.16):
+    """原图整张铺满 + 四角透明圆角（2026-11-06 用户要求“稍微滑润、加圆角”）。
 
-    之前是透明底直接放 logo，桌面上看着"没底、显小"；现在统一成
-    白色圆盘（占满图标区）+ 中间 62% 的 logo，安装包/快捷方式/任务栏一致。
+    2026-11-05 用户第二次反馈“不要透明底、不要大白边，要原生的”——源图四角四边
+    本身不是白色，白边是“抠图 + 4% 透明留边 + 小尺寸下帽檐白毛边糊成一圈”引入的。
+    所以这里仍然只做居中裁方 + 缩放；**只在最外沿做抗锯齿圆角遮罩**，不抠图、
+    不垫白盘、不留白边。半径按边长比例算，16px 也保持 2–3px 的圆角观感。
     """
     from io import BytesIO
     from PIL import Image, ImageDraw
 
-    im = Image.open(src).convert("RGBA")
-    bb = im.getchannel("A").getbbox()
-    if bb:
-        im = im.crop(bb)
-    top = max(sizes)
-    # 1) 白色圆盘（留一点透明外边，避免贴边发毛）
-    plate = Image.new("RGBA", (top, top), (0, 0, 0, 0))
-    d = ImageDraw.Draw(plate)
-    pad = int(top * margin)
-    d.ellipse([pad, pad, top - 1 - pad, top - 1 - pad], fill=(255, 255, 255, 255))
-    # 2) logo 居中放大到 logo_ratio
-    inner = int(top * logo_ratio)
+    im = Image.open(src).convert("RGB")
     w, h = im.size
-    k = min(inner / float(w), inner / float(h))
-    logo = im.resize((max(1, int(w * k)), max(1, int(h * k))), Image.LANCZOS)
-    plate.alpha_composite(logo, ((top - logo.width) // 2, (top - logo.height) // 2))
+    side = min(w, h)
+    im = im.crop(((w - side) // 2, (h - side) // 2,
+                  (w - side) // 2 + side, (h - side) // 2 + side))
     out = []
     for s in sizes:
+        ss = 4                              # 4× 超采样，圆角边缘更顺
+        big = max(s * ss, s + 1)
+        base = im.resize((big, big), Image.LANCZOS).convert("RGBA")
+        if radius_ratio and radius_ratio > 0:
+            mask = Image.new("L", (big, big), 0)
+            r = max(1, int(round(big * min(0.5, float(radius_ratio)))))
+            ImageDraw.Draw(mask).rounded_rectangle(
+                (0, 0, big - 1, big - 1), radius=r, fill=255)
+            mask = mask.resize((s, s), Image.LANCZOS)
+            base = base.resize((s, s), Image.LANCZOS)
+            base.putalpha(mask)
+        else:
+            base = base.resize((s, s), Image.LANCZOS)
         buf = BytesIO()
-        plate.resize((s, s), Image.LANCZOS).save(buf, format="PNG")
+        base.save(buf, format="PNG")
         out.append((s, buf.getvalue()))
     return out
 
@@ -182,6 +186,8 @@ def main():
     ap = argparse.ArgumentParser(description="生成工作台图标")
     ap.add_argument("--from", dest="src", default="", help="用现成图片做图标（默认 assets/logo.png）")
     ap.add_argument("--keep-bg", action="store_true", help="保留原图背景（默认把纯白背景抠成透明）")
+    ap.add_argument("--radius", type=float, default=0.16,
+                    help="四角圆角半径占边长的比例；0=直角（默认 0.16）")
     a = ap.parse_args()
     sizes = [16, 24, 32, 48, 64, 128, 256]
     src = a.src or (SRC if os.path.isfile(SRC) else "")
@@ -189,9 +195,9 @@ def main():
         if not os.path.isfile(src):
             raise SystemExit("找不到图片：%s" % src)
         try:
-            _write_ico(_blobs_from_png(src, sizes))
+            _write_ico(_blobs_from_png(src, sizes, radius_ratio=a.radius))
         except ImportError:                                # 没装 Pillow 就退回 ffmpeg
-            _write_ico(_pngs_from_image(src, sizes, keep_bg=a.keep_bg))
+            _write_ico(_pngs_from_image(src, sizes, keep_bg=True))
         return
     blobs = [(s, png_bytes(s)) for s in sizes]
     _write_ico(blobs)
