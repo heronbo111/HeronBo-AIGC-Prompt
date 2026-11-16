@@ -7,15 +7,18 @@
 const DEFAULT_PRICING = {
   note: '预估：客户端不回传实际扣费，按档位/秒数折算；以豆包账单为准。',
   image: {
-    perSheet: { '1K': 1, '2K': 2, '4K': 4 },
-    modelFactor: { 'seedream_5.0_flash': 1, 'seedream_5.0_pro': 2, 'seedream_4.5': 1.5, 'seedream_4.0': 1 },
+    // 2026-11 校准：原表 1K=1 / 2K=2 / 4K=4 明显偏低，实际扣点约为其两倍。
+    perSheet: { '1K': 2, '2K': 4, '4K': 8 },
+    modelFactor: { 'seedream_5.5': 2.5, 'seedream_5.0_flash': 1, 'seedream_5.0_pro': 2, 'seedream_4.5': 1.5, 'seedream_4.0': 1.2 },
   },
   video: {
+    // 2026-11 按实测记录校准（720×1280）：seedance_2.5 约 37.5 点/秒，
+    // 2.0_fast 约 40 点/秒；其余档位无实测，按画质/档位比例推算。
     perSecond: {
-      'seedance_2.5': { '480P': 6, '720P': 10, '1080P': 16 },
-      'seedance_2.0': { '720P': 5, '1080P': 9 },
-      'seedance_2.0_fast': { '720P': 3 },
-      'seedance_2.0_mini': { '720P': 2 },
+      'seedance_2.5': { '480P': 22, '720P': 37.5, '1080P': 56 },
+      'seedance_2.0': { '720P': 30, '1080P': 45 },
+      'seedance_2.0_fast': { '720P': 40 },
+      'seedance_2.0_mini': { '720P': 20 },
     },
   },
 };

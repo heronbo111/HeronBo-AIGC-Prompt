@@ -152,6 +152,7 @@ function pricingModelForBuiltin(kind, model) {
     if (/Fast/i.test(value)) return 'seedance_2.0_fast';
     return 'seedance_2.0';
   }
+  if (/5\.5|5_5/.test(value)) return 'seedream_5.5';
   if (/Pro/i.test(value)) return 'seedream_5.0_pro';
   if (/4\.5/.test(value)) return 'seedream_4.5';
   if (/4\.0/.test(value)) return 'seedream_4.0';

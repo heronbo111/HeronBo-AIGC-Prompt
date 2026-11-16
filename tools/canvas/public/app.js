@@ -34,6 +34,7 @@ const COUNTS = [1, 2, 4];
 // 生成走豆包工作客户端，模型名会写进结构化生成指令。
 const IMAGE_MODELS = [
   { id: 'seedream_5.0_flash', label: 'Seedream 5.0 Flash（默认）', note: '文生图 / 图生图 / 编辑 / 多图融合' },
+  { id: 'seedream_5.5', label: 'Seedream 5.5', note: '新一代档位；质感与细节更强' },
   { id: 'seedream_5.0_pro', label: 'Seedream 5.0 Pro', note: '会员专属，复杂构图与精细度更强' },
   { id: 'seedream_4.5', label: 'Seedream 4.5', note: '上一代稳定版' },
   { id: 'seedream_4.0', label: 'Seedream 4.0', note: '内置画布在用的旧档位' },
@@ -49,10 +50,12 @@ const VIDEO_MODELS = [
 
 // 本地前台唯一工作台 → 内置画布执行器。这里的会话必须和豆包客户端当前打开的画布一致，
 // 否则会在另一个会话里建节点，本地这边永远拿不到结果。
+// 内置画布目标不再写死：会话 id / 画布 id 在提交前从 /api/canvas/target 实时读。
+// 这里只留空壳，给标题兜底和「读不到时」的提示用。
 const BUILTIN_TARGET = {
-  conversationId: '38450384705095170',
-  canvasId: 'cws_60302341085214210',
-  title: '豆包无限画布项目交接',
+  conversationId: '',
+  canvasId: '',
+  title: '豆包无限画布',
 };
 
 const NODE_MIN_W = 220;
@@ -1046,6 +1049,17 @@ function buildNodeEl(node) {
       <button class="node-close" title="删除节点">×</button>
     </div>
     <div class="node-media"></div>
+    <div class="node-progress hidden">
+      <div class="np-ring">
+        <svg viewBox="0 0 40 40" aria-hidden="true">
+          <circle class="np-track" cx="20" cy="20" r="17"></circle>
+          <circle class="np-bar" cx="20" cy="20" r="17"></circle>
+        </svg>
+        <b class="np-pct">0%</b>
+      </div>
+      <div class="np-text"></div>
+      <div class="np-elapsed"></div>
+    </div>
     <div class="node-foot">
       <div class="node-status"><span></span></div>
       <button class="node-run" title="生成（Ctrl+Enter）">▷</button>
@@ -1195,6 +1209,65 @@ function refreshCostLine(node) {
   el.title = (S.pricing && S.pricing.note) || '预估，实际以豆包账单为准';
 }
 
+/** 按节点类型粗估一次生成要多久，用来把进度条推到 90% 附近。 */
+function estimateProgressSec(node) {
+  const p = nodeParams(node);
+  if (node.kind === 'video') {
+    const dur = Number(p.duration) || 4;
+    return 40 + dur * 26;
+  }
+  if (node.kind === 'image') return 45 + (Number(p.count) || 1) * 12;
+  if (node.kind === 'audio') return 90;
+  return 60;
+}
+
+/** 刷新节点画面上的进度遮罩：百分比环 + 状态文案 + 已用时间。 */
+function updateNodeProgress(node, progEl) {
+  const bar = $('.np-bar', progEl);
+  const pctEl = $('.np-pct', progEl);
+  const textEl = $('.np-text', progEl);
+  const elapsedEl = $('.np-elapsed', progEl);
+  if (!bar || !pctEl) return;
+
+  const startedAt = node.progressStartAt || Date.now();
+  const elapsed = Math.max(0, (Date.now() - startedAt) / 1000);
+
+  let pct = null;
+  const m = String(node.statusText || '').match(/(\d{1,3})\s*%/);
+  if (m) pct = Math.min(100, Math.max(0, parseInt(m[1], 10)));
+
+  if (pct == null) {
+    const est = Math.max(15, estimateProgressSec(node));
+    pct = elapsed < est
+      ? (elapsed / est) * 90
+      : Math.min(96, 90 + ((elapsed - est) / est) * 60);
+  }
+  pct = Math.round(pct);
+
+  const R = 17;
+  const C = 2 * Math.PI * R;
+  bar.style.strokeDasharray = String(C);
+  bar.style.strokeDashoffset = String(C - (C * pct) / 100);
+  pctEl.textContent = pct + '%';
+  if (textEl) textEl.textContent = node.statusText || '生成中…';
+  if (elapsedEl) {
+    const hint = node.kind === 'video' ? ' · 视频通常 2–3 分钟' : '';
+    elapsedEl.textContent = '已用 ' + Math.floor(elapsed) + ' 秒' + hint;
+  }
+}
+
+/** 生成中每 0.6 秒刷新一次遮罩，任务轮询之外也能看到时间在走。 */
+setInterval(() => {
+  for (const node of S.nodeById.values()) {
+    if (!['queued', 'running', 'preparing', 'downloading', 'submitting'].includes(node.status)) continue;
+    const el = S.els.get(node.id);
+    if (!el) continue;
+    const progEl = $('.node-progress', el);
+    if (!progEl || progEl.classList.contains('hidden')) continue;
+    updateNodeProgress(node, progEl);
+  }
+}, 600);
+
 function renderNodeStatus(node, el = S.els.get(node.id)) {
   if (!el) return;
   const statusEl = $('.node-status', el);
@@ -1204,6 +1277,15 @@ function renderNodeStatus(node, el = S.els.get(node.id)) {
   runBtn.className = 'node-run';
   runBtn.textContent = '▷';
   runBtn.disabled = false;
+
+  // 生成中：在节点画面上盖一层进度遮罩
+  const progEl = $('.node-progress', el);
+  const busyNow = ['queued', 'running', 'preparing', 'downloading', 'submitting'].includes(node.status);
+  if (progEl) {
+    progEl.classList.toggle('hidden', !busyNow);
+    if (busyNow) updateNodeProgress(node, progEl);
+  }
+  if (!busyNow) node.progressStartAt = 0;
 
   if (node.kind === 'subject') {
     const subject = S.subjects.find((entry) => entry.id === node.subjectId);
@@ -1231,6 +1313,7 @@ function renderNodeStatus(node, el = S.els.get(node.id)) {
     runBtn.textContent = '◌';
     runBtn.classList.add('running');
     runBtn.disabled = true;
+    if (!node.progressStartAt) node.progressStartAt = Date.now();
   } else if (node.status === 'prepared') {
     statusEl.classList.add('done');
     label.textContent = '已准备 · 待确认';
@@ -2887,6 +2970,29 @@ function onPromptKeyDown(event, textarea, node) {
 
 /* ── 生成 / 任务 ────────────────────────────────────────── */
 
+/**
+ * 提交前实时解析「当前该往哪个豆包会话、哪张内置画布写」。
+ * 推广到别人的机器时不能写死 id，所以每次提交都从页面读一遍。
+ * canvasId 允许为空：画布已经开着时后台直接往当前画布写；
+ * 只有画布没开时才需要 canvasId 去「主动打开某一张画布」。
+ */
+async function resolveBuiltinTarget() {
+  let target = null;
+  try {
+    target = await api('/api/canvas/target');
+  } catch (error) {
+    throw new Error('读不到当前豆包会话：先确认豆包工作客户端已打开并登录');
+  }
+  if (!target || !target.conversationId) {
+    throw new Error('读不到当前豆包会话：先确认豆包工作客户端已打开并登录');
+  }
+  return {
+    conversationId: target.conversationId,
+    canvasId: target.canvasId || '',
+    title: target.title || BUILTIN_TARGET.title,
+  };
+}
+
 async function runNode(node) {
   if (!node || (node.kind !== 'image' && node.kind !== 'video')) return;
   if (node.status === 'queued' || node.status === 'running') return;
@@ -3017,6 +3123,13 @@ async function runNode(node) {
     finalPrompt += `\n\n参考文案（${source.title}）：\n${source.text.trim()}`;
   }
 
+  // 「纯 CDP · 不开画布」：不走内置画布，直接把提示词送进豆包会话，从会话里取回成品。
+  // 这条链路完全不碰画布 tab，是推广给没有画布权限的同事时唯一能用的生成方式。
+  if ((S.config || {}).canvasEntry === 'cdp') {
+    await runNodeViaCdp(node, finalPrompt, refAssetIds);
+    return;
+  }
+
   // 不再直接走旧的 /api/generate（那条链路会在后台另起 actMedia）。
   // 新链路：本地只负责准备，先把提示词/模型/比例/时长同步进内置画布的生成条，
   // 拿到执行器返回的 itemId，再让用户确认后提交。
@@ -3034,12 +3147,14 @@ async function runNode(node) {
   markDirty();
 
   try {
+    const target = await resolveBuiltinTarget();
+    S.builtinTarget = target;
     const prepared = await api('/api/builtin/prepare', {
       method: 'POST',
       body: {
-        canvasId: BUILTIN_TARGET.canvasId,
-        conversationId: BUILTIN_TARGET.conversationId,
-        title: BUILTIN_TARGET.title,
+        canvasId: target.canvasId,
+        conversationId: target.conversationId,
+        title: target.title,
         nodeId: node.id,
         itemId: node.assets.length ? '' : (node.builtinItemId || ''),
         kind: node.kind,
@@ -3138,8 +3253,62 @@ function openBridgeConfirm(node, prepared) {
   }, { once: false });
 }
 
+/**
+ * 纯 CDP 通道：不打开内置画布，直接把提示词和参考素材送进豆包会话生成，
+ * 再由网关把成品取回来落进节点。这是「不开画布」模式下唯一的生成路径。
+ */
+async function runNodeViaCdp(node, prompt, refAssetIds) {
+  node.status = 'queued';
+  node.statusText = '提交到豆包会话…';
+  node.updatedAt = Date.now();
+  node.bridgePrompt = prompt;
+  renderNodeStatus(node);
+  updateInspectorTask(node);
+  renderInspector();
+  markDirty();
+  try {
+    const { task } = await api('/api/generate', {
+      method: 'POST',
+      body: {
+        // 用本地画布 id 做会话 key：与内置画布那套会话完全隔离，换机器也不会指到别人的会话。
+        canvasId: (S.doc && S.doc.id) || 'local',
+        nodeId: node.id,
+        kind: node.kind,
+        prompt,
+        ratio: node.ratio,
+        params: { ...nodeParams(node) },
+        refAssetIds,
+      },
+    });
+    S.tasks.set(node.id, task);
+    node.status = task.status === 'queued' ? 'queued' : 'running';
+    node.statusText = task.message;
+    node.taskId = task.id;
+    renderNodeStatus(node);
+    updateInspectorTask(node);
+    renderInspector();
+    markDirty();
+  } catch (error) {
+    node.status = 'error';
+    node.statusText = error.message;
+    renderNodeStatus(node);
+    updateInspectorTask(node);
+    renderInspector();
+    markDirty();
+  }
+}
+
 async function submitBuiltinNode(node) {
   if (!node || !S.doc) return;
+  const target = S.builtinTarget || await resolveBuiltinTarget().catch(() => null);
+  if (!target) {
+    node.status = 'error';
+    node.statusText = '读不到当前豆包会话，先确认客户端已打开并登录';
+    renderNodeStatus(node);
+    updateInspectorTask(node);
+    renderInspector();
+    return;
+  }
   node.status = 'queued';
   node.statusText = '提交到内置画布…';
   renderNodeStatus(node);
@@ -3151,14 +3320,14 @@ async function submitBuiltinNode(node) {
       method: 'POST',
       body: {
         engine: 'builtin',
-        canvasId: BUILTIN_TARGET.canvasId,
+        canvasId: target.canvasId,
         nodeId: node.id,
         kind: node.kind,
         prompt: node.bridgePrompt || node.prompt,
         ratio: node.ratio,
         params: { ...nodeParams(node), count: 1 },
-        conversationId: BUILTIN_TARGET.conversationId,
-        conversationTitle: BUILTIN_TARGET.title,
+        conversationId: target.conversationId,
+        conversationTitle: target.title,
         builtinItemId: node.builtinItemId || '',
       },
     });
@@ -3562,11 +3731,9 @@ async function refreshGateway() {
             ? '已通过本机豆包工作客户端生成，不需要网关和 API Key。'
             : '客户端在线，还没登录：点「打开豆包工作」，在客户端里扫码。'}</div>
         ${ok && loggedIn ? `<div style="margin-top:5px;font-size:10.5px;color:var(--muted-2)">生成会话：${status.sessionSid ? '#' + escapeHtml(status.sessionSid) : '首次生成时创建'}（Agent 用另一段会话，互不打扰）<div style="margin-top:6px"><button class="side-action" data-reset-session>换新会话（清上下文）</button></div></div>` : ''}
-        ${!ok
-          ? '<button class="side-action" data-launch-dw>启动豆包工作</button>'
-          : loggedIn === false
-            ? '<button class="side-action" data-launch-dw>打开豆包工作登录</button>'
-            : ''}`;
+        ${!ok ? '<button class="side-action" data-launch-dw>启动豆包工作</button>' : ''}
+        ${ok && loggedIn === false ? '<button class="side-action" data-launch-dw>打开豆包工作登录</button>' : ''}
+        <button class="side-action" data-prepare-canvas>${S.config && S.config.canvasEntry === 'manual' ? '准备画布入口' : '打开内置画布'}</button>`;
       if (!card.dataset.boundReset) {
     card.dataset.boundReset = '1';
     card.addEventListener('click', async (event) => {
@@ -3583,6 +3750,7 @@ async function refreshGateway() {
     });
   }
   card.querySelector('[data-launch-dw]')?.addEventListener('click', launchDoubaoWork);
+  card.querySelector('[data-prepare-canvas]')?.addEventListener('click', prepareCanvasEntry);
       launchBtn.textContent = '启动豆包工作';
       launchBtn.classList.toggle('hidden', ok);
       if (ok && loggedIn === false) watchGatewayLogin();
@@ -3667,6 +3835,54 @@ async function launchDoubaoWork() {
   toast(result.message || (result.ok ? '已打开豆包工作' : '打开失败'), result.ok ? 'ok' : 'bad');
   setTimeout(refreshGateway, 2500);
   watchGatewayLogin();
+}
+
+/**
+ * 「帮我打开豆包，我自己点画布」。
+ * 后端只负责把客户端切到前台、展开右侧工作台，绝不自动创建画布 tab；
+ * 用户点完「更多技能 → 打开画布」后，后续生成由脚本自动接管。
+ */
+async function prepareCanvasEntry() {
+  const result = await api('/api/canvas/prepare', { method: 'POST', body: {} })
+    .catch((error) => ({ ok: false, error: error.message }));
+  if (result.skipped) {
+    toast(result.hint || '当前是纯 CDP 模式，不打开画布');
+    return result;
+  }
+  if (!result.ok) {
+    toast(result.hint || result.error || '准备失败', 'bad');
+    return result;
+  }
+  toast(result.hint || '已准备好', 'ok');
+  if (result.hasCanvas) {
+    toast('内置画布已经开着，可以直接用', 'ok');
+    refreshGateway();
+  } else {
+    watchCanvasOpen();
+  }
+  return result;
+}
+
+let canvasOpenTimer = 0;
+/** 等用户手点「打开画布」：画布一出现就停，并刷新一次连接状态。 */
+function watchCanvasOpen(durationMs = 90000) {
+  if (canvasOpenTimer) return;
+  const until = Date.now() + durationMs;
+  canvasOpenTimer = setInterval(async () => {
+    if (Date.now() > until) {
+      clearInterval(canvasOpenTimer);
+      canvasOpenTimer = 0;
+      toast('还没等到画布打开：点「准备画布入口」再来一次');
+      return;
+    }
+    const state = await api('/api/bridge/state').catch(() => null);
+    if (state && state.ok) {
+      clearInterval(canvasOpenTimer);
+      canvasOpenTimer = 0;
+      toast('检测到内置画布已打开，脚本接管', 'ok');
+      refreshGateway();
+    }
+  }, 2000);
 }
 
 function openQrLogin() {
@@ -4394,6 +4610,7 @@ function renderLedger(box, result) {
 function openSettings() {
   const config = S.config;
   const mode = config.doubaoMode || 'doubaowork';
+  const entry = config.canvasEntry === 'manual' ? 'manual' : 'cdp';
   const body = $('#settingsBody');
   body.innerHTML = `
     <div class="set-row">
@@ -4403,6 +4620,17 @@ function openSettings() {
         <button data-v="external" class="${mode === 'external' ? 'on' : ''}">外部网关 doubao2api</button>
       </div>
       <div class="set-hint">推荐方式：画布直接接管本机「豆包工作」客户端，不需要 API Key / 启动脚本。</div>
+    </div>
+    <div class="set-row">
+      <label>画布打开方式</label>
+      <div class="seg" id="setCanvasEntry">
+        <button data-v="cdp" class="${entry === 'cdp' ? 'on' : ''}">纯 CDP · 不开画布</button>
+        <button data-v="manual" class="${entry === 'manual' ? 'on' : ''}">打开豆包 · 我自己点</button>
+      </div>
+      <div class="set-hint" id="setCanvasEntryHint"></div>
+      <div class="set-actions" style="margin-top:8px">
+        <button class="btn" id="setPrepareCanvas">准备画布入口</button>
+      </div>
     </div>
     <div id="dwFields" class="${mode === 'doubaowork' ? '' : 'hidden'}">
       <div class="set-row">
@@ -4512,6 +4740,22 @@ function openSettings() {
     applyModeUI();
   }));
   applyModeUI();
+  // 画布打开方式：cdp=纯 CDP 不开画布；manual=帮你把豆包和右面板准备到位，你自己点一下画布。
+  const entrySel = { value: entry };
+  const entryHintText = () => entrySel.value === 'manual'
+    ? '要画布时点「准备画布入口」：豆包会切到前台、右侧工作台也会打开，你只需在底部点「… → 更多技能 → 打开画布」，之后脚本自动接管。'
+    : '不主动打开任何画布，也不会自动创建画布 tab。内置画布的生成用不了，图片/视频生成走已配置的网关。';
+  const paintEntry = () => {
+    $$('#setCanvasEntry button', body).forEach((btn) => btn.classList.toggle('on', btn.dataset.v === entrySel.value));
+    const hint = $('#setCanvasEntryHint', body);
+    if (hint) hint.textContent = entryHintText();
+  };
+  $$('#setCanvasEntry button', body).forEach((button) => button.addEventListener('click', () => {
+    entrySel.value = button.dataset.v;
+    paintEntry();
+  }));
+  paintEntry();
+  $('#setPrepareCanvas', body)?.addEventListener('click', prepareCanvasEntry);
   api('/api/ledger?limit=50')
     .then((result) => renderLedger($('#ledgerBox', body), result))
     .catch((error) => {
@@ -4638,6 +4882,7 @@ function openSettings() {
       gateway: { baseUrl: $('#setGateway', body).value.trim() },
       gatewayStartScript: $('#setStartScript', body).value.trim(),
       doubaoMode: modeSel.value,
+      canvasEntry: entrySel.value,
       doubaoworkExe: ($('#setDoubaoExe', body)?.value || '').trim(),
       downloadDir: $('#setDownloadDir', body).value.trim(),
       performanceMode: perf.value,
@@ -4648,7 +4893,7 @@ function openSettings() {
     if (key) patch.gateway.apiKey = key;
     try {
       const result = await api('/api/config', { method: 'PATCH', body: patch });
-      S.config = { ...S.config, ...result.config, performanceMode: perf.value, theme: theme.value, gatewayStartScript: patch.gatewayStartScript, downloadDir: patch.downloadDir, doubaoMode: modeSel.value, doubaoworkExe: patch.doubaoworkExe, agentModel: patch.agentModel };
+      S.config = { ...S.config, ...result.config, performanceMode: perf.value, theme: theme.value, gatewayStartScript: patch.gatewayStartScript, downloadDir: patch.downloadDir, doubaoMode: modeSel.value, canvasEntry: entrySel.value, doubaoworkExe: patch.doubaoworkExe, agentModel: patch.agentModel };
       applyTheme(theme.value);
       applyPerf(perf.value);
       status.className = 'set-status ok';

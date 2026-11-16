@@ -150,12 +150,32 @@ async function evaluate(connection, expression) {
 /** 读内置画布的原始 DOM 快照。返回 JSON 字符串，避免 CDP 不能按值返回大对象。 */
 const SNAPSHOT_EXPR = `(() => {
   const panel = document.querySelector('[data-testid="right-panel-container"]');
-  const flow = document.querySelector('[data-testid="rf__wrapper"]') || (panel && panel.querySelector('.react-flow'));
+  // 同一时刻可能存在多个 React Flow 实例：未激活/已收起的画布 tab 会留下一个
+  // rect 归零的隐藏实例。盲取第一个会稳定命中隐藏实例，把「画布其实开着」误判成
+  // canvas-hidden。这里收集全部候选，按可见面积降序取最大的那个。
+  const seen = new Set();
+  const candidates = [];
+  for (const scope of (panel ? [panel, document] : [document])) {
+    for (const el of scope.querySelectorAll('[data-testid="rf__wrapper"], .react-flow')) {
+      if (seen.has(el)) continue;
+      seen.add(el);
+      const r = el.getBoundingClientRect();
+      candidates.push({ el, area: Math.max(0, r.width) * Math.max(0, r.height) });
+    }
+  }
+  candidates.sort((a, b) => b.area - a.area);
+  const flow = candidates.length ? candidates[0].el : null;
   if (!flow) return JSON.stringify({ ok: false, error: 'no-flow', panel: Boolean(panel) });
   const panelRect = panel ? panel.getBoundingClientRect() : null;
   const flowRect = flow.getBoundingClientRect();
   if (!flowRect.width || !flowRect.height) {
-    return JSON.stringify({ ok: false, error: 'canvas-hidden', panelRect, flowRect });
+    return JSON.stringify({
+      ok: false,
+      error: 'canvas-hidden',
+      panelRect,
+      flowRect,
+      candidates: candidates.map((c) => ({ area: Math.round(c.area) })),
+    });
   }
   const viewport = flow.querySelector('.react-flow__viewport');
   const viewportTransform = viewport ? (viewport.style.transform || '') : '';
@@ -239,6 +259,170 @@ async function readBuiltinState(port = DEFAULT_PORT) {
     }
     return state;
   }, port);
+}
+
+/**
+ * 读当前豆包页绑定的会话与画布 id。
+ * 推广到别人的机器时不能写死这两个 id：会话 id 从页面 href 取，
+ * 画布 id 依次从「tab 实例 id」「tab payload」「DOM 属性」三处兜底找。
+ * 全都找不到时 canvasId 返回空 —— 画布已经开着的话，空 id 也能正常写。
+ */
+async function readCanvasTarget(port = DEFAULT_PORT) {
+  const raw = await withCdp(async (connection) => evaluate(connection, `(() => {
+    const href = location.href || '';
+    let conversationId = (/\\/chat\\/([^/?#]+)/.exec(href) || [])[1] || '';
+    let canvasScopeId = '';
+    let scopeMismatch = false;
+    let canvasId = '';
+    let title = '';
+    let diag = '';
+    // 1) 从右面板服务的 tab 快照里找画布（最准）。
+    try {
+      const starts = [
+        document.querySelector('[data-testid="right-panel-container"]'),
+        document.querySelector('.react-flow'),
+        document.body,
+      ].filter(Boolean);
+      let svc = null;
+      for (const host of starts) {
+        const key = Object.keys(host).find((k) => k.startsWith('__reactFiber$'));
+        let fiber = key ? host[key] : null;
+        for (let i = 0; i < 120 && fiber; i += 1) {
+          const props = fiber.memoizedProps;
+          if (props && props.service && typeof props.service.open === 'function') { svc = props.service; break; }
+          fiber = fiber.return;
+        }
+        if (svc) break;
+      }
+      if (svc) {
+        const snap = svc.getSnapshot();
+        const tabs = (snap && snap.tabs) || {};
+        const entries = Object.values(tabs);
+        diag = 'tabs:' + entries.length;
+        // 画布 id 的真实位置（实测）：tab.instanceKey 或 tab.payload.instanceId，
+        // 形如 infinite-canvas:cws_xxx。tab 上并没有 instanceId 这个字段。
+        const activeScopeId = String((snap && snap.activeScopeId) || '');
+        const canvasTabs = entries.filter((t) => t && String(t.pluginId) === 'canvas');
+        const infiniteAll = canvasTabs.filter((t) => {
+          const ik = String((t && t.instanceKey) || '');
+          const pi = String((t && t.payload && t.payload.instanceId) || '');
+          const pid = String((t && t.payload && t.payload.pluginIdentifier) || '');
+          return /infinite-canvas:/.test(ik) || /infinite-canvas:/.test(pi)
+            || pid === 'infinite-canvas' || /cws_[\w-]{6,32}/.test(ik) || /cws_[\w-]{6,32}/.test(pi);
+        });
+        // 画布按会话隔离：右面板的 tabs 会跨会话保留（inactive），只按 pluginId 取
+        // 会拿到别的会话预留的画布 id，提交时把面板切走、DOM 直接打崩。
+        // 优先取当前活跃会话那个 tab，其次取仍处于 active 的，最后才退回全部。
+        const sameScope = infiniteAll.filter((t) => activeScopeId && String(t.scopeId) === activeScopeId);
+        const stillActive = infiniteAll.filter((t) => String(t.phase) === 'active');
+        const infiniteTabs = sameScope.length ? sameScope : (stillActive.length ? stillActive : infiniteAll);
+        for (const t of infiniteTabs) {
+          const ik = String((t && t.instanceKey) || '');
+          const pi = String((t && t.payload && t.payload.instanceId) || '');
+          const m1 = /infinite-canvas:([\w-]{4,40})/.exec(ik) || /infinite-canvas:([\w-]{4,40})/.exec(pi);
+          if (m1) { canvasId = m1[1]; break; }
+          const m2 = /(cws_[\w-]{6,32})/.exec(ik) || /(cws_[\w-]{6,32})/.exec(pi);
+          if (m2) { canvasId = m2[1]; break; }
+          const pc = t && t.payload && t.payload.canvasPayload && t.payload.canvasPayload.infiniteCanvas;
+          if (pc && pc.canvasId) { canvasId = String(pc.canvasId); break; }
+        }
+        // 标题与会话 id 都只从选中的那个画布 tab 取，不要被内嵌网页 tab 抢走。
+        // tab 不属于当前会话时单独标出来，调用方据此拒绝提交，而不是硬写把面板切崩。
+        if (infiniteTabs.length) {
+          const picked = infiniteTabs[0];
+          title = String(picked.title || '');
+          canvasScopeId = String(picked.scopeId || '');
+          // conversationId 保持「当前页面所属会话」语义，画布归属单独用 scopeId 表达，
+          // 两者不一致时由 scopeMismatch 标出来，不要互相污染。
+          if (!conversationId) conversationId = String((picked.payload && picked.payload.conversationId) || canvasScopeId || '');
+        }
+        scopeMismatch = Boolean(canvasScopeId && activeScopeId && canvasScopeId !== activeScopeId);
+        diag += '/canvas:' + canvasTabs.length + '/inf:' + infiniteTabs.length
+          + '/scope:' + (activeScopeId || '-') + (scopeMismatch ? '/scope-mismatch' : '');
+      } else {
+        diag = 'no-svc';
+      }
+    } catch (error) { diag = 'fiber-failed'; }
+    // 2) DOM 兜底：面板里任何属性值带的 cws_ 开头的画布 id。
+    if (!canvasId) {
+      try {
+        const panel = document.querySelector('[data-testid="right-panel-container"]') || document.body;
+        const all = panel.querySelectorAll('*');
+        const limit = Math.min(all.length, 4000);
+        for (let i = 0; i < limit && !canvasId; i += 1) {
+          const el = all[i];
+          for (let a = 0; a < el.attributes.length; a += 1) {
+            const m = /(cws_[0-9a-zA-Z]{6,32})/.exec(el.attributes[a].value || '');
+            if (m) { canvasId = m[1]; break; }
+          }
+        }
+        diag += canvasId ? '+dom-hit' : '+dom-miss';
+      } catch (error) { diag += '+dom-failed'; }
+    }
+    return JSON.stringify({ href, conversationId, canvasId, title, diag, scopeId: canvasScopeId, scopeMismatch });
+  })()`), port);
+  if (typeof raw !== 'string') throw new Error('画布目标没有返回 JSON 字符串');
+  const data = JSON.parse(raw);
+  return {
+    ok: Boolean(data.conversationId),
+    conversationId: String(data.conversationId || ''),
+    canvasId: String(data.canvasId || ''),
+    title: String(data.title || ''),
+    href: String(data.href || ''),
+    diag: String(data.diag || ''),
+    scopeId: String(data.scopeId || ''),
+    scopeMismatch: Boolean(data.scopeMismatch),
+  };
+}
+
+/**
+ * 跨机器排错用：把「豆包开了几个页面、每个页面的右面板/画布情况」摊开。
+ * 只读，不点任何东西。别人机器上画布明明开着却报「没打开」时，
+ * 一眼就能看出是选错了页面，还是页面里确实没有 React Flow。
+ */
+async function diagnoseCanvas(port = DEFAULT_PORT) {
+  // 豆包页面可能在忙（渲染中/断点），CDP 与 /json/list 都没有内建超时，
+  // 这里统一加硬上限，否则整个诊断接口会被一个卡住的页面拖到超时。
+  const withTimeout = (promise, ms, label) => {
+    promise.catch(() => {});
+    let timer = null;
+    const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(label)), ms); });
+    return Promise.race([promise, timeout]).finally(() => { if (timer) clearTimeout(timer); });
+  };
+  let targets = [];
+  try { targets = await withTimeout(listTargets(port), 4000, 'list-targets-timeout'); } catch (error) {
+    return { ok: false, error: 'list-targets: ' + String(error.message || error), targets: [] };
+  }
+  const pages = targets.filter((t) => t && t.type === 'page' && t.webSocketDebuggerUrl);
+  const PROBE_EXPR = `(() => {
+    const panel = document.querySelector('[data-testid="right-panel-container"]');
+    const flows = Array.from(document.querySelectorAll('[data-testid="rf__wrapper"], .react-flow')).map((el) => {
+      const r = el.getBoundingClientRect();
+      return { w: Math.round(r.width), h: Math.round(r.height) };
+    });
+    return JSON.stringify({
+      href: location.href,
+      ready: document.readyState,
+      panelWidth: panel ? Math.round(panel.getBoundingClientRect().width) : 0,
+      flows,
+      nodes: document.querySelectorAll('.react-flow__node.react-flow__node-canvas-node').length,
+    });
+  })()`;
+  const rows = await Promise.all(pages.map(async (target) => {
+    const row = { url: String(target.url || ''), title: String(target.title || '') };
+    let connection = null;
+    try {
+      connection = await withTimeout(connect(target.webSocketDebuggerUrl), 5000, 'connect-timeout');
+      const raw = await withTimeout(evaluate(connection, PROBE_EXPR), 4000, 'probe-timeout');
+      Object.assign(row, JSON.parse(raw || '{}'));
+    } catch (error) {
+      row.error = String(error.message || error);
+    } finally {
+      try { if (connection) connection.close(); } catch (closeError) { /* 已经断开 */ }
+    }
+    return row;
+  }));
+  return { ok: true, activeConversationId, pages: rows.length, targets: rows };
 }
 
 async function readBuiltinModel(port = DEFAULT_PORT, context = {}) {
@@ -551,12 +735,135 @@ async function expandBuiltinPanel(port = DEFAULT_PORT) {
 }
 
 /**
+ * 「帮我打开豆包，我自己点画布」这条通道的准备动作：
+ * 把豆包窗口提到前台、右侧工作台恢复停靠，剩下的「更多技能 → 打开画布」留给用户点。
+ * 只动窗口和布局，绝不尝试创建画布 tab。
+ */
+async function prepareCanvasEntry(options = {}, port = DEFAULT_PORT) {
+  const dryRun = Boolean(options.dryRun);
+  const panelExpr = `(() => {
+    const panel = document.querySelector('[data-testid="right-panel-container"]');
+    const width = panel ? Math.round(panel.getBoundingClientRect().width) : 0;
+    // 同一时刻可能有多个 React Flow 实例：未激活/已收起的画布 tab 会留下 rect 归零的
+    // 隐藏实例。querySelector 盲取第一个会稳定命中它，把「画布开着」误判成没开。
+    // 这里和 SNAPSHOT_EXPR 保持一致：收集全部候选，按可见面积取最大的那个。
+    const seen = new Set();
+    let best = null;
+    for (const scope of (panel ? [panel, document] : [document])) {
+      for (const el of scope.querySelectorAll('[data-testid="rf__wrapper"], .react-flow')) {
+        if (seen.has(el)) continue;
+        seen.add(el);
+        const r = el.getBoundingClientRect();
+        const area = Math.max(0, r.width) * Math.max(0, r.height);
+        if (area > 0 && (!best || area > best.area)) {
+          best = { area, w: Math.round(r.width), h: Math.round(r.height) };
+        }
+      }
+    }
+    return JSON.stringify({
+      panelWidth: width,
+      hasPanel: Boolean(panel),
+      hasCanvas: Boolean(best && best.w > 200 && best.h > 200),
+      flowW: best ? best.w : 0,
+      flowH: best ? best.h : 0,
+    });
+  })()`;
+  const first = await withCdp(async (connection) => {
+    if (!dryRun) await connection.send('Page.bringToFront').catch(() => {});
+    const raw = await evaluate(connection, `(() => {
+      const before = ${panelExpr};
+      const data = JSON.parse(before);
+      let docked = false;
+      if (!${dryRun} && data.panelWidth < 320) {
+        const dock = document.querySelector('button[aria-label="打开侧边工作台"]');
+        if (dock) { dock.click(); docked = true; }
+      }
+      return JSON.stringify({ ...data, docked });
+    })()`);
+    return raw;
+  }, port).catch((error) => JSON.stringify({ error: error.message }));
+
+  let data = {};
+  try { data = JSON.parse(first) || {}; } catch { data = {}; }
+  if (data.error) throw Object.assign(new Error(data.error), { code: 'cdp-unavailable' });
+
+  if (data.docked) await sleep(900);
+  // 收到图标条（约 220px）时用「全屏显示」把它撑回停靠。
+  if (!dryRun && data.panelWidth > 0 && data.panelWidth < 320) {
+    await expandBuiltinPanel(port).catch(() => null);
+    await sleep(600);
+  }
+  const after = JSON.parse(await withCdp(async (connection) => evaluate(connection, panelExpr), port).catch(() => '{}'));
+
+  const ready = Boolean(after.hasCanvas);
+  const width = after.panelWidth || data.panelWidth || 0;
+  return {
+    ok: true,
+    panelWidth: width,
+    hasCanvas: ready,
+    flowW: after.flowW || 0,
+    flowH: after.flowH || 0,
+    docked: Boolean(data.docked),
+    dryRun,
+    hint: dryRun
+      ? (ready ? '内置画布当前开着。' : `内置画布没开（右侧工作台宽 ${width}px）。点「准备画布入口」会把豆包切到前台并展开面板。`)
+      : ready
+        ? '内置画布已经开着，可以直接用。'
+        : '豆包已切到前台，右侧工作台也打开了。请在底部工具条点「…」→「更多技能」→「打开画布」，脚本会自动接管。',
+  };
+}
+
+/**
  * 读取；如果画布不在场，就先召唤再读。
  * 返回结构：{ opened: boolean, open: object|null, state, model }。
  */
 async function ensureBuiltinCanvas(options = {}, port = DEFAULT_PORT) {
   if (options.conversationId) setActiveConversation(options.conversationId);
+  // 画布按会话隔离：右面板会把别的会话的画布 tab 作为 inactive 保留下来。
+  // 目标 canvasId 不属于当前会话时，硬写会把面板切走、甚至把当前画布 DOM 打崩，
+  // 所以先读一次目标，发现跨会话就直接拦住，让用户切回去再点。
+  if (options.canvasId) {
+    try {
+      const target = await readCanvasTarget(port);
+      if (target && target.scopeMismatch) {
+        const mismatch = new Error('这张画布在另一个对话里（' + (target.title || target.canvasId) + '）：先切回那个对话，再点生成。');
+        mismatch.code = 'canvas-scope-mismatch';
+        throw mismatch;
+      }
+    } catch (error) {
+      if (error.code === 'canvas-scope-mismatch') throw error;
+      /* 读不到目标不影响后续：继续按原路径读画布状态 */
+    }
+  }
   let state = null;
+  // 没有 canvasId 就没法「自动打开哪张画布」，只能读已经开着的画布。
+  // 别人的机器上画布 id 可能读不出来（页面结构差异），此时不该把生成拦死：
+  // 画布开着就照常往里写，没开才提示用户手动点一次。
+  if (!options.canvasId) {
+    state = await readBuiltinState(port).catch((error) => {
+      if (error.code === 'no-flow' || error.code === 'canvas-hidden') return null;
+      throw error;
+    });
+    if (!state) {
+      const surprise = new Error('豆包里还没打开画布：先手动打开一次画布（底部「…」→「更多技能」→「打开画布」），再点生成。');
+      surprise.code = 'canvas-not-open';
+      throw surprise;
+    }
+    return { opened: false, open: null, state, model: await readBuiltinModel(port, options.context || {}) };
+  }
+  // 「纯 CDP · 不开画布」：只读不召。画布不在就明确报错，绝不替用户去点「打开画布」。
+  if (options.autoOpen === false) {
+    state = await readBuiltinState(port).catch((error) => {
+      if (error.code === 'no-flow' || error.code === 'canvas-hidden') return null;
+      throw error;
+    });
+    if (!state) {
+      const notOpen = new Error('豆包里还没打开画布：先在底部「…」→「更多技能」→「打开画布」手动开一次，再点生成。');
+      notOpen.code = 'canvas-not-open';
+      throw notOpen;
+    }
+    return { opened: false, open: null, state, model: await readBuiltinModel(port, options.context || {}) };
+  }
   let expanded = false;
   // 客户端可能在别的会话页前台；先按会话 id 把 CDP 目标页导航到正确会话，
   // 否则会对着另一个会话的画布建节点、填提示词，结果全跑到看不见的地方。
@@ -1154,6 +1461,8 @@ const BUILTIN_VIDEO_MODELS = {
 };
 
 const BUILTIN_IMAGE_MODELS = {
+  seedream_5_5: 'Seedream 5.5',
+  'seedream_5.5': 'Seedream 5.5',
   seedream_5_0_flash: 'Seedream 5.0 Flash',
   'seedream_5.0_flash': 'Seedream 5.0 Flash',
   seedream_5_0_pro: 'Seedream 5.0 Pro',
@@ -1162,6 +1471,7 @@ const BUILTIN_IMAGE_MODELS = {
   'seedream_4.5': 'Seedream 4.5',
   seedream_4_0: 'Seedream 4.0',
   'seedream_4.0': 'Seedream 4.0',
+  '5.5': 'Seedream 5.5',
   '5.0 flash': 'Seedream 5.0 Flash',
   '5.0 pro': 'Seedream 5.0 Pro',
   '4.5': 'Seedream 4.5',
@@ -1447,14 +1757,26 @@ async function readBuiltinGeneration(itemId, port = DEFAULT_PORT) {
 }
 
 /** 轮询内置画布节点；不下载、不落库，只等待状态。 */
-async function waitBuiltinGeneration(itemId, { port = DEFAULT_PORT, timeoutMs = 480000, intervalMs = 5000 } = {}) {
+async function waitBuiltinGeneration(itemId, { port = DEFAULT_PORT, timeoutMs = 480000, intervalMs = 5000, baseline = null } = {}) {
   const deadline = Date.now() + Math.max(10000, Number(timeoutMs) || 480000);
+  const seen = baseline instanceof Set ? baseline : new Set(baseline || []);
   let last = null;
+  let errorStreak = 0;
   while (Date.now() < deadline) {
     last = await readBuiltinGeneration(itemId, port);
     const status = String(last.node.generationState || '').toLowerCase();
-    if (/done|success|completed|finished|error|failed/.test(status)) return last;
-    if ((last.node.media || []).some((item) => item && item.src)) return last;
+    // 只认“本次新出现”的媒体：多个画布 tab 渲染同一张画布时，DOM 里存在多份同 id 节点，
+    // 旧节点的既有 media 不能被当成本次结果，否则会在真正生成完成前就判结束。
+    const fresh = (last.node.media || []).filter((entry) => entry && entry.src && !seen.has(entry.src));
+    if (fresh.length) return last;
+    if (/done|success|completed|finished/.test(status) && fresh.length) return last;
+    // 生成中的节点可能瞬时读到 error 或空状态（读到了另一份滞后节点），连续多次才算真失败。
+    if (/error|failed/.test(status) && !fresh.length) {
+      errorStreak += 1;
+      if (errorStreak >= 3) return last;
+    } else {
+      errorStreak = 0;
+    }
     await new Promise((resolve) => setTimeout(resolve, Math.max(1000, Number(intervalMs) || 5000)));
   }
   return last || await readBuiltinGeneration(itemId, port);
@@ -1508,8 +1830,11 @@ module.exports = {
   openBuiltinCanvas,
   ensureBuiltinCanvas,
   expandBuiltinPanel,
+  prepareCanvasEntry,
   readBuiltinState,
   readBuiltinContext,
+  readCanvasTarget,
+  diagnoseCanvas,
   readBuiltinModel,
   selectBuiltinNode,
   moveBuiltinNode,

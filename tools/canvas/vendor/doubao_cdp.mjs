@@ -982,8 +982,12 @@ async function ensureBrowserWindow(b, opts = {}) {
     const w = await windowedPages(b);
     if (w.length) {
       const mine = w.find((x) => x.targetId === newId);
-      return { ok: true, created: true, windowId: (mine || w[0]).windowId,
-               targetId: (mine || w[0]).targetId, openedTargetId: newId, openedUrl: want };
+      const win = mine || w[0];
+      // 2026-11-09：窗口一出现就挪到屏外，别等 16 秒轮询完才收——
+      // 那段时间用户在任务栏能看到新窗闪一下。
+      await parkWindowOffscreen(b, win.windowId);
+      return { ok: true, created: true, windowId: win.windowId,
+               targetId: win.targetId, openedTargetId: newId, openedUrl: want };
     }
   }
   return { ok: false, why: '开出来的豆包窗口没出现（newWindow:true 返回了 ' + newId + '，但读不到窗口）' };
@@ -1329,11 +1333,11 @@ async function launchApp() {
   return { ok: false, why: '起了但调试端口没通（客户端可能屏蔽了该开关）' };
 }
 
-/** 把"我们刚拉起"的客户端窗口移出视野并最小化（绝不动用户已在看的窗口）：
- *  命令行已给离屏坐标，这里再用 CDP 强制最小化兜底。配合抗节流开关，后台仍正常工作。
- *  2026-10-10（m11686 2.2）：改为**所有 page 窗口**逐个收起（首轮只有主窗，重启后
- *  可能带着历史标签页一起回来），并把窗口移回屏外原点——有的客户端会忽略 minimized
- *  但尊重 bounds。 */
+/** 把"我们刚拉起"的客户端窗口移出视野并**保持 normal**（绝不动用户已在看的窗口）：
+ *  命令行已给离屏坐标，这里再用 CDP 强制移到 -32000 屏外兜底。
+ *  2026-11-09 修：以前这里把窗口设成 `minimized`——`doubao_tray.py` 与 `createIsolatedChat`
+ *  都实测过「最小化会冻结豆包 7 分 22 秒、Runtime.evaluate 不返回」，而且最小化/还原
+ *  本身会抢焦点、在任务栏闪。现在只移出视野，不改变窗口状态。 */
 async function hideLaunchedWindow() {
   const ver = await getJson('/json/version');
   if (!ver || !ver.webSocketDebuggerUrl) return;
@@ -1348,7 +1352,7 @@ async function hideLaunchedWindow() {
       const w = await b.send('Browser.getWindowForTarget', { targetId: tid }).catch(() => null);
       if (w && w.windowId !== undefined) {
         await b.send('Browser.setWindowBounds', { windowId: w.windowId,
-          bounds: { windowState: 'minimized', left: -32000, top: -32000 } }).catch(() => {});
+          bounds: { windowState: 'normal', left: -32000, top: -32000, width: 1000, height: 700 } }).catch(() => {});
       }
     }
   } finally { b.close(); }
@@ -1935,6 +1939,7 @@ async function actMedia() {
     'seedance_2.5': 'Seedance 2.5',
     'seedance_2.0': 'Seedance 2.0',
     'seedance_2.0_fast': 'Seedance 2.0 Fast',
+    'seedream_5.5': 'Seedream 5.5',
     'seedream_5.0_flash': 'Seedream 5.0 Flash',
     'seedream_5.0_pro': 'Seedream 5.0 Pro',
     'seedream_4.5': 'Seedream 4.5',
@@ -2045,7 +2050,16 @@ async function actMedia() {
       step('已接管生成会话' + (located.sid ? '：' + located.sid : ''));
     }
     // 后台标签页不会渲染消息列表（图片也就读不到）：发完把它带到前台再轮询。
-    try { await cdp.send('Page.bringToFront', {}); step('已切到生成会话，开始盯结果…'); } catch (e) { /* ignore */ }
+    // 2026-11-09：只有用户明确要走 --visible（跳转豆包界面手动确认）才允许置前；
+    // 工作台/画布的后台生成一律不碰 OS 焦点。后台页靠 setFocusEmulation +
+    // setWebLifecycleState('active') 保持渲染（prepare 阶段已设）。
+    if (VVISIBLE) {
+      try { await cdp.send('Page.bringToFront', {}); step('已切到生成会话，开始盯结果…'); } catch (e) { /* ignore */ }
+    } else {
+      await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
+      await cdp.send('Page.setWebLifecycleState', { state: 'active' }).catch(() => {});
+      step('已接管生成会话（静默），开始盯结果…');
+    }
     // 豆包有时先弹“是否按以上参数开始生成视频？”——自动点「按此要求」。
     const confirmOnce = async () => {
       try {
