@@ -1,0 +1,75 @@
+{
+  "name": "doubao-canvas",
+  "version": "0.3.3",
+  "private": true,
+  "description": "HeronBo · 豆包画布：本地绿色无限画布，只连本机 doubao2api / 豆包工作版",
+  "author": "HeronBo",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "electron": "electron .",
+    "electron:dev": "electron .",
+    "selftest": "node test/selftest.js",
+    "dist:win": "electron-builder --win",
+    "dist:dir": "electron-builder --win --dir"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "electron": "44.6.0",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "com.heronbo.doubaocanvas",
+    "productName": "HeronBo 豆包画布",
+    "copyright": "Copyright © 2026 HeronBo",
+    "asar": false,
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**/*",
+      "lib/**/*",
+      "public/**/*",
+      "vendor/**/*",
+      "prompts/**/*",
+      "server.js",
+      "package.json",
+      "README.md"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "HeronBo 豆包画布",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "artifactName": "HeronBo-DoubaoCanvas-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "HeronBo-DoubaoCanvas-Portable-${version}.${ext}"
+    }
+  }
+}

@@ -1,0 +1,20 @@
+<html style="margin:0;padding:0;">
+<title>正在打开本地画布 · 内置画布套壳</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta http-equiv="refresh" content="0;url=./?bridge=stage" />
+<script>
+  window.__CANVAS_TOKEN__ = '__TOKEN_VALUE__';
+  try {
+    var base = (location.pathname === '/canvas' ||
+      location.pathname.indexOf('/canvas/') === 0) ? '/canvas' : '';
+    location.replace(base + '/?bridge=stage');
+  } catch (e) { /* ignore */ }
+</script>
+<style>
+  html, body { margin: 0; height: 100%; background: #071116; }
+  body { display: grid; place-items: center; color: #e9f2f5; font: 14px/1.7 "Microsoft YaHei UI", system-ui, sans-serif; }
+  .box { padding: 24px 28px; border: 1px solid #20343c; background: #0b1519; border-radius: 14px; }
+  b { color: #46d6c4; }
+  span { display: block; margin-top: 5px; color: #8fa6b0; font-size: 12px; }
+</style>
+<div class="box"><b>正在打开本地画布</b><span>已自动切换到带「内置画布」全屏套壳的本地页面。</span></div>

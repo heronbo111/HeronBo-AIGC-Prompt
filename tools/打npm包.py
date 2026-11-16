@@ -21,21 +21,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+from skill_manifest import selected_files
+
 ROOT = Path(__file__).resolve().parent.parent
 NPM = ROOT / "npm"
 SKILL = NPM / "skill"
-
-# 只装「公开技能本体」。清单直接取 git（tracked + 未忽略的未跟踪），
-# 这样私有仓库才有的东西（tools/workbench 界面、workbench_server.py 等，
-# 在 .gitignore 里）永远不会被 npm 包顺带发出去——那是 2026-09-19 的裁定。
-SKIP_PREFIX = (
-    "npm/",            # 打包产物自己
-    ".git/", ".github/", ".claude/",
-    "tools/dist/", "tools/_stage/", "tools/build/", "tools/_release/",
-    "tools/_vendor/",  # 大件（模型/node/ffmpeg），npm 包不带
-)
-SKIP_SUFFIX = (".tgz", ".zip", ".exe", ".pyc", ".log")
-SKIP_FILES = {"references/paths.local.md", "即梦技能-导入版.txt", "tools/打npm包.py"}
 
 
 def read_version() -> str:
@@ -46,33 +36,12 @@ def read_version() -> str:
     return m.group(1)
 
 
-def git_files() -> list[Path]:
-    """公开技能本体的文件清单（遵守 .gitignore）。"""
-    r = subprocess.run(
-        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
-        cwd=str(ROOT), capture_output=True,
-    )
-    if r.returncode != 0:
-        raise SystemExit("git ls-files 失败：%s" % (r.stderr.decode("utf-8", "replace")[:400]))
-    out = []
-    for raw in r.stdout.split(b"\0"):
-        if not raw:
-            continue
-        rel = raw.decode("utf-8", "replace").replace("\\", "/")
-        if rel.startswith(SKIP_PREFIX) or rel.endswith(SKIP_SUFFIX) or rel in SKIP_FILES:
-            continue
-        p = ROOT / rel
-        if p.is_file():
-            out.append(Path(rel))
-    return out
-
-
 def build() -> str:
     ver = read_version()
     if SKILL.exists():
         shutil.rmtree(SKILL)
     SKILL.mkdir(parents=True)
-    files = git_files()
+    files = selected_files()
     for rel in files:
         d = SKILL / rel
         d.parent.mkdir(parents=True, exist_ok=True)

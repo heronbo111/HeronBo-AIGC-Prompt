@@ -1,0 +1,53 @@
+/**
+ * 生成点数预估。
+ *
+ * 豆包客户端不回传实际扣费，这里只能"按档位估算"。数值放在
+ * data/config.json 的 pricing 字段里，可随时按真实账单校准。
+ */
+const DEFAULT_PRICING = {
+  note: '预估：客户端不回传实际扣费，按档位/秒数折算；以豆包账单为准。',
+  image: {
+    perSheet: { '1K': 1, '2K': 2, '4K': 4 },
+    modelFactor: { 'seedream_5.0_flash': 1, 'seedream_5.0_pro': 2, 'seedream_4.5': 1.5, 'seedream_4.0': 1 },
+  },
+  video: {
+    perSecond: {
+      'seedance_2.5': { '480P': 6, '720P': 10, '1080P': 16 },
+      'seedance_2.0': { '720P': 5, '1080P': 9 },
+      'seedance_2.0_fast': { '720P': 3 },
+      'seedance_2.0_mini': { '720P': 2 },
+    },
+  },
+};
+
+function pickRate(table, model, quality) {
+  const row = table && table[model];
+  if (!row) return 0;
+  if (typeof row === 'number') return row;
+  return Number(row[quality]) || Number(row[Object.keys(row)[0]]) || 0;
+}
+
+/** 返回 { points, unit, rate, detail }；points 为 0 表示没配到价格。 */
+function estimatePoints({ kind, model, quality, duration, count } = {}, pricing = DEFAULT_PRICING) {
+  if (kind === 'video') {
+    const rate = pickRate(pricing.video && pricing.video.perSecond, model, quality);
+    const seconds = Math.max(1, Number(duration) || 5);
+    return {
+      points: Math.round(rate * seconds * 10) / 10,
+      unit: '点',
+      rate,
+      detail: rate ? `${rate} 点/秒 × ${seconds} 秒` : '这个档位还没配价格',
+    };
+  }
+  const base = (pricing.image && pricing.image.perSheet && pricing.image.perSheet[quality]) || 0;
+  const factor = (pricing.image && pricing.image.modelFactor && pricing.image.modelFactor[model]) || 1;
+  const sheets = Math.max(1, Number(count) || 1);
+  return {
+    points: Math.round(base * factor * sheets * 10) / 10,
+    unit: '点',
+    rate: base * factor,
+    detail: base ? `${base} 点/张 × ${factor}（模型系数）× ${sheets} 张` : '这个清晰度还没配价格',
+  };
+}
+
+module.exports = { DEFAULT_PRICING, estimatePoints };

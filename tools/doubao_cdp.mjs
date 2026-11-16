@@ -82,6 +82,17 @@ const PORT_ENV = opt('port', process.env.HERONBO_DOUBAO_PORT || '');
 let PORT = Number(PORT_ENV || 9333);            // 可能在 ensureAttached 里被改成别的空闲口
 const PORT_RANGE = 12;                           // 往后再试这么多个口（别的机器上 9333 可能被占）
 const STATE_FILE = process.env.HERONBO_CDP_STATE || path.join(os.tmpdir(), 'heronbo_canvas_cdp.json');
+// 2026-11-15 加：node 起的子进程 PATH 不一定带 System32（HOME 实测 powershell 直接报
+// "not recognized as an internal or external command"）。拿不到 powershell，就会让
+// 「抓运行实例 / 抓数据目录 / 重启守场员」三条路全部静默失败——一律改用绝对路径。
+const PS_EXE = (() => {
+  const cands = [
+    path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+    'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+  ];
+  for (const p of cands) { try { if (fs.existsSync(p)) return '"' + p + '"'; } catch { /* ignore */ } }
+  return 'powershell';
+})();
 const IDLE = Number(opt('idle', 8));
 const TIMEOUT = Number(opt('timeout', 600));
 const NO_LAUNCH = has('no-launch');
@@ -197,7 +208,7 @@ function findExeViaRegistry() {
 function findExeViaProcess() {
   try {
     const out = execSync(
-      'powershell -NoProfile -Command "(Get-Process DoubaoWork -ErrorAction SilentlyContinue | Select-Object -First 1).Path"',
+      PS_EXE + ' -NoProfile -Command "(Get-Process DoubaoWork -ErrorAction SilentlyContinue | Select-Object -First 1).Path"',
       { encoding: 'utf8', timeout: 20000, stdio: ['ignore', 'pipe', 'ignore'] });
     const p = String(out).trim();
     return (p && /\.exe$/i.test(p)) ? p : null;
@@ -211,7 +222,7 @@ function findExeViaDiskScan() {
   let drives = [];
   try {
     const out = execSync(
-      'powershell -NoProfile -Command "Get-PSDrive -PSProvider FileSystem | ForEach-Object { $_.Root }"',
+      PS_EXE + ' -NoProfile -Command "Get-PSDrive -PSProvider FileSystem | ForEach-Object { $_.Root }"',
       { encoding: 'utf8', timeout: 20000, stdio: ['ignore', 'pipe', 'ignore'] });
     for (const line of String(out).split(/\r?\n/)) {
       const d = line.trim();
@@ -233,6 +244,21 @@ function findExeViaDiskScan() {
     }
   }
   return null;
+}
+
+// 2026-11-15 加：**拉起时沿用运行实例的数据目录**。豆包的数据目录决定登录态、历史会话和
+// 项目目录；不带 --user-data-dir 会起出另一个默认目录（%LOCALAPPDATA%\DoubaoWork\User Data），
+// 用户看到的就是「豆包变未登录、历史全没了」。HOME 的实例用的是
+// D:\doubaowork-bundle\data\user-data，跟默认目录不是一个，必须原样抄过来。
+function findUserDataDir() {
+  try {
+    const out = execSync(
+      PS_EXE + " -NoProfile -Command \"Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'DoubaoWork.exe' -and $_.CommandLine -match '--user-data-dir' } | Select-Object -First 1 -ExpandProperty CommandLine\"",
+      { encoding: 'utf8', timeout: 20000, stdio: ['ignore', 'pipe', 'ignore'] });
+    const m = String(out).match(/--user-data-dir=(?:"([^"]+)"|(\S+))/);
+    const p = (m && (m[1] || m[2]) || '').trim();
+    return p || null;
+  } catch { return null; }
 }
 
 let EXE_FROM = '';
@@ -342,10 +368,21 @@ class Cdp {
           const { res, rej } = this.waiting.get(m.id);
           this.waiting.delete(m.id);
           m.error ? rej(new Error(JSON.stringify(m.error))) : res(m.result);
+          return;
+        }
+        // 2026-11-11：事件回调（Network.responseReceived 等）——以前只认 id，事件全丢
+        if (m.method && this.listeners && this.listeners.has(m.method)) {
+          for (const fn of this.listeners.get(m.method)) { try { fn(m.params); } catch {} }
         }
       };
     });
   }
+  on(method, fn) {
+    if (!this.listeners) this.listeners = new Map();
+    if (!this.listeners.has(method)) this.listeners.set(method, []);
+    this.listeners.get(method).push(fn);
+  }
+
   send(method, params = {}, timeoutMs = 15000) {
     const id = ++this.id;
     return new Promise((resolve, reject) => {
@@ -717,26 +754,32 @@ async function createIsolatedChat(opts = {}) {
     await cdp.send('Page.bringToFront').catch(() => {});
   }
   if (asWindow && silent) {
-    // 静默：不置前、移到屏外（normal + 正常尺寸）。⚠️ 不能最小化——最小化窗口会被 Electron/Windows
-    // 冻结（occluded/background），豆包不处理、Runtime.evaluate 也不返回（2026-09-29 实测，7分22秒）。
-    // 离屏 normal 窗口用户看不见、但保持 active 正常渲染；配合 setFocusEmulation / setWebLifecycleState。
+    // 静默：不置前。**不再挪到屏外**（2026-11-15 改）：离屏窗口 Windows 判不可见 → 页面被冻结
+    // （HOME 实测输入框 45 秒渲染不出来、消息发不出去），用户从任务栏也点不回来。
+    // 这里只把窗口恢复成 normal，位置交给系统；不最小化（最小化会被冻结，2026-09-29 实测 7 分 22 秒）。
     for (let i = 0; i < 8; i++) {
       try {
         const w = await cdp.send('Browser.getWindowForTarget', { targetId: newId });
+        // 2026-11-16：用户自己最小化的窗口不恢复（normal 会直接取消最小化、抢回前台）
+        if (w && w.bounds && w.bounds.windowState === 'minimized') break;
         await cdp.send('Browser.setWindowBounds',
-          { windowId: w.windowId, bounds: { windowState: 'normal', left: -3200, top: -3200, width: 1000, height: 720 } });
+          { windowId: w.windowId, bounds: { windowState: 'normal' } });
         break;
       } catch { await sleep(250); }
     }
   }
   // 等输入框**真正渲染**：FOCUS_COMPOSER 非空。不能用 IS_FRESH——无编辑器时它会误报 fresh。
+  // ⚠️ 2026-11-14 HOME 真机：开了 18 个豆包进程的机器上，新建的后台标签要 20 秒以上才把
+  // tiptap 渲染出来（原来只等 12 秒，直接判「豆包没有可用的窗口」，看着像程序坏了）。
+  // 改成最多等 45 秒，中途（第 10/20/30 次）各 bringToFront 一次帮它从 occluded 里醒过来。
   let ready = false;
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < 90; i++) {
     const c = await cdp.evalJs(FOCUS_COMPOSER).catch(() => null);
     if (c) { ready = true; break; }
-    await sleep(400);
+    if (i === 10 || i === 20 || i === 30) await cdp.send('Page.bringToFront').catch(() => {});
+    await sleep(500);
   }
-  if (!ready) throw new Error('后台会话输入框没渲染出来');
+  if (!ready) throw new Error('后台会话输入框没渲染出来（已等 45 秒，这台机器上豆包开页太慢）');
   // 再充分等待，让网络/IPC/鉴权等初始化全部完成（否则点击发送会被吞、按钮卡 disabled）。
   await sleep(2500);
   cdp.targetId = newId;
@@ -992,13 +1035,16 @@ async function ensureBrowserWindow(b, opts = {}) {
   }
   return { ok: false, why: '开出来的豆包窗口没出现（newWindow:true 返回了 ' + newId + '，但读不到窗口）' };
 }
-/** 把窗口挪到屏外 normal（不最小化——最小化会被 Electron/Windows 冻结，见 createIsolatedChat 注释）。 */
+/** 只把窗口恢复成 normal，**绝不挪到屏外**（2026-11-15 改）。
+ *  历史：以前这里挪到 -3200/-32000 想"不打扰用户"，代价是窗口整窗不可见 → Windows 判遮挡、
+ *  页面被冻结（HOME 实测发送被吞、新建标签渲染 45 秒都不出来），而且用户从任务栏/托盘
+ *  再也点不回豆包。现在窗口留在原处，靠 launchApp 的抗节流开关保持页面活跃。 */
 async function parkWindowOffscreen(b, windowId) {
   if (windowId === undefined) return;
   for (let i = 0; i < 8; i++) {
     try {
       await b.send('Browser.setWindowBounds',
-        { windowId, bounds: { windowState: 'normal', left: -3200, top: -3200, width: 1000, height: 720 } });
+        { windowId, bounds: { windowState: 'normal' } });
       return;
     } catch { await sleep(250); }
   }
@@ -1090,12 +1136,48 @@ async function dedupeSidTabs(c, sid) {
    ③ 都不在 → **按 sid 重开历史会话**（后台标签，不弹窗）——跨重启的连续性靠这一级
    ④ 回收同类旧会话（没记过 sid 时的兜底；找到顺手把 sid 也记下）
    ⑤ 实在没有才新建隐藏离屏窗（sid 要等第一句话发出去才有，由调用方回填 state） */
+/** 复用**Already 渲染好的空白会话页**（2026-11-14 HOME 真机加的兜底）。
+ *  现场：豆包里已经开着几个「新会话」空白页（输入框早就渲染好了），可自动化仍去
+ *  Target.createTarget 新建后台标签 —— 慢机器上要 20 秒以上才渲染，超时后就报
+ *  「豆包没有可用的窗口，新建会话失败」，用户读起来像豆包被搞坏了。
+ *  先挑现成空白页（url 精确 `doubaowork://doubaowork-chat/chat`、无 sid）逐个试聚焦，
+ *  能聚焦就用；都不行才走新建。只聚焦，不发送，空白页当场就能用。 */
+async function reuseBlankChat() {
+  const list = await getJson('/json/list');
+  const blanks = (list || []).filter((x) => x.type === 'page' && x.webSocketDebuggerUrl
+    && /^doubaowork:\/\/doubaowork-chat\/chat(?:[?#]|$)/.test(x.url || ''));
+  for (const t of blanks.reverse()) {          // 列表顺序≈创建顺序，越靠后越"干净"
+    const c = await attachSessionByTarget(t.targetId || t.id).catch(() => null);
+    if (!c) continue;
+    const foc = await c.evalJs(FOCUS_COMPOSER).catch(() => null);
+    if (foc) { step('复用现成的空白会话页（不新建）'); return c; }
+    try { c.close(); } catch { /* 关不掉就放着 */ }
+  }
+  return null;
+}
+
 async function acquireSession(kind, opts = {}) {
   const prefix = opts.session || VSESSION || '';
   // 同一个画布固定同一段会话：Agent 和生图/生视频共用 sessionSid。
   const keyT = prefix ? prefix + ':sessionTarget' : (kind === 'video' ? 'videoTarget' : 'askTarget');
   const keyS = prefix ? prefix + ':sessionSid' : (kind === 'video' ? 'videoSid' : 'askSid');
   const st0 = stateRead();
+  let skipRecycle = false;
+  // 2026-11-15 修串台（用户实测：左侧看不到新会话、任务跑到用户自己正聊的那个对话里，一轮冤枉十几分钟）。
+  // 病根：第①级复用 state 里锁定的 askTarget/askSid，但这两个值来历从没校验过——历史上锁成了
+  // 用户的主对话（实测 askSid = 用户当前会话 id），于是工作台把 1388 字的识别任务直接塞进用户聊天窗口，
+  // 用户在那边问"是不是卡住了"，工作台的答复抓到的却是用户自己的回复，两边互相排队。
+  // 会话归属事后无法分辨，所以只认**工作台自己建的**：没打过 askOwned 标记的一律不认，重新开一段。
+  if (!prefix && kind === 'ask' && !st0.askOwned && (st0[keyT] || st0[keyS])) {
+    step('锁定的会话来历不明（可能是用户自己的对话），改开一段工作台专用的');
+    delete st0[keyT];
+    delete st0[keyS];
+    skipRecycle = true;          // 也别去"按标题回收"别人的对话，直接新建一段干净会话
+    const clean = stateRead();
+    clean.askTarget = '';
+    clean.askSid = '';
+    stateWrite(clean);
+  }
   if (st0[keyT]) {
     const c = await attachSessionByTarget(st0[keyT]).catch(() => null);
     if (c) { dedupeSidTabs(c, st0[keyS]); return c; }
@@ -1110,7 +1192,7 @@ async function acquireSession(kind, opts = {}) {
   }
   // 指定了画布会话（--session）时，首次必须新建一段干净会话；
   // 不能按标题回收别人的对话，否则两个画布会串台。
-  if (!prefix) {
+  if (!prefix && !skipRecycle) {
     const list = await getJson('/json/list');
     const RE_KW = kind === 'video'
       ? /视频参考|执行计划|口播|视频/
@@ -1132,6 +1214,14 @@ async function acquireSession(kind, opts = {}) {
         return c;
       }
     }
+  }
+  // ④b 现成空白页兜底：新建后台标签在慢机器上要等 20 秒以上，已有空白页则是现成的。
+  // ⚠️ 2026-11-14 HOME 实测：这台机器上的"空白页"是新任务欢迎页，在里面点发送会被吞
+  // （按钮闪一下 disabled 又恢复、消息一条没进对话、输入框文字还留着）。默认不走复用，
+  // 需要排障时设 HB_CDP_REUSE_BLANK=1 再打开。
+  if (!prefix && process.env.HB_CDP_REUSE_BLANK === '1') {
+    const blank = await reuseBlankChat().catch(() => null);
+    if (blank) { stateWrite(Object.assign(stateRead(), { [keyT]: blank.targetId })); return blank; }
   }
   // ⑤ 实在没有才新建。⚠️ 2026-10-08 用户裁定（"生视频和出提示词必须在同一台电脑"）：
   // 一律开**主窗里的后台标签页**（newWindow:false），不再开独立 OS 窗——独立窗会让
@@ -1164,6 +1254,25 @@ const VIDEO_STATE = `(() => {
   const text = (last.querySelector('[data-testid="message_text_content"]') || last).innerText.trim();
   if (v) return { has: true, src: v.currentSrc || v.src, ready: v.readyState, dur: v.duration };
   return { has: false, running, text: text.slice(-220) };
+})()`;
+// 2026-11-15（WORK 实测）：同一会话里上一次的成片会一直挂在页面上，
+// `last.querySelector('video')` 抓不到真结果、Network 最后一条也可能还是旧片——
+// 用户看到"成片已生成"，工作台却把 11/14 那条又拿了一遍（哈希完全一致）。
+// 这里改成整页扫 video（含弹层），配合"确认前先拍快照"，只认本轮新出现的。
+const ALL_VIDEOS = `(() => {
+  const deep = (root, out) => { try { for (const el of root.querySelectorAll('*')) { out.push(el); if (el.shadowRoot) deep(el.shadowRoot, out); } } catch (e) {} return out; };
+  const all = deep(document.body, []);
+  const uniq = arr => { const m = new Map(); for (const x of arr) if (x.src && !m.has(x.src)) m.set(x.src, x); return [...m.values()]; };
+  const isBackdrop = (v) => { try {
+    if (v.closest('[data-testid="receive_message"]')) return false;
+    if (v.closest('[class*="modal"],[class*="preview"],[class*="dialog"],[class*="player"]')) return false;
+    const r = v.getBoundingClientRect();
+    return r.width >= window.innerWidth * 0.9 && r.height >= window.innerHeight * 0.9;
+  } catch (e) { return false; } };
+  return uniq(all.filter(el => el.tagName === 'VIDEO').filter(v => !isBackdrop(v)).map(v => ({
+    src: v.currentSrc || v.src || '', dur: v.duration || 0,
+    w: v.videoWidth || 0, h: v.videoHeight || 0,
+  })).filter(x => x.src));
 })()`;
 const MEDIA_STATE = `(() => {
   const recvs = [...document.querySelectorAll('[data-testid="receive_message"]')];
@@ -1198,7 +1307,18 @@ const MEDIA_STATE_WIDE = `(() => {
     const r = img.getBoundingClientRect();
     return { src: img.currentSrc || img.src, w: img.naturalWidth || Math.round(r.width), h: img.naturalHeight || Math.round(r.height) };
   }).filter(x => x.src && /^(blob:|https?:|data:image)/.test(x.src) && !/^data:image\/svg/i.test(x.src) && !/avatar|emoji|icon|logo/i.test(x.src)));
-  const videos = uniq(all.filter(el => el.tagName === 'VIDEO').map(v => {
+  // 2026-11-13 修：整页深扫会把**桌面壁纸视频**当成生成结果（实测壁纸是一个直挂 body、
+  // 占满 100%×100% 视口的 video，指向 Steam 创意工坊里的 mp4）。这里排掉这种背景层，
+  // 但保留弹窗/预览层里的视频（壁纸没有这些祖先，真结果卡片才有）。
+  const isBackdrop = (v) => {
+    try {
+      if (v.closest('[data-testid="receive_message"]')) return false;
+      if (v.closest('[class*="modal"],[class*="preview"],[class*="dialog"],[class*="player"]')) return false;
+      const r = v.getBoundingClientRect();
+      return r.width >= window.innerWidth * 0.9 && r.height >= window.innerHeight * 0.9;
+    } catch (e) { return false; }
+  };
+  const videos = uniq(all.filter(el => el.tagName === 'VIDEO').filter(v => !isBackdrop(v)).map(v => {
     const source = v.querySelector('source');
     return {
       src: v.currentSrc || v.src || (source && source.src) || '',
@@ -1248,16 +1368,144 @@ const CONFIRM_UI = `(() => {
   }
   return '';
 })()`;
+// 2026-11-13 取回成片的两条新通道（实测：豆包经常**不在页面放 <video>**，
+// 只在最后一条回复里写"本机也存了一份：C:\...\chats\<创建日>\<会话>\xx.mp4"）
+const DELIVERED_TEXT = `(() => {
+  const recvs = [...document.querySelectorAll('[data-testid="receive_message"]')];
+  const last = recvs[recvs.length - 1];
+  return last ? String(last.innerText || '') : '';
+})()`;
+/** 从回复正文里抽出本机视频绝对路径（支持 \ 与 /） */
+function extractVideoPaths(text) {
+  const out = [];
+  const re = /[A-Za-z]:[\\/][^\r\n"'<>]+?\.(?:mp4|mov|webm)/gi;
+  let m;
+  while ((m = re.exec(String(text || '')))) out.push(m[0].replace(/[。；;，,、）)]+$/g, ''));
+  return [...new Set(out)];
+}
+/** 候选路径里挑"真实存在、够大、且是这轮之后落盘"的最新一个 */
+function newestFile(cands, minMtime = 0) {
+  let best = '', bestM = 0;
+  for (const p of cands || []) {
+    try {
+      const st = fs.statSync(p);
+      if (!st.isFile() || st.size <= 200000) continue;      // 几 KB 的占位不算
+      if (minMtime && st.mtimeMs < minMtime) continue;
+      if (st.mtimeMs > bestM) { best = p; bestM = st.mtimeMs; }
+    } catch {}
+  }
+  return best;
+}
+/** 通道①：直接读豆包回复里写的本机路径（最准，不会误抓别的会话的片子） */
+async function readDeliveredPathFromPage(c, minMtime = 0) {
+  try {
+    const txt = await c.evalJs(DELIVERED_TEXT);
+    return newestFile(extractVideoPaths(txt), minMtime);
+  } catch { return ''; }
+}
+/** 通道②：扫豆包工作区 chats 目录。
+ *  2026-11-13 修复：原实现只看"今天/昨天"两个日期目录（slice(0,2)），
+ *  但固定会话按**创建日**归档——复用老会话时新成片仍写进老目录，两天窗口永远扫不到，
+ *  最后只能报"超时未拿到成片"。现在遍历全部日期目录，仍用目录 mtime 先过滤，
+ *  只有这段时间真被写过文件的目录才会展开，代价不变。 */
+function scanChatsForVideo(chatsRoot, t0) {
+  let dayDirs = [];
+  try { dayDirs = fs.readdirSync(chatsRoot).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort().reverse(); }
+  catch { return ''; }
+  let best = '', bestM = 0;
+  for (const day of dayDirs) {
+    const dayDir = path.join(chatsRoot, day);
+    let chats = [];
+    try { chats = fs.readdirSync(dayDir); } catch { continue; }
+    for (const chat of chats) {
+      const chatDir = path.join(dayDir, chat);
+      let st = null;
+      try { st = fs.statSync(chatDir); } catch { continue; }
+      if (!st.isDirectory() || st.mtimeMs < t0 - 60000) continue;
+      let files = [];
+      try { files = fs.readdirSync(chatDir); } catch { continue; }
+      for (const f of files) {
+        if (!/\.mp4$/i.test(f)) continue;
+        const p = path.join(chatDir, f);
+        let fst = null;
+        try { fst = fs.statSync(p); } catch { continue; }
+        if (fst.mtimeMs >= t0 && fst.size > 200000 && fst.mtimeMs > bestM) { best = p; bestM = fst.mtimeMs; }
+      }
+    }
+  }
+  return best;
+}
+// 2026-11-13：第三种交付形态——回复里只有一张封面图（<img class="…cover…">），
+// **没有 <video>、没有本地文件路径**；点一下封面才弹出带 <video> 的预览弹层，
+// 视频是 CDN 直链（https://…doubao.com/…?mime_type=video_mp4），页面内 fetch 能拿到字节。
+const OPEN_RESULT_CARD = `(async () => {
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  const recvs = [...document.querySelectorAll('[data-testid="receive_message"]')];
+  const last = recvs[recvs.length - 1];
+  // 消息时间（用于判断"这条成片是不是本轮生成的"）：正文底部有"今天 18:21"这类时间戳
+  const msgTime = (() => {
+    const t = last ? String(last.innerText || '') : '';
+    let m = t.match(/(\\d{4}-\\d{2}-\\d{2})[^\\d]{0,4}(\\d{1,2}):(\\d{2})/);
+    if (m) return new Date(m[1] + 'T' + String(m[2]).padStart(2, '0') + ':' + m[3] + ':00').getTime();
+    m = t.match(/(今天|昨天)[^\\d]{0,4}(\\d{1,2}):(\\d{2})/);
+    if (m) {
+      const d = new Date(); d.setHours(0, 0, 0, 0);
+      if (m[1] === '昨天') d.setDate(d.getDate() - 1);
+      return d.getTime() + Number(m[2]) * 3600000 + Number(m[3]) * 60000;
+    }
+    return 0;
+  })();
+  const grab = () => [...document.querySelectorAll('video')].map(v => {
+    const src = String(v.currentSrc || v.src || '');
+    return { src, dur: Number.isFinite(v.duration) ? v.duration : null, w: v.videoWidth || 0, h: v.videoHeight || 0, time: msgTime };
+  }).filter(x => x.src && !x.src.includes('127.0.0.1:18900'));   // 排掉本地媒体服务的壁纸
+  const already = grab();
+  if (already.length) return { ok: true, why: 'already-open', videos: already };
+  if (!last) return { ok: false, why: 'no-message' };
+  let cover = last.querySelector('img[class*="cover"]');
+  if (!cover) {
+    cover = [...last.querySelectorAll('img')].find(i => {
+      const r = i.getBoundingClientRect();
+      return r.width >= 90 && r.width <= 360 && r.height >= 90;
+    });
+  }
+  if (!cover) return { ok: false, why: 'no-cover' };
+  try { cover.click(); } catch (e) {}
+  await sleep(1800);
+  const vids = grab();
+  return { ok: vids.length > 0, why: vids.length ? 'preview' : 'no-video', videos: vids };
+})()`;
+// 点开结果卡片，返回可下载的视频地址（优先 doubao CDN 直链）
+async function openCardAndFindVideo(c, wantDur, minTime) {
+  const r = await c.evalJs(OPEN_RESULT_CARD, 40000).catch(() => null);
+  if (!r || !Array.isArray(r.videos) || !r.videos.length) return '';
+  const cdn = r.videos.filter((v) => /doubao\.com/.test(v.src))[0] || r.videos[0];
+  if (wantDur && cdn.dur && Math.abs(cdn.dur - Number(wantDur)) > 6) {
+    // 时长差太多说明不是本轮成片（壁纸/旧预览），宁可不取
+    return '';
+  }
+  if (minTime && !(cdn.time > 0) ) {
+    return '';   // 要求"只要这段时间之后的"，但读不到消息时间 → 不敢当新的
+  }
+  if (minTime && cdn.time < minTime - 60000) return '';   // 更早的消息，不是本轮
+  return cdn.src;
+}
 // 页面内 fetch 视频 → 分块 base64 读回写盘（兼容 blob: 与 http）
 async function downloadMedia(cdp, srcUrl, outPath) {
   const meta = await cdp.evalJs(`(async () => {
     const r = await fetch(${JSON.stringify(srcUrl)});
     if (!r.ok) return { err: 'HTTP ' + r.status };
     const b = new Uint8Array(await r.arrayBuffer());
-    let s = ''; for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+    // 2026-11-13：大文件不再逐字节拼字符串（逐字节 concat 在几十 MB 时会卡到 90s 超时），
+    // 改成 32KB 一块地用 apply 转字符，再整体 btoa。
+    let s = '';
+    const STEP = 32768;
+    for (let off = 0; off < b.length; off += STEP) {
+      s += String.fromCharCode.apply(null, b.subarray(off, Math.min(off + STEP, b.length)));
+    }
     window.__dlv = btoa(s);
     return { bytes: b.length, b64: window.__dlv.length };
-  })()`, 90000);
+  })()`, 120000);
   if (!meta || meta.err) throw new Error('抓取视频失败：' + (meta && meta.err || '?'));
   const fd = fs.openSync(outPath, 'w');
   const CH = 120000;
@@ -1313,12 +1561,26 @@ async function launchApp() {
   PORT = await pickPort();
   step('正在启动生成平台（首次需要十几秒，之后复用）…');
   // 抗节流/挂起开关：让后台、遮挡、最小化的页面不被 Electron 降速或冻结（配合后台标签页方案）。
-  // --disable-notifications 去系统通知弹窗；--window-position 离屏让初始窗口不挡屏（CDP 再最小化兜底）。
+  // --disable-notifications 去系统通知弹窗。
+  // ⚠️ 2026-11-15 不再给 --window-position 离屏坐标：窗口一离屏，Windows 判定整窗不可见，
+  // 页面照样被冻结（HOME 实测：消息发不出去、sends 恒 0），用户从任务栏/托盘也点不回来。
+  // 现在就让窗口正常待在屏幕上，靠上面这几个 disable-* 开关保持页面活跃。
+  // 2026-11-16（用户报「最小化魔改版豆包，它自己又弹回来抢焦点」）：
+  // **去掉** `--disable-features=CalculateNativeWinOcclusion`。带上它 Chromium 不计算遮挡，
+  // 窗口被最小化/被盖住时仍判定自己"可见且活跃"，工作台那扇窗一渲染就把它唤回前台
+  // （实测：工作台窗口在 → 最小化 5/5 被拉起，0.4–2 秒；工作台不在 → 0/5）。
+  // 保留 `--disable-backgrounding-occluded-windows` 等其余开关：被遮挡也不降级、不节流，
+  // 防冻结能力不变，只是重新允许系统正确判定"这窗被挡住了"。
   const args = ['--remote-debugging-port=' + PORT, '--remote-allow-origins=*',
     '--disable-background-timer-throttling', '--disable-renderer-backgrounding',
-    '--disable-backgrounding-occluded-windows', '--disable-features=CalculateNativeWinOcclusion',
+    '--disable-backgrounding-occluded-windows',
     '--disable-hang-monitor', '--disable-notifications',
-    '--window-position=-32000,-32000', '--window-size=1000,700'];
+    '--window-size=1000,700'];
+  // 沿用正在跑那个实例的数据目录（登录态/历史都在里面），别起第二个目录。
+  // 豆包已经被关掉时抓不到运行实例，就用上次记下来的目录（state.udd）。
+  const st = stateRead();
+  const udd = findUserDataDir() || st.udd || null;
+  if (udd) { args.push('--user-data-dir=' + udd); try { stateWrite({ ...st, udd }); } catch {} }
   spawn(EXE, args, { detached: true, stdio: 'ignore' }).unref();
   for (let i = 0; i < 30; i++) {
     await sleep(1000);
@@ -1350,9 +1612,26 @@ async function hideLaunchedWindow() {
     for (const page of pages) {
       const tid = page.targetId || page.id;
       const w = await b.send('Browser.getWindowForTarget', { targetId: tid }).catch(() => null);
-      if (w && w.windowId !== undefined) {
+      // 2026-11-16：用户自己最小化的窗口**一律不动**。setWindowBounds(normal) 会直接取消
+      // 最小化，用户看到的就是「我把它最小化了，它又自己弹回来抢焦点」。
+      if (w && w.windowId !== undefined && !(w.bounds && w.bounds.windowState === 'minimized')) {
+        // 只保证 normal（不最小化、不挪屏外），窗口留在用户屏幕上，随时能点开。
         await b.send('Browser.setWindowBounds', { windowId: w.windowId,
-          bounds: { windowState: 'normal', left: -32000, top: -32000, width: 1000, height: 700 } }).catch(() => {});
+          bounds: { windowState: 'normal' } }).catch(() => {});
+        // 2026-11-15 加：窗口位置是客户端自己记住的——前几次实验把它挪到屏外之后，
+        // 之后每次启动都回到屏外（HOME 实测 rect=(-970,0)-(30,720)，只剩 30px 挂边）。
+        // 用户表现就是「托盘里点豆包没反应、以为被工作台屏蔽了」。明显在屏外就挪回来。
+        const cur = w.bounds || {};
+        const left = Number(cur.left), top = Number(cur.top);
+        const off = (Number.isFinite(left) && (left < -200 || left > 4000))
+                 || (Number.isFinite(top) && (top < -200 || top > 3000));
+        if (off) {
+          await b.send('Browser.setWindowBounds', { windowId: w.windowId,
+            bounds: { left: 120, top: 80,
+                      width: Math.min(Number(cur.width) || 1000, 1400),
+                      height: Math.min(Number(cur.height) || 700, 900) } }).catch(() => {});
+          step('窗口跑到屏幕外了（' + left + ',' + top + '），已挪回可见区域');
+        }
       }
     }
   } finally { b.close(); }
@@ -1722,8 +2001,11 @@ async function actAsk() {
           if (s.sends > st0.sends) { sent = true; break; }
           if (s.lastSend && String(s.lastSend) !== st0send) { sent = true; break; }
           if (Number(s.recvs || 0) > st0recv) { sent = true; break; }
-          if (s.running || s.busy) { sent = true; break; }
-          if (String(s.lastRecv || '').trim()) { sent = true; break; }
+          // 2026-11-15 修（用户实测：输入框里那段字明明还留着，工作台却报「答完了」）：
+          // 原判据里还有「lastRecv 非空 / running / busy」——**同一段对话里上一轮的旧答复、
+          // 以及残留的忙碌态，会让「已发送」在第一次轮询就假成立**，于是没发出去也照样
+          // 去读旧消息、报完成。这三条一律去掉，只认气泡新增 / 最后一条发送消息变了 /
+          // 回复条数增加；都没等到再走下面的输入框兜底。
         }
         await sleep(1000);
       }
@@ -1748,9 +2030,10 @@ async function actAsk() {
     }
     // 固定会话：拿到真实 sid 就记进 state——App 重启后靠它按 sid 重开同一段对话（ask 通道）
     if (sid && /^\d+$/.test(String(sid))) {
-      stateWrite(Object.assign(stateRead(), {
-        [(VSESSION ? VSESSION + ':sessionSid' : 'askSid')]: String(sid),
-      }));
+      const patch = { [(VSESSION ? VSESSION + ':sessionSid' : 'askSid')]: String(sid) };
+      // 2026-11-15：只有工作台自己发过话的会话才配拿到"可复用"标记（见 acquireSession 里那段）。
+      if (!VSESSION) patch.askOwned = 1;
+      stateWrite(Object.assign(stateRead(), patch));
     }
     // 认准会话落哪个 profile（多 profile 时 Default 常是旧壳）；仅在拿到数字 sid 时。
     if (sid && /^\d+$/.test(String(sid))) {
@@ -1890,7 +2173,8 @@ async function actShow() {
     for (const p of pages) {
       const tid = p.targetId || p.id;
       const w = await b.send('Browser.getWindowForTarget', { targetId: tid }).catch(() => null);
-      if (w && w.windowId !== undefined) {
+      // 2026-11-16：用户自己最小化的窗口不恢复、也不改尺寸位置（normal 会取消最小化）
+      if (w && w.windowId !== undefined && !(w.bounds && w.bounds.windowState === 'minimized')) {
         await b.send('Browser.setWindowBounds', {
           windowId: w.windowId,
           bounds: { windowState: 'normal', left: 80, top: 80, width: 1120, height: 780 },
@@ -2430,6 +2714,52 @@ async function actVideo() {
     return 0;
   }
 
+  // collect：不重新生成，只把**已经交付**的成片找回来（取回验证 / 应急恢复）。
+  // 用法：node doubao_cdp.mjs video --stage collect --sid <会话id> [--t0 2026-11-04T16:18:00+08:00]
+  //       不带 --sid 时扫整个 chats 目录，取 --since-hours（默认 24）内最新的 mp4。
+  if (VSTAGE === 'collect') {
+    const t0raw = opt('t0');
+    const t0 = t0raw ? Date.parse(t0raw) : 0;
+    const minMtime = Number.isFinite(t0) && t0 > 0 ? t0 : 0;
+    const chatsRoot = path.join(os.homedir(), 'DoubaoWork', 'chats');
+    let found = '', cc = null;
+    if (VSID) {
+      cc = await attachSessionBySid(VSID, 8000, { silent: true }).catch(() => null);
+      if (!cc) cc = await openSessionBySid(VSID).catch(() => null);
+      if (cc) {
+        try { found = await readDeliveredPathFromPage(cc, minMtime); } catch {}
+      }
+    }
+    if (!found) {
+      const since = Number(opt('since-hours', 24)) * 3600 * 1000;
+      found = scanChatsForVideo(chatsRoot, minMtime || (Date.now() - since));
+    }
+    let bytes = 0;
+    if (!found && cc) {
+      // 第三种交付形态：回复里只剩封面图 → 点开预览拿 CDN 直链，下载到 --out
+      const u = await openCardAndFindVideo(cc, Number(VDURATION) || 0, minMtime).catch(() => '');
+      if (u) {
+        const out = opt('out') || path.join(os.homedir(), 'DoubaoWork', 'collect',
+          'collect-' + (VSID || 'latest') + '.mp4');
+        try { fs.mkdirSync(path.dirname(out), { recursive: true }); } catch {}
+        try {
+          bytes = await downloadMedia(cc, u, out);
+          found = out;
+        } catch (e) {
+          log('✗ 卡片视频下载失败：' + ((e && e.message) || e));
+        }
+      }
+    }
+    if (cc) { try { cc.close(); } catch {} }
+    if (!found) {
+      console.log(JSON.stringify({ state: 'empty', error: '没找到已交付的成片（可加大 --since-hours 或去掉 --t0 再试）' }));
+      return 4;
+    }
+    if (!bytes) { try { bytes = fs.statSync(found).size; } catch {} }
+    console.log(JSON.stringify({ state: 'done', video: found, bytes }));
+    return 0;
+  }
+
   // confirm：回"确认" → 轮询成片 → 取回视频
   if (VSTAGE === 'confirm') {
     if (!VSID) { log('✗ confirm 需要 --sid'); return 2; }
@@ -2472,22 +2802,68 @@ async function actVideo() {
       const sr = await c.evalJs(CLICK_SEND_WAIT, 20000);
       step('已回确认，等待流水线执行（' + (sr && sr.ok ? '已提交' : '提交异常') + '）…');
       let src = '', candSrc = '', stable = 0, lastBeat = 0, prevTxt = '', srcIsLocalFile = false;
+      // 2026-11-11：新增「看到过 video」的时刻 + 本轮抓到的网络媒体地址（Network 兜底用）
+      let firstVideoAt = 0, mediaUrls = [], lastWhy = '', cardLast = 0;
+      try {
+        // 先挂监听再 enable，避免 enable 期间的事件被漏掉。
+        c.on('Network.responseReceived', (p) => {
+          try {
+            const u = (p && p.response && p.response.url) || '';
+            if (/\.(mp4|mov|webm)(\?|$)/i.test(u) && !mediaUrls.includes(u)) mediaUrls.push(u);
+          } catch {}
+        });
+        await c.send('Network.enable', {}, 5000);
+      } catch {}
       // 成片时长门槛：改为「请求时长的 6 成」且至少 4s——足以过滤 1–3s 的中间分段，
       // 又不会把正经短片判成没生成完。
       const minDur = Math.max(4, Math.round(Number(VDURATION) * 0.6));
       // 豆包工作区 chats 根（成片常以"本地文件卡片"交付在这里，页面内没有内嵌 <video>）
       const chatsRoot = path.join(os.homedir(), 'DoubaoWork', 'chats');
+      // 确认前先拍一份"页面上已有的视频"快照：之后只认快照以外的新地址，
+      // 否则旧成片一直在页面上，会被当成这一轮的结果（2026-11-15 WORK 实测）。
+      const preVid = await c.evalJs(ALL_VIDEOS).catch(() => null) || [];
+      const preSrcs = new Set((preVid || []).map((v) => String((v && v.src) || '')).filter(Boolean));
       const t0Confirm = Date.now();
       const deadline = Date.now() + Math.min(TIMEOUT, 1500) * 1000;
       while (Date.now() < deadline) {
         await sleep(4000);
+        // ① 先看"确认之后才出现"的视频（最可靠：旧成片不在 preSrcs 里，抢不走）
+        const nv = await c.evalJs(ALL_VIDEOS).catch(() => null);
+        if (nv && nv.length) {
+          const fresh = nv.filter((v) => !preSrcs.has(String((v && v.src) || '')));
+          if (fresh.length) {
+            const pick = fresh[fresh.length - 1];
+            if (!pick.dur || pick.dur >= minDur) {
+              src = pick.src;
+              srcIsLocalFile = false;
+              step('成片已出现（本轮新生成，' + (Number(pick.dur) || 0).toFixed(1) + 's）：开始取回');
+              break;
+            }
+            lastWhy = '新视频 ' + (Number(pick.dur) || 0).toFixed(1) + 's 短于期望 ' + minDur + 's，继续等';
+          }
+        }
         const vs = await c.evalJs(VIDEO_STATE).catch(() => null);
         if (vs) {
           if (vs.running) { candSrc = ''; stable = 0; }
-          else if (vs.has && vs.ready >= 2 && vs.dur >= minDur) {
+          else if (vs.has && vs.src && (vs.ready >= 1 || vs.dur > 0)) {
+            // 2026-11-11 放宽（用户实测"豆包生成了、工作台一直不认"）：
+            //  · 时长不再硬卡 60%——豆包常把 9.6s 的请求出成 5–6s，原判定永远不成立；
+            //  · 稳定次数 2 → 1（消息重渲染会重建 blob，src 永远"不稳定"）；
+            //  · 见到 video 45 秒还判不出来，就强制接受第一个非空 src。
+            if (!firstVideoAt) firstVideoAt = Date.now();
             if (vs.src === candSrc) stable++;
             else { candSrc = vs.src; stable = 0; }
-            if (stable >= 2) { src = candSrc; break; }
+            const durOk = !(vs.dur > 0) || vs.dur >= minDur;
+            const forced = firstVideoAt && (Date.now() - firstVideoAt > 45000);
+            if (stable >= 1 || forced) {
+              src = candSrc || vs.src;
+              if (!durOk) step('注意：成片时长 ' + vs.dur.toFixed(1) + 's 短于请求的 '
+                + VDURATION + 's（按已生成处理，不再等）');
+              if (forced && stable < 1) step('成片地址一直在变（页面重渲染），已强制接受当前地址');
+              break;
+            }
+            lastWhy = 'dur=' + (vs.dur || 0).toFixed(1) + 's ready=' + vs.ready
+              + (durOk ? '' : '（短于期望 ' + minDur + 's，下一轮会放宽）');
           }
           const vt = String(vs.text || '');
           if (vt && vt !== prevTxt) {           // 豆包写了新正文 → 实时进动作流（截尾去换行）
@@ -2505,28 +2881,82 @@ async function actVideo() {
           //（2026-10-10 实测：图生 8s 单段"成片已生成"，页面无 video 元素，文件落在
           //  C:\Users\<u>\DoubaoWork\chats\<日期>\<会话>\*.mp4）。直接扫盘回收，不用再走交接。
           try {
-            const dayDirs = fs.readdirSync(chatsRoot).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
-            for (const day of dayDirs.reverse().slice(0, 2)) {           // 只看今天/昨天
-              const dayDir = path.join(chatsRoot, day);
-              for (const chat of fs.readdirSync(dayDir)) {
-                const chatDir = path.join(dayDir, chat);
-                let st = null; try { st = fs.statSync(chatDir); } catch { continue; }
-                if (!st.isDirectory() || st.mtimeMs < t0Confirm - 60000) continue;   // 确认前就存在的目录跳过
-                for (const f of fs.readdirSync(chatDir)) {
-                  if (!/\.mp4$/i.test(f)) continue;
-                  const p = path.join(chatDir, f);
-                  let fst = null; try { fst = fs.statSync(p); } catch { continue; }
-                  if (fst.mtimeMs >= t0Confirm && fst.size > 200000) {   // 本轮新出现且不是几 KB 的占位
-                    src = p; srcIsLocalFile = true; break;
-                  }
-                }
-                if (src) break;
-              }
-              if (src) break;
+            // ① 先读回复正文里的本机绝对路径（2026-11-13 实测：这条交付方式最常见，且不会误抓别的会话）
+            const fromText = await readDeliveredPathFromPage(c, t0Confirm - 60000);
+            if (fromText) { src = fromText; srcIsLocalFile = true; }
+            // ② 正文没写路径再扫盘（全日期目录，复用老会话也能扫到）
+            if (!src) {
+              const p = scanChatsForVideo(chatsRoot, t0Confirm);
+              if (p) { src = p; srcIsLocalFile = true; }
             }
             if (src) { step('成片已出现在豆包工作区，直接取回'); break; }
           } catch {}
         }
+        if (!src && !vs?.running && /成片已生成|成片已|视频已生成|已生成|下载视频|转用/.test(String(vs?.text || ''))) {
+          // 2026-11-13 实测第三种形态：回复里只有封面图，点开预览才出现 CDN 直链视频。
+          // 20 秒最多试一次，避免反复点封面把弹层点成开关。
+          if (Date.now() - cardLast > 20000) {
+            cardLast = Date.now();
+            const u = await openCardAndFindVideo(c, VDURATION, t0Confirm - 60000).catch(() => '');
+            if (u) {
+              step('成片在预览卡片里（CDN 直链），开始取回');
+              src = u; srcIsLocalFile = false;
+              break;
+            }
+          }
+        }
+        if (!src && mediaUrls.length && !vs?.running) {
+          // 2026-11-11 新增：页面里没有可取回的 <video>（或 blob 抓不动）时，
+          // 用 Network 抓到的真实 mp4 地址在页面内带着 cookie 再下一次。
+          // 2026-11-15：先滤掉确认前就已经加载过的旧片地址，避免把上一次的成片再下一遍。
+          const freshU = mediaUrls.filter((u) => !preSrcs.has(String(u || '')));
+          if (freshU.length || !preVid.length) {
+            const u = freshU.length ? freshU[freshU.length - 1] : mediaUrls[mediaUrls.length - 1];
+            try {
+              step('按网络地址取回成片…');
+              const out0 = VOUT || path.join(os.homedir(), 'Desktop', 'heronbo_video_' + VSID + '.mp4');
+              fs.mkdirSync(path.dirname(out0), { recursive: true });
+              const nb = await downloadMedia(c, u, out0);
+              if (nb > 200000) { src = out0; srcIsLocalFile = true; step('已按网络地址取回：' + (nb / 1048576).toFixed(1) + 'MB'); break; }
+            } catch (e) {
+              step('网络地址取回失败：' + ((e && e.message) || e));
+            }
+          }
+        }
+      }
+      if (!src) {
+        // 2026-11-11 兜底一：把下载目录指到项目 成片\，点卡片上的「下载」
+        try {
+          const dlDir = path.dirname(VOUT || path.join(os.homedir(), 'Desktop', 'x.mp4'));
+          fs.mkdirSync(dlDir, { recursive: true });
+          const setBeh = async (m, params) => { try { await c.send(m, params, 5000); return true; } catch { return false; } };
+          await setBeh('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: dlDir });
+          await setBeh('Page.setDownloadBehavior', { behavior: 'allow', downloadPath: dlDir });
+          const clicked = await c.evalJs(`(() => {
+            const recvs = [...document.querySelectorAll('[data-testid="receive_message"]')];
+            const scope = recvs[recvs.length - 1] || document.body;
+            const btns = [...scope.querySelectorAll('button,[role="button"],a,div[role="img"]')];
+            const b = btns.find((x) => /^(下载|保存|Download|Save)/i.test(((x.innerText || '').trim())));
+            if (b) { try { b.click(); } catch (e) {} return (b.innerText || '').trim().slice(0, 20); }
+            return '';
+          })()`, 15000).catch(() => '');
+          if (clicked) {
+            step('已点「' + clicked + '」，等文件落盘…');
+            const dl = Date.now() + 90000;
+            while (Date.now() < dl && !src) {
+              await sleep(3000);
+              try {
+                for (const f of fs.readdirSync(dlDir)) {
+                  if (!/\.(mp4|mov|webm)$/i.test(f)) continue;
+                  const q = path.join(dlDir, f);
+                  const st = fs.statSync(q);
+                  if (st.size > 200000 && st.mtimeMs >= t0Confirm) { src = q; srcIsLocalFile = true; break; }
+                }
+              } catch {}
+            }
+            if (src) { step('下载完成：' + path.basename(src)); }
+          }
+        } catch {}
       }
       if (!src) {
         // 都没拿到：让它把文件复制到约定目录，从盘上取（最后兜底）
@@ -2536,10 +2966,12 @@ async function actVideo() {
         try { fs.mkdirSync(hdir, { recursive: true }); } catch {}
         const handoverMsg = '把最终成片视频文件复制到 ' + hdir + ' 目录（目录不存在就创建），'
           + '然后只回复该文件的完整绝对路径，不要做别的事。';
-        await cdp.evalJs(FOCUS_COMPOSER).catch(() => {});
-        await cdp.send('Input.insertText', { text: handoverMsg }).catch(() => {});
+        // 2026-11-13 修复：这三句原来用的是全局 cdp（可能根本不是当前会话页），
+        // 交接指令发不进会话，最后兜底等于摆设。统一用当前会话连接 c。
+        await c.evalJs(FOCUS_COMPOSER).catch(() => {});
+        await c.send('Input.insertText', { text: handoverMsg }).catch(() => {});
         await sleep(400);
-        await cdp.evalJs(CLICK_SEND_WAIT, 20000).catch(() => {});
+        await c.evalJs(CLICK_SEND_WAIT, 20000).catch(() => {});
         const dl = Date.now() + 240000;
         while (Date.now() < dl && !src) {
           await sleep(4000);
@@ -2552,29 +2984,23 @@ async function actVideo() {
           } catch {}
           if (!src) {
             // 交接等待期也顺手扫工作区（豆包可能自己把片子放到 chats 而不执行复制）
+            // 2026-11-13：同样不再限今天/昨天，并先读回复正文里的本机路径
             try {
-              for (const day of fs.readdirSync(chatsRoot).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort().reverse().slice(0, 2)) {
-                const dayDir = path.join(chatsRoot, day);
-                for (const chat of fs.readdirSync(dayDir)) {
-                  const chatDir = path.join(dayDir, chat);
-                  let st = null; try { st = fs.statSync(chatDir); } catch { continue; }
-                  if (!st.isDirectory() || st.mtimeMs < t0Confirm - 60000) continue;
-                  for (const f of fs.readdirSync(chatDir)) {
-                    if (!/\.mp4$/i.test(f)) continue;
-                    const p = path.join(chatDir, f);
-                    let fst = null; try { fst = fs.statSync(p); } catch { continue; }
-                    if (fst.mtimeMs >= t0Confirm && fst.size > 200000) { src = p; break; }
-                  }
-                  if (src) break;
-                }
-                if (src) break;
-              }
+              const fromText = await readDeliveredPathFromPage(c, t0Confirm - 60000);
+              if (fromText) src = fromText;
             } catch {}
+            if (!src) {
+              try { const p = scanChatsForVideo(chatsRoot, t0Confirm); if (p) src = p; } catch {}
+            }
           }
         }
         if (src) srcIsLocalFile = true;
       }
-      if (!src) { log('✗ 超时未拿到成片'); return 4; }
+      if (!src) {
+        log('✗ 超时未拿到成片' + (lastWhy ? '（最后一次看到 video：' + lastWhy + '）' : '（全程没看到 <video>）')
+          + (mediaUrls.length ? '；抓到 ' + mediaUrls.length + ' 个网络媒体地址但下载失败' : '；也没有网络媒体地址'));
+        return 4;
+      }
       let n = 0, videoPath = '';
       if (srcIsLocalFile) {
         // 2026-10-16（用户要求）：成片已经落在豆包工作区/交接目录——**直接用原路径，不再复制一份**。
@@ -2815,12 +3241,12 @@ function spawnLaunchAfterKillViaWmi() {
   const ps = `$env:ELECTRON_RUN_AS_NODE='1'; & '${node}' '${self}' launch-after-kill`;
   const b64ps = Buffer.from(ps, 'utf16le').toString('base64');
   // inner 全 ASCII：没有引号嵌套问题，也不用 '' 转义
-  const inner = `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${b64ps}`;
+  const inner = `${PS_EXE} -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${b64ps}`;
   const script = `Invoke-CimMethod -ClassName Win32_Process -MethodName Create`
     + ` -Arguments @{CommandLine='${inner}'}`;
   const b64 = Buffer.from(script, 'utf16le').toString('base64');
   try {
-    execSync(`powershell -NoProfile -EncodedCommand ${b64}`,
+    execSync(`${PS_EXE} -NoProfile -EncodedCommand ${b64}`,
              { encoding: 'utf8', timeout: 30000, stdio: ['ignore', 'pipe', 'ignore'] });
     return true;
   } catch (e) {
@@ -2829,17 +3255,47 @@ function spawnLaunchAfterKillViaWmi() {
   }
 }
 
+/** 当前 node 是不是挂在豆包进程树里（在里面就不能就地关豆包，会连自己一起带走）。 */
+function inDoubaoTree() {
+  try {
+    const out = execSync(
+      PS_EXE + ' -NoProfile -Command "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name | ConvertTo-Json -Compress"',
+      { encoding: 'utf8', timeout: 25000, stdio: ['ignore', 'pipe', 'ignore'] });
+    const arr = JSON.parse(String(out) || '[]');
+    const map = new Map((Array.isArray(arr) ? arr : [arr]).map((p) => [Number(p.ProcessId), p]));
+    let pid = process.pid, guard = 0;
+    while (pid && guard++ < 40) {
+      const p = map.get(pid);
+      if (!p) break;
+      if (String(p.Name).toLowerCase() === 'doubaowork.exe') return true;
+      pid = Number(p.ParentProcessId);
+    }
+    return false;
+  } catch { return true; }   // 分不清就当在里面，保守不重启
+}
+
 async function actRestart() {
   step('重启生成平台（几秒，对话历史都保留）');
+  // 关之前先把数据目录记下来：豆包一关就抓不到命令行，重启会落到另一个数据目录（登录态/历史全换）。
+  const udd0 = findUserDataDir();
+  if (udd0) { try { const s = stateRead(); s.udd = udd0; stateWrite(s); } catch {} }
   if (spawnLaunchAfterKillViaWmi()) {
     log('· 已安排：生成平台将在几秒后自动重启。'
         + '这段对话如果跟着客户端退了，客户端回来后从历史里能接着用。');
     return 0;
   }
-  // 守场员起不来（WMI 被策略挡了之类）：只有当"我们不在豆包进程树里"时才敢就地重启；
-  // 分不清就老实失败，别再把用户的豆包关掉一次。
-  log('✗ 没能安排自动重启。请手动退出豆包工作后，跑 node doubao_cdp.mjs launch 带端口拉起。');
-  return 3;
+  // 守场员起不来（WMI 被策略挡了之类）：只要我们不在豆包进程树里，就就地重启——
+  // 先 kill 再按带端口的参数拉起来，用户那边只是「豆包闪一下又回来」，登录态和历史都还在。
+  if (inDoubaoTree()) {
+    log('✗ 没能安排自动重启（我们自己也挂在豆包里）。请手动退出豆包工作后，跑 node doubao_cdp.mjs launch 带端口拉起。');
+    return 3;
+  }
+  log('· WMI 守场员没起来，改就地重启');
+  killApp();
+  step('已退出，正在重新启动…');
+  const r = await launchApp();
+  log(r.ok ? '· 已重启完成' : '✗ ' + r.why);
+  return r.ok ? 0 : 2;
 }
 
 /** 内部自检（不进 usage）：复现「豆包没有窗口」→ 验证 createBackgroundTab 能把标签救回来。

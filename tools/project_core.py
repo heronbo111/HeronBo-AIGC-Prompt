@@ -1207,6 +1207,10 @@ def add_materials(project_dir, paths, copy=True, note="", on_log=None, into=None
     mats = sk["project"].setdefault("materials", [])
     known = {(m.get("file", ""), m.get("hash", "")) for m in mats}
     known_hash = {m.get("hash") for m in mats if m.get("hash")}
+    # 2026-11-15（用户截图：②栏同一件素材两行）：判重原来只认 (file, hash) 二元组，
+    # 而老记录里 hash 常常是空的 —— 一条无 hash、一条有 hash，同一文件就写成两条。
+    # 相对路径单独记一份，任何一条已经登记过这个路径就不再写。
+    known_rel = {(m.get("file") or "").replace("\\", "/").strip().lower() for m in mats}
     added, skipped = [], []
     seq = len(mats) + 1
 
@@ -1251,6 +1255,12 @@ def add_materials(project_dir, paths, copy=True, note="", on_log=None, into=None
         if key in known:
             skipped.append({"src": src, "why": "清单里已有同名同 hash 记录"})
             continue
+        _rel = rec["file"].replace("\\", "/").strip().lower()
+        if _rel in known_rel:
+            skipped.append({"src": src, "why": "清单里已经登记过这个文件（%s）" % rec["file"]})
+            emit("跳过 %s（已登记过）" % base)
+            continue
+        known_rel.add(_rel)
         known.add(key)
         if rec.get("hash"):
             known_hash.add(rec["hash"])

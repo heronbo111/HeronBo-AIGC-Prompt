@@ -105,6 +105,11 @@ def is_repo(d):
     return os.path.isfile(os.path.join(d, "SKILL.md"))
 
 
+def is_package(d):
+    """agent 分发包标记：仓库工作树里没有，只有打技能包.py 生成的包才有。"""
+    return os.path.isfile(os.path.join(d, "安装说明.txt"))
+
+
 def install_mode():
     """当前目录是不是已经下载好的仓库：是 → 只搬位置；不是 → 先下载。"""
     if is_repo(HERE):
@@ -257,11 +262,12 @@ def main():
         if os.path.abspath(src) == os.path.abspath(target):
             installed = src
             log("  1. 已在目标位置，不用挪：%s" % src)
-        elif a.auto and a.dir is None:
-            # --auto 且没显式指定 --dir：绝不挪动/复制"当前这份仓库"——它可能是别人的
-            # 开发工作树（本机 900MB+）。安装包场景应该用安装包里的 install_skill.py。
+        elif a.auto and a.dir is None and not is_package(src):
+            # --auto 且没显式指定 --dir，且当前是开发工作树：绝不挪动/复制"当前这份仓库"——
+            # 它可能是别人的开发工作树（本机 900MB+）。真正的 agent 分发包带 安装说明.txt，
+            # 会走下面的 move_here2，装到 auto_target 探测到的 skills 目录。
             installed = src
-            log("  1. [auto] 不挪动当前目录（可能是开发工作树）；要指定落位请用 --dir。"
+            log("  1. [auto] 不挪动当前目录（开发工作树）；要指定落位请用 --dir。"
                 "\n     就地可用：%s" % src)
         else:
             installed = move_here2(src, target)

@@ -140,6 +140,8 @@ def py_exe():
     base = os.path.dirname(sys.executable)
     for c in (os.path.join(base, "runtime", "python", "python.exe"),
               os.path.join(base, "..", "runtime", "python", "python.exe"),
+              os.path.join(base, "..", "..", "runtime", "python", "python.exe"),
+              os.path.join(base, "..", "..", "..", "runtime", "python", "python.exe"),
               os.path.join(base, "python.exe")):
         if os.path.isfile(c):
             return os.path.abspath(c)
@@ -391,7 +393,9 @@ def install_item(name):
         pkg = PIP_PKGS.get(mod)
         if not pkg:
             return {"ok": False, "msg": "不认识的项：%s" % mod}
-        exe = py_exe() or sys.executable
+        exe = py_exe()
+        if not exe:
+            return {"ok": False, "msg": "找不到随包 Python（runtime\\python\\python.exe），没法自动安装"}
         r = run([exe, "-m", "pip", "install", "--upgrade", pkg], timeout=1800)
         tail = ((r.stdout or "") + (r.stderr or "")).strip().splitlines()[-3:]
         return {"ok": r.returncode == 0,

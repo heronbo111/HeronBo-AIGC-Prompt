@@ -603,7 +603,7 @@ def agent_info():
     """
     rows = list_agents()
     key, why = pick_agent(rows=rows)
-    chosen = _local_cfg().get("agent") or ""
+    chosen = _local_cfg().get("agent") if _local_cfg().get("agent_manual") else ""
     return {"picked": key,
             "label": (ADAPTERS.get(key) or {}).get("label", ""),
             "why": why,
@@ -628,8 +628,10 @@ def set_agent(key):
         if not rows[key]["ok"]:
             return False, "%s 现在不可用：%s" % (rows[key]["label"], rows[key]["why"])
         cfg["agent"] = key
+        cfg["agent_manual"] = True
     else:
         cfg.pop("agent", None)
+        cfg.pop("agent_manual", None)
     try:
         with open(cfg_path(), "w", encoding="utf-8") as f:
             json.dump(cfg, f, ensure_ascii=False, indent=2)
@@ -1431,7 +1433,10 @@ def pick_agent(prefer=None, rows=None):
       2 是新的默认行为；想固定用某个，在界面③栏 agent 徽章里点一行选定即可（1 会盖过 2）。
     """
     cfg = _local_cfg()
-    want = prefer or cfg.get("agent")
+    # agent 字段只有在“用户手动选过”（agent_manual=True）时才算数。
+    # 旧安装包曾内置 agent_bridge.local.json={"agent":"doubaowork"}，那是固定
+    # CDP 的默认值，不是用户选择；不能让它继续把每台新机器拉回 CDP。
+    want = prefer or (cfg.get("agent") if cfg.get("agent_manual") else "")
     if rows is None:
         rows = list_agents()
     rows = {r["key"]: r for r in rows}
@@ -1441,6 +1446,11 @@ def pick_agent(prefer=None, rows=None):
             return want, ("按配置用 %s" % r["label"]) if prefer or cfg.get("agent")                 else r["label"]
         return None, "配置指定的 %s 不可用：%s" % (r["label"], r["why"])
     for key in running_desktop():                # ① 跟随你正开着的软件
+        if key == "doubaowork":
+            # 豆包工作只能手动选：它没有 CLI，走 CDP 会拉起调试端口、重启客户端，
+            # 用户明确要求“启动时不要走 CDP”。这里不自动跟随，避免一开工作台就
+            # 把正在用的豆包工作重新拉起。
+            continue
         r = rows.get(key)
         if r and r["ok"]:
             return key, "%s（你正开着它，自动跟随）" % r["label"]
@@ -1453,6 +1463,8 @@ def pick_agent(prefer=None, rows=None):
                 0 if r.get("host") else 1,
                 1 if r.get("weak") else 0)
     for key in sorted([k for k, r in rows.items() if r.get("ok")], key=_rank):
+        if key == "doubaowork":
+            continue                         # 同上：CDP 通道只在用户手动选后使用
         r = rows[key]
         if r.get("host"):
             return key, "%s（本 skill 就装在它名下%s）" % (
@@ -1460,7 +1472,8 @@ def pick_agent(prefer=None, rows=None):
         return key, "%s（本机可用%s）" % (
             r["label"], "，已验证" if r.get("verified") else "，还没验证过；建议点一下「测一下」")
     miss = "；".join("%s：%s" % (r["label"], r["why"]) for r in rows.values())
-    return None, "本机没找到可用的 agent（%s）" % miss
+    return None, ("本机没有可自动使用的 agent（豆包工作需要手动选，走 CDP）；"
+                  "可开一个 WorkBuddy/ZCode/Claude 等通道，或在 agent 弹窗里手动选豆包工作。%s" % miss)
 
 
 def build_cmd_for(key, prompt, session_id=None, cwd=None, permission_mode=None,

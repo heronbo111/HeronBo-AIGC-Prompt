@@ -40,6 +40,46 @@ try:
     import doubao_tray as _tray     # 豆包窗口收进托盘（2026-10-07，缺了就退化为离屏不藏）
 except Exception:  # noqa: BLE001
     _tray = None
+try:
+    import wb_cli as cli_bridge     # 豆包 CLI 主通道（2026-11-12，CDP 仅兜底）
+except Exception:  # noqa: BLE001
+    cli_bridge = None
+
+# 2026-11-13 用户要求：默认只走 CLI，启动/准备阶段不再自动碰 CDP；
+# CDP 只能由用户在首次配置页明确切换（本地豆包，较慢）。
+# 可选值：cli（默认）/ cdp。旧的 auto 一律按 cli 处理。
+_BRIDGE_MODES = ("cli", "cdp")
+
+
+class _ChannelError(RuntimeError):
+    """通道不可用——带 machine-readable code，前端据此给"一键分流"按钮。
+
+    2026-11-14 ZERO 反馈：CLI 登录不了只能走 CDP，但生视频仍按 CLI 判定，
+    报一句"豆包 CLI 不可用"就结束，用户不知道该点哪儿。这里把原因、可选的
+    下一条路一起交给前端，而不是让用户自己回配置页找开关。
+    """
+
+    def __init__(self, msg, code="channel_unavailable", action=""):
+        super().__init__(msg)
+        self.code = code
+        self.action = action
+
+
+def _load_bridge():
+    env = (os.environ.get("HERONBO_VIDEO_BRIDGE") or "").strip().lower()
+    if env in _BRIDGE_MODES:
+        return env
+    try:
+        val = ((pcore_mod.read_local() if pcore_mod else {}) or {}).get("VIDEO_BRIDGE", "")
+        val = str(val or "").strip().lower()
+        if val in _BRIDGE_MODES:
+            return val
+    except Exception:  # noqa: BLE001
+        pass
+    return "cli"
+
+
+_VIDEO_BRIDGE = _load_bridge()
 
 # (最短秒, 最长秒)：Seedance 2.5 = 5–30；2.0 / 2.0 Fast = 4–15
 MODEL_LIMIT = {"Seedance 2.5": (5, 30), "Seedance 2.0 Fast": (4, 15), "Seedance 2.0": (4, 15)}
@@ -73,6 +113,9 @@ _MARKS = {
         (r"已回确认|确认已提交", 26, "确认已提交"),
         (r"流水线执行中|豆包：|生成中", 34, "豆包侧生成中"),
         (r"成片已出现在豆包工作区|取回|成片已生成", 90, "取回成片"),
+        (r"豆包 CLI 已接收|CLI 已接收", 30, "豆包 CLI 已接收"),
+        (r"豆包 CLI 正在生成|CLI 正在生成", 48, "豆包 CLI 生成中"),
+        (r"豆包 CLI 已返回|CLI 已返回", 92, "CLI 已返回成片"),
     ],
 }
 
@@ -238,7 +281,9 @@ def _set(**kw):
 
 def snapshot():
     with _LOCK:
-        return json.loads(json.dumps(_STATE))
+        out = json.loads(json.dumps(_STATE))
+        out["bridge"] = _VIDEO_BRIDGE
+        return out
 
 
 def exported_paths():
@@ -546,9 +591,148 @@ def resolve_inputs(pdir):
 
 
 # ---------------- CDP 子进程 ----------------
+_CDP_PORTS = range(9333, 9345)          # 与 doubao_cdp.mjs 的 PORT_RANGE 一致
+_CDP_STATE = os.path.join(os.environ.get("TEMP") or os.environ.get("TMP") or ".",
+                          "heronbo_canvas_cdp.json")
+
+
+def cdp_port():
+    """只读探测豆包的调试端口（先看桥记下的，再扫 9333–9344）。返回端口或 0。
+
+    绝不启动/重启豆包——这个函数只回答"现在能不能直接接管"。
+    """
+    cands = []
+    try:
+        with open(_CDP_STATE, encoding="utf-8") as f:
+            saved = int((json.load(f) or {}).get("port") or 0)
+            if saved:
+                cands.append(saved)
+    except Exception:  # noqa: BLE001
+        pass
+    for p in _CDP_PORTS:
+        if p not in cands:
+            cands.append(p)
+    import urllib.request
+    for p in cands:
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:%d/json/version" % p, timeout=1.2) as r:
+                if r.status == 200:
+                    return p
+        except Exception:  # noqa: BLE001
+            continue
+    return 0
+
+
+def _cdp_guard():
+    """接管前的前置检查：豆包在跑但没调试端口时，**不替用户擅自重启**。
+
+    2026-11-14 ZERO 反馈"CDP 把豆包生视频整坏了"：桥发现"在跑但没端口"会直接
+    kill + 带端口重开（见 doubao_cdp.mjs ensureAttached）。本机原本为了修"桌面上
+    两个豆包"才这么写，但对正在用豆包的人就是一次打断。改成先报出来、由用户点
+    「重启豆包并接管」再动手；豆包没在跑时照旧自动拉起（不碰任何东西，安全）。
+    """
+    if cdp_port():
+        return
+    try:
+        if ab and getattr(ab, "_doubaowork_running", None) and ab._doubaowork_running():
+            raise _ChannelError(
+                "豆包工作正在运行，但不是以调试端口启动的，现在接管不上。"
+                "继续会把它关掉再带调试端口重开（对话历史会保留，但你手上这条会被打断）。",
+                "cdp_not_ready", "重启豆包并接管")
+    except _ChannelError:
+        raise
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def restart_doubao(timeout=90):
+    """用户点「重启豆包并接管」后才调：走桥的 restart --yes（WMI 守场员执行）。"""
+    if not ab:
+        return {"ok": False, "error": "缺 agent_bridge.py"}
+    js = ab.doubao_js()
+    runner, renv = ab.lib_runner(js) if js else (None, None)
+    if not (js and runner):
+        return {"ok": False, "error": "视频桥不可用：缺 doubao_cdp.mjs 或 node"}
+    cmd = [runner, js, "restart", "--yes"]
+    env = ab.child_env()
+    env.update(renv or {})
+    env.update(ab.runtime_env_for(cmd))
+    try:
+        p = subprocess.Popen(cmd, cwd=_HERE, stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                             encoding="utf-8", errors="replace", bufsize=1,
+                             **ab.no_window_kwargs())
+        try:
+            out, _ = p.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            out = "（等待超时，豆包可能还在起，稍等十几秒再点一次生成）"
+        rc = p.returncode
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)[:300]}
+    ok = bool(cdp_port()) or rc == 0
+    return {"ok": ok, "port": cdp_port(), "rc": rc,
+            "error": "" if ok else ((out or "").strip()[-300:] or "重启没成功")}
+
+
+def show_doubao(timeout=40):
+    """把豆包工作的窗口拉回屏幕可见区并置前（用户点「打开豆包窗口」时调）。
+
+    2026-11-15 用户反馈「托盘里点豆包没反应，以为被工作台屏蔽了」。根因有两层：
+      1) 窗口位置是客户端自己记住的，前几次实验把它记成了屏外坐标（HOME 实测
+         rect=(-970,0)-(30,720)，屏幕上只剩 30px 挂边，点任务栏图标当然"没反应"）；
+      2) 工作台侧原本根本没有"把豆包叫出来"的入口。
+    桥里的 show 动作会把窗口设成 normal、挪到 (80,80,1120,780) 并 bringToFront，
+    这里直接借它；顺带把在跑但没调试端口的情况一起解决不现实，那种仍走 restart。
+    """
+    if not ab:
+        return {"ok": False, "error": "缺 agent_bridge.py"}
+    js = ab.doubao_js()
+    runner, renv = ab.lib_runner(js) if js else (None, None)
+    if not (js and runner):
+        return {"ok": False, "error": "视频桥不可用：缺 doubao_cdp.mjs 或 node"}
+    cmd = [runner, js, "show"]
+    env = ab.child_env()
+    env.update(renv or {})
+    env.update(ab.runtime_env_for(cmd))
+    try:
+        p = subprocess.Popen(cmd, cwd=_HERE, stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                             encoding="utf-8", errors="replace", bufsize=1,
+                             **ab.no_window_kwargs())
+        try:
+            out, _ = p.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            return {"ok": False, "error": "叫醒豆包超时了，稍等十几秒再点一次"}
+        rc = p.returncode
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)[:300]}
+    # 桥成功时输出一行 {"ok": true}；失败时带 error。
+    ok = False
+    err = ""
+    try:
+        import json as _json
+        for line in (out or "").splitlines():
+            line = line.strip()
+            if line.startswith("{"):
+                o = _json.loads(line)
+                ok = bool(o.get("ok"))
+                err = str(o.get("error") or "")
+    except Exception:  # noqa: BLE001
+        pass
+    return {"ok": ok, "rc": rc, "error": "" if ok else (err or (out or "").strip()[-300:] or "没叫醒豆包")}
+
+
 def _run_video(args):
     if not ab:
         raise RuntimeError("缺 agent_bridge.py")
+    stage = ""
+    for i, a in enumerate(args):
+        if str(a) == "--stage" and i + 1 < len(args):
+            stage = str(args[i + 1])
+    if stage in ("prepare", "confirm"):
+        _cdp_guard()          # 只在"要接管并操作页面"的阶段拦；cancel/collect 放行
     js = ab.doubao_js()
     runner, renv = ab.lib_runner(js) if js else (None, None)
     if not (js and runner):
@@ -608,6 +792,79 @@ def _extract_json(raw):
         return None
 
 
+def bridge_mode():
+    return _VIDEO_BRIDGE
+
+
+def set_bridge(mode):
+    """手动切换生成通道；默认 cli，cdp 只能由用户明确点选。
+
+    2026-11-13 用户要求：启动时不走 CDP，避免拉起调试端口、影响正在用的豆包工作。
+    """
+    global _VIDEO_BRIDGE
+    m = str(mode or "").strip().lower()
+    if m not in _BRIDGE_MODES:
+        return {"ok": False, "error": "通道只能是 cli / cdp"}
+    _VIDEO_BRIDGE = m
+    persisted = False
+    try:
+        if pcore_mod:
+            pcore_mod.write_local(VIDEO_BRIDGE=m)
+            # 回读校验：write_local 出错时静默返回，光看"没抛异常"会误报切换成功，
+            # 重启后打回 cli，下次生成又是"CLI 不可用"——ZERO 上就是这么踩的。
+            got = str(((pcore_mod.read_local() or {}) or {}).get("VIDEO_BRIDGE") or "")
+            persisted = got.strip().lower() == m
+    except Exception:  # noqa: BLE001
+        persisted = False
+    return {"ok": True, "mode": m, "persisted": persisted}
+
+
+def bridge_info():
+    """给首次配置页显示当前模式和 CDP 是否具备条件；不连 CDP、不拉起客户端。"""
+    cdp_ready, cdp_why = False, ""
+    try:
+        if ab:
+            cdp_ready, cdp_why = ab._probe_doubaowork()
+    except Exception as e:  # noqa: BLE001
+        cdp_why = str(e)[:160]
+    return {"mode": _VIDEO_BRIDGE, "cdp_ready": bool(cdp_ready),
+            "cdp_why": str(cdp_why or "")[:200],
+            "modes": list(_BRIDGE_MODES)}
+
+
+def _use_cli():
+    """是否走豆包 CLI。默认 cli；cdp 只在用户手动切换后使用，绝不自动回退。"""
+    if _VIDEO_BRIDGE == "cdp":
+        return False
+    if cli_bridge is None:
+        raise _ChannelError("缺 wb_cli.py，无法走豆包 CLI", "cli_missing",
+                            "改用本地豆包（CDP）")
+    ok, why = cli_bridge.available()
+    if ok:
+        return True
+    # 2026-11-14：不再只甩一句"CLI 不可用"。带上"改用本地豆包"这个可执行出口，
+    # 前端拿 code=cli_unavailable 直接给按钮，省掉"回配置页找开关"这一段。
+    raise _ChannelError("豆包 CLI 不可用：%s" % (why or "未登录"), "cli_unavailable",
+                        "改用本地豆包（CDP）")
+
+
+def _fail(e, stageName="失败"):
+    """把异常收成前端能分流的状态：通道类错误带 code/action，其余只留文案。"""
+    code = getattr(e, "code", "") if isinstance(e, _ChannelError) else ""
+    action = getattr(e, "action", "") if isinstance(e, _ChannelError) else ""
+    _done_set("error", ok=False, error=str(e), errorCode=code, errorAction=action,
+              stageName=stageName)
+    _flow("%s：%s" % (stageName, e), "think")
+
+
+def _read_prompt(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
 # ---------------- 后台线程 ----------------
 def start_prepare(p):
     if is_busy():
@@ -618,6 +875,29 @@ def start_prepare(p):
 
     def _job():
         try:
+            if _use_cli():
+                sid = "cli-%s-%s" % (time.strftime("%Y%m%d%H%M%S"),
+                                     int(time.time() * 1000) % 1000)
+                model = p.get("model") or DEFAULT_MODEL
+                duration = int(p.get("duration") or 15)
+                ratio = p.get("ratio") or DEFAULT_RATIO
+                nimg = len([x for x in (p.get("images") or []) if x])
+                confirm = (
+                    "准备用豆包 CLI 生成成片：\n"
+                    "模型：%s\n时长：%s 秒\n画幅：%s\n参考图：%s 张\n"
+                    "提示词：%s\n"
+                    "确认后才会提交生成并消耗豆包企业套餐额度；现在只做本地准备，不扣点。"
+                    % (model, duration, ratio, nimg,
+                       os.path.basename(p.get("promptPath") or "") or "（缺提示词正文）")
+                )
+                _done_set("await_confirm", sid=sid, confirmText=confirm,
+                          result={"ok": True, "state": "await_confirm", "bridge": "cli",
+                                  "sid": sid, "model": model, "duration": duration,
+                                  "ratio": ratio, "images": nimg},
+                          stageName="CLI 方案已准备")
+                _flow("豆包 CLI 方案已准备：%s / %s秒 / %s，等待你确认（未确认不扣点）"
+                      % (model, duration, ratio), "done")
+                return
             args = ["--stage", "prepare", "--model", p.get("model") or DEFAULT_MODEL,
                     "--ratio", p.get("ratio") or DEFAULT_RATIO,
                     "--duration", int(p.get("duration") or 15),
@@ -641,7 +921,7 @@ def start_prepare(p):
                         pass
             elif _tray:
                 try:                               # 后台驱动：豆包窗口收进托盘，任务栏不再挂窗
-                    _tray.hide_async(ab.doubaowork_exe() if ab else "", icon=False)
+                    _tray.hide_async(ab.doubaowork_exe() if ab else "", icon=True)
                 except Exception:  # noqa: BLE001
                     pass
             r = _run_video(args)
@@ -662,7 +942,7 @@ def start_prepare(p):
                 _done_set("error", ok=False, error=_err, result=r, stageName="准备失败")
                 _flow("准备失败：" + _err, "think")
         except Exception as e:  # noqa: BLE001
-            _done_set("error", ok=False, error=str(e), stageName="准备失败")
+            _fail(e, "准备失败")
             _flow("准备失败：" + str(e), "think")
 
     threading.Thread(target=_job, daemon=True).start()
@@ -681,6 +961,45 @@ def start_confirm(p):
 
     def _job():
         try:
+            if _use_cli():
+                prompt = _read_prompt(p.get("promptPath") or "") or _read_prompt(
+                    p.get("prompt") or "")
+                if not prompt.strip():
+                    _done_set("error", ok=False, error="缺提示词正文，无法提交 CLI",
+                              stageName="生成失败")
+                    _flow("生成失败：缺提示词正文", "think")
+                    return
+                model = p.get("model") or DEFAULT_MODEL
+                ratio = p.get("ratio") or DEFAULT_RATIO
+                duration = int(p.get("duration") or 15)
+                outdir = os.path.dirname(p.get("outPath") or "") or os.path.join(
+                    p.get("project") or "", "成片")
+                os.makedirs(outdir, exist_ok=True)
+                _log("豆包 CLI 已接收：%s / %s秒 / %s，开始提交生成…"
+                     % (model, duration, ratio))
+                imgs = list(p.get("images") or [])
+                if not imgs and p.get("image"):
+                    imgs = [p["image"]]
+                r = cli_bridge.generate_video(
+                    prompt, outdir, ratio=ratio, duration=duration, model=model,
+                    images=imgs, audio=p.get("audio") or "", video=p.get("video") or "",
+                    timeout=int(p.get("timeout") or 1800), session_key=p.get("sid") or "")
+                _log("豆包 CLI 已返回：%s" % (r.get("path") or r.get("error") or "无结果"))
+                v = str(r.get("path") or "").strip()
+                if r.get("ok") and v:
+                    local = _stash_final(p.get("project"), v)
+                    if local and local != v:
+                        r["sourceVideo"] = v
+                        r["video"] = local
+                    else:
+                        r["video"] = local or v
+                    _done_set("done", video=local or v, result=r, stageName="CLI 成片已生成")
+                    _flow("豆包 CLI 成片已生成：" + (local or v), "done")
+                else:
+                    _done_set("error", ok=False, error=r.get("error") or "CLI 没拿到成片",
+                              result=r, stageName="没拿到成片")
+                    _flow("生成失败：" + (r.get("error") or "CLI 没拿到成片"), "think")
+                return
             args = ["--stage", "confirm", "--sid", p["sid"],
                     "--ratio", p.get("ratio") or DEFAULT_RATIO,
                     "--duration", int(p.get("duration") or 15),
@@ -689,7 +1008,7 @@ def start_confirm(p):
                 args += ["--out", p["outPath"]]
             if _tray:
                 try:                               # 生成阶段同样把豆包收进托盘
-                    _tray.hide_async(ab.doubaowork_exe() if ab else "", icon=False)
+                    _tray.hide_async(ab.doubaowork_exe() if ab else "", icon=True)
                 except Exception:  # noqa: BLE001
                     pass
             r = _run_video(args)
@@ -707,7 +1026,7 @@ def start_confirm(p):
                           stageName="没拿到成片")
                 _flow("生成失败：" + (r.get("error") or "没拿到成片（可能超时）"), "think")
         except Exception as e:  # noqa: BLE001
-            _done_set("error", ok=False, error=str(e), stageName="生成失败")
+            _fail(e, "生成失败")
             _flow("生成失败：" + str(e), "think")
 
     threading.Thread(target=_job, daemon=True).start()
@@ -716,7 +1035,10 @@ def start_confirm(p):
 
 def cancel_now(sid):
     try:
-        r = _run_video(["--stage", "cancel", "--sid", sid, "--timeout", 30])
+        if _use_cli():
+            r = cli_bridge.cancel(sid)
+        else:
+            r = _run_video(["--stage", "cancel", "--sid", sid, "--timeout", 30])
     except Exception as e:  # noqa: BLE001
         r = {"ok": False, "error": str(e)}
     _done_set("cancelled", ok=False, error="", stageName="已取消")
@@ -790,7 +1112,13 @@ def api_confirm(pdir, b):
     os.makedirs(os.path.dirname(out), exist_ok=True)
     return start_confirm({"project": pdir, "sid": sid, "ratio": ratio,
                           "duration": duration, "outPath": out,
-                          "timeout": int(b.get("timeout") or 1500)})
+                          "model": model,
+                          "promptPath": params.get("promptPath") or "",
+                          "images": params.get("images") or [],
+                          "image": params.get("image") or "",
+                          "audio": params.get("audio") or "",
+                          "video": params.get("video") or "",
+                          "timeout": int(b.get("timeout") or 1800)})
 
 
 def api_cancel(pdir, b):

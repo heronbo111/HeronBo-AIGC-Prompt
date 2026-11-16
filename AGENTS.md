@@ -16,7 +16,7 @@
 
 | 位置 | 是什么 | 入口 / 主要文件 |
 |---|---|---|
-| `SKILL.md` | 技能入口：工作流、四大类、限额引用 | 新会话按需读章节 |
+| `SKILL.md` | 技能入口：工作流、制作方向判定、四大类素材路线、限额引用 | 新会话按需读章节 |
 | `references/` | 知识库：规则、模板、平台口径、项目库、拆解手册 | `rules.md`（上游规则，**先读顶部索引**）、`prompt-templates.md`（交付形态与句式）、`platforms.md`（模型与限额，**唯一数字源**）、`playbooks.md`、`samples-db.md`、`eval-cases.md` |
 | `references/*.local.md` | 本机个人层（gitignore，不进仓库） | `rules.local.md`（本地经验，**优先级高于上游 rules.md**）、`paths.local.md` |
 | `tools/` | 工具链（Python / .cmd，脚本名多为中文） | `首次配置.py`、`部署.py`、`换exe.py`、`提示词体检.py`、`联调自检.py`、`project_core.py`（项目骨架/回执/清单）、`workbench_server.py` + `workbench/`（**工作台源码，gitignore、不随仓库分发**） |

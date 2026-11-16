@@ -22,15 +22,14 @@ import time
 import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                           "..", "HeronBo-Workbench", "installer", "pkg-real")
+DEFAULT_SRC = os.path.join(os.path.dirname(os.path.dirname(HERE)),
+                           "HeronBo-Workbench", "installer", "pkg-real")
 # 默认落到工作区的 `_安装包\`（2026-10-13 用户反馈"产物在哪、我找不到"）——
 # 那是他收安装包的地方；放在构建目录里他翻不到。--out 可覆盖。
 DEFAULT_OUT = os.path.join(os.path.dirname(os.path.dirname(HERE)), "_安装包")
-# 系统运行库安装器（2026-10-13）：安装版会在装的时候替你装这两样（见 setup-common.iss 的
-# [Run] 段），绿色版不能少——否则目标机缺运行库时表现就不一致了（界面渲染/组件起不来）。
-# 源在 D:\HeronBo-Build\vendor\（203MB 的 WebView2 是**离线完整版**，断网机器也能装）。
-VENDOR_DIR = r"D:\HeronBo-Build\vendor"
+# 系统运行库安装器（2026-10-13）：安装包不带运行库（免管理员装不了），绿色版必须自带，
+# 否则目标机缺库时两种形态表现不一致。源在 installer\vendor\（WebView2 是离线完整版）。
+VENDOR_DIR = os.path.join(os.path.dirname(DEFAULT_SRC), "vendor")
 RUNTIME_PKGS = [("vc_redist.x64.exe", 24),
                 ("MicrosoftEdgeWebView2RuntimeInstallerX64.exe", 203)]
 PKG_SUBDIR = "runtime_pkgs"          # 目录名刻意用 ASCII：cmd 处理中文路径/编码容易翻车
@@ -143,7 +142,7 @@ def main():
     src = os.path.abspath(a.src)
     if not os.path.isdir(src):
         print("!! 源目录不存在：%s" % src)
-        print("   （安装包载荷在 D:\\HeronBo-Build\\pkg-real；开发机也可用安装副本目录）")
+        print("   （先跑 installer\\make_pkg.py 收载荷，或用 --from 指定装机目录）")
         return 2
     if not os.path.isfile(os.path.join(src, "HeronBo.exe")):
         print("!! 源目录里没有 HeronBo.exe（启动器）——这不像装机载荷目录：%s" % src)

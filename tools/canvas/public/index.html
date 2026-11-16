@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HeronBo · 豆包画布</title>
+  <script>
+    // 首屏前先把上次用的主题贴上去，避免深色闪一下再变浅色。
+    try {
+      var savedTheme = localStorage.getItem('doubao-canvas:theme');
+      if (savedTheme === 'light' || savedTheme === 'dark') document.documentElement.dataset.theme = savedTheme;
+    } catch (e) { /* ignore */ }
+  </script>
+  <link rel="icon" href="./heronbo-logo.png" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div id="app" class="sidebar-hidden inspector-hidden">
+
+    <!-- 画布主区：全屏铺满，所有控件浮在上面 -->
+    <main id="main">
+      <div id="viewport">
+        <div id="grid"></div>
+        <div id="world">
+          <svg id="edges" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"></path>
+              </marker>
+            </defs>
+          </svg>
+          <div id="nodes"></div>
+        </div>
+        <div id="guides"></div>
+        <div id="marquee" class="hidden"></div>
+        <div id="dropOverlay" class="hidden"><strong>松手，上传到画布</strong><span>图片 / 视频</span></div>
+
+        <div id="emptyState" class="empty-state hidden">
+          <div class="empty-mark"><span>双击画布</span><i></i><span>创建节点</span></div>
+          <div class="empty-actions">
+            <button data-new="image" class="btn primary">＋ 图片节点</button>
+            <button data-new="video" class="btn">＋ 视频节点</button>
+            <button data-new="upload" class="btn">↑ 上传素材</button>
+            <button data-new="text" class="btn">T 文本节点</button>
+            <button data-example class="btn">✦ 示例画布</button>
+          </div>
+        </div>
+
+        <div id="perfBadge" class="perf-badge hidden" title="当前为性能模式：关闭重阴影/动画，优先保证拖动画布流畅">性能模式</div>
+      </div>
+
+      <!-- 顶栏：浮在画布上 -->
+      <header id="topbar">
+        <div class="tb-left">
+          <button id="toggleSidebarBtn" class="tb-btn" title="项目 / 画布列表（B）">
+            <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M3.5 5h13M3.5 10h13M3.5 15h13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          </button>
+          <img class="tb-logo" src="./heronbo-logo.png" alt="HeronBo" />
+          <input id="canvasTitle" class="canvas-title" spellcheck="false" maxlength="60" />
+          <span id="canvasMeta" class="canvas-meta"></span>
+        </div>
+        <div class="tb-right">
+          <button id="undoBtn" class="tb-btn" title="撤销（Ctrl+Z）">↶</button>
+          <button id="redoBtn" class="tb-btn" title="重做（Ctrl+Shift+Z）">↷</button>
+          <button id="themeToggle" class="tb-btn" title="切换深浅色主题">
+            <svg class="ico-moon" viewBox="0 0 20 20" width="17" height="17" aria-hidden="true"><path d="M16 12.2A6.6 6.6 0 0 1 7.8 4a6.6 6.6 0 1 0 8.2 8.2Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+            <svg class="ico-sun" viewBox="0 0 20 20" width="17" height="17" aria-hidden="true"><circle cx="10" cy="10" r="3.6" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 2.6v1.8M10 15.6v1.8M2.6 10h1.8M15.6 10h1.8M4.8 4.8l1.3 1.3M13.9 13.9l1.3 1.3M15.2 4.8l-1.3 1.3M6.1 13.9l-1.3 1.3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          </button>
+          <button id="gatewayPill" class="gateway-pill" title="豆包连接状态 / 设置">
+            <i class="dot"></i><span>检测中</span>
+          </button>
+          <button id="bridgeBtn" class="tb-btn bridge-toggle" title="内置画布映射" aria-label="内置画布映射">▣</button>
+          <button id="helpBtn" class="tb-btn" title="快捷键（?）">?</button>
+        </div>
+      </header>
+
+      <!-- 左侧竖排工具条 -->
+      <nav id="rail" aria-label="画布工具">
+        <button class="rail-item" data-new="text" data-tip="文本">
+          <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M4 5h12M10 5v11M7.4 16h5.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
+        <button class="rail-item" data-new="image" data-tip="图片">
+          <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><rect x="3" y="4" width="14" height="12" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="7.4" cy="8.2" r="1.4" fill="currentColor"/><path d="M4 14.2l3.6-3.4 2.6 2.4 2.4-2.1L16 14.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <button class="rail-item" data-new="video" data-tip="视频">
+          <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><rect x="3" y="4.6" width="14" height="10.8" rx="2.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8.6 8.1l3.8 2-3.8 2z" fill="currentColor"/></svg>
+        </button>
+        <button class="rail-item" data-audio data-tip="音频">
+          <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M4 10h1.6M7.6 6.4v7.2M10.2 3.8v12.4M12.8 7.4v5.2M15.4 9h1.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
+        <button class="rail-item" data-subjects data-tip="主体">
+          <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><circle cx="10" cy="7.4" r="3" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M4.2 16.2c.7-3 3-4.6 5.8-4.6s5.1 1.6 5.8 4.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
+        <button class="rail-item" data-new="upload" data-tip="上传">
+          <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M10 13.6V4.4M6.6 7.8L10 4.4l3.4 3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 12.4v2.2a1.4 1.4 0 0 0 1.4 1.4h9.2a1.4 1.4 0 0 0 1.4-1.4v-2.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
+        <span class="rail-sep"></span>
+        <button class="rail-item" data-kit data-tip="导演工具箱">
+          <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M3.4 7.2h13.2v8.2a1.2 1.2 0 0 1-1.2 1.2H4.6a1.2 1.2 0 0 1-1.2-1.2z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M3.4 7.2l1.1-2.5 11.2-1.2.9 3.7z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M7.4 6.9L8.6 3.7M11.4 6.7l1.2-3.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+        </button>
+        <button class="rail-item" data-assets data-tip="资产库">
+          <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M3.2 6.4a1.4 1.4 0 0 1 1.4-1.4h2.6l1.4 1.6h5.4a1.4 1.4 0 0 1 1.4 1.4v6.6a1.4 1.4 0 0 1-1.4 1.4H4.6a1.4 1.4 0 0 1-1.4-1.4z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
+        </button>
+        <span class="rail-sep"></span>
+        <button class="rail-item" data-example data-tip="示例画布">
+          <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M10 3.2l1.5 4.1 4.1 1.5-4.1 1.5L10 14.4 8.5 10.3 4.4 8.8l4.1-1.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M15.2 13.6l.7 1.7 1.7.7-1.7.7-.7 1.7-.7-1.7-1.7-.7 1.7-.7z" fill="currentColor"/></svg>
+        </button>
+      </nav>
+
+      <!-- 左下：视图控制 dock -->
+      <div id="dock" class="dock" role="group" aria-label="画布视图控制">
+        <button id="toolBtn" class="dock-btn on" title="选择工具（V）：移动节点、拖空白框选">
+          <svg class="ico-select" viewBox="0 0 20 20" width="17" height="17" aria-hidden="true"><path d="M5 3.4l9.2 5.2-3.4 1.1-1.1 3.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M10.4 10.2l4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          <svg class="ico-hand" viewBox="0 0 20 20" width="17" height="17" aria-hidden="true"><path d="M7.4 9.6V5.2a1.2 1.2 0 1 1 2.4 0v3.6M9.8 8.8V4.4a1.2 1.2 0 1 1 2.4 0v4.4M12.2 9V5.8a1.2 1.2 0 1 1 2.4 0V11c0 3-1.9 5.2-4.8 5.2-2.4 0-3.5-.9-4.6-2.6L4 10.9a1.2 1.2 0 0 1 2-1.3l1.4 1.7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <span class="dock-sep"></span>
+        <button id="fitBtn" class="dock-btn" title="全部节点收进视野（F）">
+          <svg viewBox="0 0 20 20" width="17" height="17" aria-hidden="true"><path d="M3.2 7.2V4.6a1.4 1.4 0 0 1 1.4-1.4h2.6M16.8 7.2V4.6a1.4 1.4 0 0 0-1.4-1.4h-2.6M3.2 12.8v2.6a1.4 1.4 0 0 0 1.4 1.4h2.6M16.8 12.8v2.6a1.4 1.4 0 0 1-1.4 1.4h-2.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </button>
+        <button id="minimapBtn" class="dock-btn" title="小地图（M）">
+          <svg viewBox="0 0 20 20" width="17" height="17" aria-hidden="true"><rect x="3" y="3.4" width="14" height="13.2" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="6" y="6.4" width="4.4" height="3.2" rx="1" fill="currentColor" opacity=".55"/><rect x="10.6" y="10.6" width="4" height="3.2" rx="1" fill="currentColor" opacity=".55"/></svg>
+        </button>
+        <button id="edgesBtn" class="dock-btn on" title="显示 / 隐藏连线（L）">
+          <svg viewBox="0 0 20 20" width="17" height="17" aria-hidden="true"><circle cx="5" cy="10" r="2.2" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="15" cy="10" r="2.2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M7.4 10h5.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
+        <span class="dock-sep"></span>
+        <button id="zoomOut" class="dock-btn" title="缩小（Ctrl+-）">−</button>
+        <button id="zoomLabel" class="dock-zoom" title="回到 100%（0）">100%</button>
+        <button id="zoomIn" class="dock-btn" title="放大（Ctrl++）">＋</button>
+        <button id="zoomReset" class="dock-btn" title="回到 100%（0）">
+          <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M10 4.2 3.9 10l6.1 5.8 6.1-5.8z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+
+      <div id="minimap" class="minimap hidden" title="小地图：点击跳转">
+        <canvas id="minimapCanvas" width="180" height="110"></canvas>
+      </div>
+
+      <!-- 右下：与 AI 对话 -->
+      <div class="ai-dock">
+        <button id="agentBtn" class="ai-pill" title="画布 Agent：把目标拆成分镜节点并自动连线">
+          <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M10 3.4l1.4 3.8 3.8 1.4-3.8 1.4L10 13.8 8.6 10 4.8 8.6 8.6 7.2z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M14.8 13.4l.6 1.5 1.5.6-1.5.6-.6 1.5-.6-1.5-1.5-.6 1.5-.6z" fill="currentColor"/></svg>
+          <span>与 AI 对话</span>
+        </button>
+      </div>
+    </main>
+
+    <!-- 底部居中：生成面板（选中节点时出现） -->
+    <aside id="inspector" class="composer">
+      <div class="composer-shell">
+        <div id="inspectorBody" class="inspector-body"></div>
+      </div>
+    </aside>
+
+    <!-- 左侧抽屉：项目 / 网关 / 素材 -->
+    <aside id="sidebar">
+      <div class="brand">
+        <img class="brand-logo" src="./heronbo-logo.png" alt="HeronBo" />
+        <div class="brand-text">
+          <strong>HeronBo · 豆包画布</strong>
+          <span>本地生图 / 生视频工作台</span>
+        </div>
+        <button id="sideClose" class="icon-btn" title="收起（B）">×</button>
+      </div>
+      <div class="side-scroll">
+        <div class="side-head">
+          <span>画布</span>
+          <button id="newCanvasBtn" class="icon-btn" title="新建画布（Shift+N）">＋</button>
+        </div>
+        <div id="canvasList" class="canvas-list"></div>
+
+        <div class="side-head"><span>豆包</span></div>
+        <div id="gatewayCard" class="gateway-card">
+          <div class="gateway-line"><i class="dot"></i><span>正在检测网关…</span></div>
+        </div>
+        <button id="launchGatewayBtn" class="side-action hidden">启动 doubao2api</button>
+
+        <div class="side-head"><span>本地素材</span></div>
+        <div id="storageCard" class="storage-card">
+          <div class="storage-bar"><i></i></div>
+          <span>—</span>
+        </div>
+      </div>
+      <div class="side-foot">
+        <button id="settingsBtn" class="side-foot-btn">⚙ 设置</button>
+        <button id="helpBtnSide" class="side-foot-btn">? 快捷键</button>
+      </div>
+      <div class="side-brandline"><span id="brandVersion">HeronBo Workbench · Local</span></div>
+    </aside>
+  </div>
+
+  <div id="addMenu" class="add-menu hidden"></div>
+  <div id="ctxMenu" class="add-menu ctx-menu hidden"></div>
+  <div id="mentionMenu" class="mention-menu hidden"></div>
+  <div id="agentMentionMenu" class="mention-menu hidden"></div>
+
+  <aside id="agentPanel" class="agent-panel hidden">
+    <div class="agent-head">
+      <div class="agent-title"><b>✦ 与 AI 对话</b><span>独立会话 · 生成中不可用（避免打断）</span></div>
+      <button id="agentClose" class="icon-btn" title="关闭">×</button>
+    </div>
+    <div id="agentLog" class="agent-log">
+      <div class="agent-msg assistant">
+        <div class="agent-bubble">描述你想做的内容，我会拆成分镜节点、写好提示词并自动连线。<br>比如「3 个分镜，橘猫雨夜短片，先首帧再视频」。<br>选中节点后再说话，我就能直接改写这个节点的提示词。</div>
+      </div>
+    </div>
+    <div id="agentCtx" class="agent-ctx hidden"></div>
+    <div id="agentMode" class="agent-mode">
+      <button data-mode="plan" class="on">规划节点</button>
+      <button data-mode="prompt">只出提示词</button>
+    </div>
+    <div id="agentSkills" class="agent-skills" title="提示词 skill：决定提示词怎么写"></div>
+    <div id="agentMentionChips" class="agent-mention-chips hidden"></div>
+    <div class="agent-input">
+      <textarea id="agentInput" placeholder="例如：做 3 个分镜，先首帧再视频，电影感；输入 @ 可引用画布素材"></textarea>
+      <button id="agentSend" title="发送（Ctrl+Enter）">↑</button>
+    </div>
+    <div class="agent-foot">Agent 只负责规划和建节点；生成会消耗豆包额度，运行前会问你。</div>
+  </aside>
+
+  <aside id="bridgePanel" class="bridge-panel hidden" aria-label="内置画布映射">
+    <div class="agent-head">
+      <div class="agent-title"><b>内置画布</b><span id="bridgeMeta">CDP 映射 · 未连接</span></div>
+      <button id="bridgeClose" class="icon-btn" title="关闭">×</button>
+    </div>
+    <div class="bridge-toolbar">
+      <button id="bridgeEnsure" class="btn primary">召回 / 保证在场</button>
+      <button id="bridgeRefresh" class="btn">刷新节点</button>
+      <button id="bridgeStageBtn" class="btn">全屏套壳</button>
+      <label class="bridge-field"><span>CANVAS ID</span><input id="bridgeCanvasId" value="cws_60302341085214210" spellcheck="false" /></label>
+    </div>
+    <div id="bridgeNodes" class="bridge-nodes">
+      <div class="bridge-empty">打开后先点「刷新节点」；画布不在场就点「召回 / 保证在场」。</div>
+    </div>
+    <div id="bridgeLog" class="bridge-log" aria-live="polite"></div>
+  </aside>
+
+  <div id="bridgeStage" class="bridge-stage hidden" role="dialog" aria-label="内置画布套壳">
+    <div class="bridge-stage-head">
+      <div class="bridge-stage-title">
+        <b>内置画布 · 套壳</b>
+        <span id="bridgeStageMeta">正在读取…</span>
+      </div>
+      <div class="bridge-stage-actions">
+        <button id="bridgeStageEnsure" class="btn">召回</button>
+        <button id="bridgeStageRefresh" class="btn">刷新</button>
+        <button id="bridgeStageClose" class="btn primary">退出</button>
+      </div>
+    </div>
+    <div id="bridgeStageBody" class="bridge-stage-body">
+      <img id="bridgeStageImg" alt="内置豆包画布实时镜像" draggable="false" />
+      <div id="bridgeStageEmpty" class="bridge-stage-empty">正在连接内置画布…</div>
+      <div id="bridgeStageMarquee" class="bridge-stage-marquee hidden"></div>
+    </div>
+    <div class="bridge-stage-foot">
+      <span>点击 / 双击 / 右键 / 滚轮 / 拖动 都会映射到右侧内置画布；截图约 1.2 秒刷新一次。</span>
+      <span id="bridgeStageHint">提示：如果画布被收窄成图标条，先点「召回」。</span>
+    </div>
+  </div>
+
+  <div id="kitMask" class="mask hidden"></div>
+  <div id="kitModal" class="modal kit-modal hidden">
+    <div class="modal-head"><strong>导演工具箱</strong><button data-close-kit class="icon-btn" title="关闭">×</button></div>
+    <div class="modal-body">
+      <p class="set-hint">点一下，把对应描述追加到当前选中节点的提示词末尾。</p>
+      <div id="kitBody" class="kit-body"></div>
+    </div>
+  </div>
+
+  <div id="subjectMask" class="mask hidden"></div>
+  <div id="subjectModal" class="modal subject-modal hidden">
+    <div class="modal-head"><strong>主体库</strong><button data-close-subjects class="icon-btn" title="关闭">×</button></div>
+    <div class="modal-body">
+      <div class="subject-new">
+        <input id="subjectName" class="set-input" maxlength="40" placeholder="主体名称，例如：晓艳老师 / 蓝色保温杯">
+        <label class="btn" for="subjectFiles">选择参考图</label>
+        <input id="subjectFiles" type="file" accept="image/*" multiple class="hidden">
+        <button id="subjectPickImage" class="btn" type="button">从画布选形象</button>
+        <label class="btn" for="subjectAudio">参考音频（可选）</label>
+        <input id="subjectAudio" type="file" accept="audio/*" class="hidden">
+        <button id="subjectPickAudio" class="btn" type="button">从画布选音频</button>
+        <button id="subjectSave" class="btn primary">保存为主体</button>
+      </div>
+      <p class="set-hint">用 1~6 张图登记一个主体；之后在生成面板「主体」里挂上它，出图/出片会保持这个主体的长相与外观。</p>
+      <div id="subjectPreview" class="subject-preview"></div>
+      <div id="subjectAudioPreview" class="subject-audio-preview"></div>
+      <div id="subjectGrid" class="subject-lib"></div>
+    </div>
+  </div>
+
+  <div id="pickMask" class="mask hidden"></div>
+  <div id="pickModal" class="modal pick-modal hidden">
+    <div class="modal-head"><strong id="pickTitle">从画布选择</strong><button data-close-pick class="icon-btn" title="关闭">×</button></div>
+    <div class="modal-body"><div id="pickGrid" class="asset-lib"></div></div>
+  </div>
+
+  <div id="pickBar" class="pick-bar hidden">
+    <span id="pickBarText">点画布上的节点来选择</span>
+    <button id="pickBarList" class="pick-bar-btn">从列表选</button>
+    <button id="pickBarCancel" class="pick-bar-btn ghost">取消 (Esc)</button>
+  </div>
+
+  <div id="assetMask" class="mask hidden"></div>
+  <div id="assetModal" class="modal asset-modal hidden">
+    <div class="modal-head"><strong>资产库</strong><button data-close-assets class="icon-btn" title="关闭">×</button></div>
+    <div class="modal-body"><div id="assetGrid" class="asset-lib"></div></div>
+  </div>
+
+  <div id="lightbox" class="lightbox hidden">
+    <div class="lightbox-top">
+      <span id="lightboxTitle" class="lightbox-title"></span>
+      <div class="lightbox-actions">
+        <button id="lightboxDownload" class="icon-btn" title="下载">⤓</button>
+        <button id="lightboxClose" class="icon-btn" title="关闭（Esc）">×</button>
+      </div>
+    </div>
+    <div id="lightboxStage" class="lightbox-stage"></div>
+    <div id="lightboxNav" class="lightbox-nav"></div>
+  </div>
+
+  <div id="settingsMask" class="mask hidden"></div>
+  <div id="settingsModal" class="modal hidden">
+    <div class="modal-head"><strong>设置</strong><button data-close-settings class="icon-btn">×</button></div>
+    <div class="modal-body" id="settingsBody"></div>
+  </div>
+
+  <div id="helpMask" class="mask hidden"></div>
+  <div id="helpModal" class="modal help-modal hidden">
+    <div class="modal-head"><strong>快捷键与用法</strong><button data-close-help class="icon-btn">×</button></div>
+    <div class="modal-body help-body">
+      <div class="help-grid">
+        <section>
+          <h4>画布</h4>
+          <div class="krow"><span>选择工具</span><kbd>V</kbd><kbd>移动节点 / 框选</kbd></div>
+          <div class="krow"><span>抓手工具</span><kbd>H</kbd><kbd>拖动画布</kbd></div>
+          <div class="krow"><span>平移画布</span><kbd>抓手工具</kbd><kbd>中键</kbd></div>
+          <div class="krow"><span>缩放（以光标为中心）</span><kbd>Ctrl</kbd><kbd>滚轮</kbd></div>
+          <div class="krow"><span>框选多个节点</span><kbd>选择工具拖空白</kbd><kbd>Shift 累加</kbd></div>
+          <div class="krow"><span>磁吸对齐</span><kbd>拖动节点靠近时自动吸附</kbd></div>
+          <div class="krow"><span>全部收进视野</span><kbd>F</kbd></div>
+          <div class="krow"><span>回到 100%</span><kbd>0</kbd></div>
+          <div class="krow"><span>撤销 / 重做</span><kbd>Ctrl</kbd><kbd>Z</kbd><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Z</kbd></div>
+          <div class="krow"><span>删除选中的节点 / 连线</span><kbd>Delete</kbd></div>
+          <div class="krow"><span>显示 / 隐藏连线</span><kbd>L</kbd></div>
+          <div class="krow"><span>小地图</span><kbd>M</kbd></div>
+          <div class="krow"><span>项目抽屉 / 生成面板</span><kbd>B</kbd><kbd>I</kbd></div>
+          <div class="krow"><span>深浅色主题</span><kbd>顶栏 ◐</kbd></div>
+        </section>
+        <section>
+          <h4>节点</h4>
+          <div class="krow"><span>新建节点（鼠标处）</span><kbd>双击空白处</kbd></div>
+          <div class="krow"><span>新建节点（右键空白处）</span><kbd>右键</kbd></div>
+          <div class="krow"><span>节点菜单（改名 / 复制 / 删除）</span><kbd>右键节点</kbd></div>
+          <div class="krow"><span>画布菜单（改名 / 复制 / 清空 / 删除）</span><kbd>右键画布名</kbd></div>
+          <div class="krow"><span>新建节点（视野中间）</span><kbd>N</kbd></div>
+          <div class="krow"><span>新建画布</span><kbd>Shift</kbd><kbd>N</kbd></div>
+          <div class="krow"><span>开始生成</span><kbd>Ctrl</kbd><kbd>Enter</kbd></div>
+          <div class="krow"><span>引用上游节点</span><kbd>@</kbd></div>
+          <div class="krow"><span>连线</span><kbd>拖右侧圆点 → 左侧圆点</kbd></div>
+          <div class="krow"><span>改名</span><kbd>双击标题</kbd></div>
+          <div class="krow"><span>缩放卡片宽度</span><kbd>拖右下角</kbd></div>
+          <div class="krow"><span>下载结果</span><kbd>卡片上的 ⤓</kbd></div>
+          <div class="krow"><span>主体节点</span><kbd>左轨「主体」或右键新建</kbd></div>
+          <div class="krow"><span>导演工具箱 / 资产库</span><kbd>左轨图标</kbd></div>
+          <div class="krow"><span>生成面板</span><kbd>跟着选中节点走</kbd></div>
+          <div class="krow"><span>拖动节点（含图片上）</span><kbd>按住卡片拖</kbd></div>
+        </section>
+        <section>
+          <h4>Agent</h4>
+          <div class="krow"><span>打开画布 Agent</span><kbd>右下「与 AI 对话」</kbd></div>
+          <div class="krow"><span>发送目标</span><kbd>Ctrl</kbd><kbd>Enter</kbd></div>
+          <div class="krow"><span>拆解结果</span><kbd>自动建节点 + 连线</kbd></div>
+          <p class="help-note">Agent 用豆包工作版的文本模型做规划，只负责建节点；生成要手动点「开始生成」，避免偷偷消耗额度。</p>
+          <p class="help-note">所有画布与素材都保存在本机 <code>data\</code> 目录，不会上传任何云端。</p>
+          <p class="help-note">一个节点的上游连线里，只有第一张图片会作为参考图发给豆包（网关单图限制）；上游文本节点会拼进提示词。</p>
+          <p class="help-note">视频生成较慢（1~5 分钟），可以同时排多个节点的任务。</p>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <div id="qrMask" class="mask hidden"></div>
+  <div id="qrModal" class="modal qr-modal hidden">
+    <div class="modal-head"><strong>扫码登录豆包工作版</strong><button data-close-qr class="icon-btn" title="关闭">×</button></div>
+    <div class="modal-body qr-body">
+      <div id="qrBox" class="qr-box">生成中…</div>
+      <div id="qrHint" class="qr-hint">正在向本机网关申请二维码…</div>
+      <div class="set-actions" style="justify-content:center">
+        <button id="qrRetry" class="btn">重新生成二维码</button>
+        <button id="qrAdmin" class="btn">打开网关后台</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="onboardMask" class="mask hidden"></div>
+  <div id="onboardModal" class="modal onboard-modal hidden">
+    <div class="modal-head"><strong>第一次使用 · 三步开始</strong><button data-close-onboard class="icon-btn" title="关闭">×</button></div>
+    <div class="modal-body onboard-body">
+      <div class="ob-hero">
+        <img src="./heronbo-logo.png" alt="HeronBo">
+        <div><b>HeronBo · 豆包画布</b><span>本地生图 / 生视频工作台 · 不上传云端</span></div>
+      </div>
+      <div class="ob-step" data-step="gateway">
+        <span class="ob-no">1</span>
+        <div class="ob-main">
+          <b>启动豆包工作客户端</b>
+          <p>画布直接接管本机的「豆包工作」客户端，不需要 doubao2api、API Key 或启动脚本。</p>
+          <div class="ob-status" data-status="gateway">检测中…</div>
+          <button class="ob-link" data-ob-choose>没找到网关？手动选 doubao2api 目录</button>
+        </div>
+        <button class="btn" data-ob-launch>启动豆包工作</button>
+      </div>
+      <div class="ob-step" data-step="login">
+        <span class="ob-no">2</span>
+        <div class="ob-main">
+          <b>在客户端里登录</b>
+          <p>点「打开客户端」，用手机豆包 App 扫码；登录态由豆包工作客户端自己保存。</p>
+          <div class="ob-status" data-status="login">检测中…</div>
+        </div>
+        <button class="btn" data-ob-login>打开客户端</button>
+      </div>
+      <div class="ob-step" data-step="canvas">
+        <span class="ob-no">3</span>
+        <div class="ob-main">
+          <b>开始第一张画布</b>
+          <p>双击空白处新建节点，写提示词后 Ctrl+Enter 生成；结果自动存到本机。</p>
+          <div class="ob-status" data-status="canvas">随时可以开始</div>
+        </div>
+        <button class="btn primary" data-ob-canvas>新建图片节点</button>
+      </div>
+      <div class="ob-foot">
+        <label><input type="checkbox" id="obDontShow" checked> 以后不再自动显示</label>
+        <button class="btn" data-close-onboard>先逛逛</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <div id="bootError" class="boot-error hidden"></div>
+
+  <script>
+    /* 画布既可单独开（/），也可挂在工作台同端口下（/canvas/）。资源与 API 都按前缀走。 */
+    window.__CANVAS_BASE__ = (location.pathname === '/canvas' ||
+      location.pathname.indexOf('/canvas/') === 0) ? '/canvas' : '';
+    window.__CANVAS_TOKEN__ = '__TOKEN_VALUE__';
+  </script>
+  <script src="./app.js?v=5"></script>
+</body>
+</html>
+

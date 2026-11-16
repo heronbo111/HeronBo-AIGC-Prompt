@@ -95,20 +95,28 @@ def swap_dir(new_dir, dist_dir, force=False):
     bak = os.path.join(dist_dir, "_old", ts)
     cur_exe = os.path.join(dist_dir, "score-tool.exe")
     cur_int = os.path.join(dist_dir, INTERNAL)
+    backed = True
     try:
         if os.path.isfile(cur_exe) or os.path.isdir(cur_int):
             os.makedirs(bak, exist_ok=True)
             if os.path.isfile(cur_exe):
-                shutil.move(cur_exe, os.path.join(bak, "score-tool.exe"))
+                shutil.copy2(cur_exe, os.path.join(bak, "score-tool.exe"))
             if os.path.isdir(cur_int):
-                shutil.move(cur_int, os.path.join(bak, INTERNAL))    # 同盘 move＝改名，秒级
+                shutil.copytree(cur_int, os.path.join(bak, INTERNAL), dirs_exist_ok=True)
     except OSError as e:                                              # noqa: BLE001
-        return 3, "旧版备份不出来（%s）：%s" % (bak, e)
+        # 2026-11-15（本机连续踩了三次）：备份用 `shutil.move` 改名，只要 `_internal\canvas`
+        # 里有一个文件被 WebView2 之类的进程打开着，目录 rename 就 WinError 32 →
+        # 整次换位中止，而此刻旧 exe 已经被挪走、新 exe 还没进来 —— **dist 里连 exe 都没了**，
+        # 桌面快捷方式直接起不来。备份只是"留退路"，不该挡住正事：
+        # 改成"复制做备份"，复制失败就告警跳过，继续换位。
+        backed = False
+        print("!! 旧版备份跳过（%s）：%s" % (bak, e))
     try:
-        shutil.move(new_exe, cur_exe)
+        os.makedirs(dist_dir, exist_ok=True)
+        shutil.copy2(new_exe, cur_exe)
         new_int = os.path.join(new_dir, INTERNAL)
         if os.path.isdir(new_int):
-            shutil.move(new_int, cur_int)
+            shutil.copytree(new_int, cur_int, dirs_exist_ok=True)
         for n in os.listdir(new_dir):        # 产物目录里除 exe/_internal 之外的东西（如 _version.json）
             if n in ("score-tool.exe", INTERNAL):
                 continue
@@ -121,7 +129,7 @@ def swap_dir(new_dir, dist_dir, force=False):
         return 4, ("换不进去（%s）：%s\n新产物还在原地：%s" % (dist_dir, e, new_dir))
     _tidy_old(dist_dir)
     return 0, ("已换位（onedir）：%s\\score-tool.exe + %s\\\n旧版备份：%s%s"
-               % (dist_dir, INTERNAL, bak,
+               % (dist_dir, INTERNAL, bak if backed else "（跳过，见上方告警）",
                   "\n⚠ 这次是 --force 强换的：正在跑的那个实例请**关掉重开**" if pids else ""))
 
 

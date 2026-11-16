@@ -25,7 +25,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORKSPACE = os.path.dirname(os.path.dirname(HERE))        # tools → 仓库 → 工作区根
-DEFAULT_BUILD_DIR = r"D:\HeronBo-Build"
+DEFAULT_BUILD_DIR = os.path.join(WORKSPACE, "HeronBo-Workbench", "installer")
 DEFAULT_OUT = os.path.join(WORKSPACE, "_安装包")
 ISS = "setup-real.iss"
 
@@ -102,22 +102,29 @@ def main():
         except OSError:
             pass
         return 1
-    out_dir = os.path.join(build, "output")
-    hits = [f for f in glob.glob(os.path.join(out_dir, "*.exe")) if "Setup" in os.path.basename(f)]
+    # 正式安装版现在直接编到 _安装包\；旧工程可能还有 output\，两处都查。
+    hits = []
+    for out_dir in [a.out, os.path.join(build, "output")]:
+        if os.path.isdir(out_dir):
+            hits += [f for f in glob.glob(os.path.join(out_dir, "*.exe"))
+                     if "Setup" in os.path.basename(f)]
     if not hits:
-        say("  编译完了，但 output\\ 里没找到 Setup 产物 —— 看 build-last.log")
+        say("  编译完了，但 _安装包\\ / output\\ 里没找到 Setup 产物 —— 看 build-last.log")
         return 1
     newest = max(hits, key=os.path.getmtime)
     say("  编译完成（%.0f 秒）：%s（%.0f MB）"
         % (time.time() - t0, os.path.basename(newest), os.path.getsize(newest) / 1048576.0))
 
     say("")
-    say("[2/3] 拷到 %s" % a.out)
+    say("[2/3] 确认交付位置 %s" % a.out)
     try:
         os.makedirs(a.out, exist_ok=True)
         dst = os.path.join(a.out, os.path.basename(newest))
-        shutil.copy2(newest, dst)
-        say("  → %s（%.0f MB）" % (dst, os.path.getsize(dst) / 1048576.0))
+        if os.path.abspath(newest) != os.path.abspath(dst):
+            shutil.copy2(newest, dst)
+            say("  → %s（%.0f MB）" % (dst, os.path.getsize(dst) / 1048576.0))
+        else:
+            say("  → 已在 _安装包\\，无需再拷：%s" % dst)
     except OSError as e:
         say("  !! 拷贝失败：%r（产物仍在 %s，手动拷一下）" % (e, newest))
         return 1
@@ -127,7 +134,7 @@ def main():
     for f in sorted(glob.glob(os.path.join(a.out, "*")), key=os.path.getmtime, reverse=True):
         say("  %7.0f MB  %s" % (os.path.getsize(f) / 1048576.0, os.path.basename(f)))
     say("")
-    say("完成。发版前记得：版本号若进位，改 D:\\HeronBo-Build\\setup-common.iss 的两处 define 再编。")
+    say("完成。发版前记得：版本号若进位，改 HeronBo-Workbench\\installer\\setup-common.iss 的 define 再编。")
     return 0
 
 
