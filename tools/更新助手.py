@@ -49,6 +49,21 @@ def log(d, msg):
         pass
 
 
+def _alert(msg):
+    """失败时给用户一个**看得见**的提示。
+
+    2026-11-16 用户实测 0.7→0.71：更新完软件自己关掉、不重启、重开还是旧版，
+    全程没有一句提示——因为失败分支只写了日志（日志他不会去翻）。更新跑在后台，
+    静默失败等于"点了没反应"，必须弹出来。
+    """
+    try:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(
+            None, str(msg), "HeronBo 工作台 · 更新没完成", 0x00000040 | 0x00010000)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def tidy_old(d, keep=KEEP_DEFAULT):
     """只留最近 N 份旧备份。两种形态都清：老的单文件 exe、新的 _old\\<时间戳>\\ 目录。"""
     try:
@@ -382,7 +397,16 @@ def main(argv=None):
                             and os.path.isfile(os.path.join(root, x, "score-tool.exe")):
                         root = os.path.join(root, x)
                         break
-            ok, why = apply_pkg(d, root, keep=a.keep)
+            ok, why = False, ""
+            # 2026-11-16：杀软的实时扫描是**瞬时**的，换位时被占一下很常见。
+            # 失败已经完整回滚（旧件在原位），所以隔一下重来一次是安全的。
+            for _attempt in range(2):
+                ok, why = apply_pkg(d, root, keep=a.keep)
+                if ok:
+                    break
+                log(d, "apply attempt %d failed: %s" % (_attempt + 1, why))
+                if _attempt == 0:
+                    time.sleep(1.5)
         except zipfile.BadZipFile:
             ok, why = False, "下载的更新包解不开（可能没下完）"
         finally:
@@ -397,6 +421,8 @@ def main(argv=None):
         ok, why = swap(d, a.src, keep=a.keep)
     if not ok:
         log(d, "swap failed: %s" % why)
+        _alert("更新没有装上：%s\n\n旧版还在，可以直接打开工作台继续用。\n"
+               "详细记录在同目录的 %s。" % (why, LOG_NAME))
         return 2
     # 换位后**稍等再启动**：新 exe 刚落盘，杀软的实时扫描经常正踩在它上面——
     # 2026-10-06 实测（本机更新 v0.5.1）：秒启动的那次解包被打断（_MEI 里只有 20 个
@@ -417,7 +443,11 @@ def main(argv=None):
         if i < 2:
             time.sleep(2.0 + i * 2.0)
     if not ok_started:
-        log(d, "!! 三次都没起来 - 旧版在 %s，请手动启动或回滚" % bak)
+        # 这里原来写了 % bak —— bak 只是 apply_pkg 的局部变量，跑到这一行会抛
+        # NameError，助手直接崩掉，连日志都断了（2026-11-16 修）。
+        _alert("新版已经装好了，但没能自动打开。\n\n"
+               "请手动双击桌面的工作台快捷方式；旧版备份在 _old 文件夹里。")
+        log(d, "!! 三次都没起来（新版已就位；旧版备份在 _old\\<时间戳>\\ 可手动回滚）")
     return 0
 
 

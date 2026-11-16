@@ -349,8 +349,34 @@ def _stash_final(pdir, src):
 
 
 def is_busy():
+    """有没有一轮视频任务正占着这个坑。
+
+    2026-11-16 用户反馈「让豆包生视频偶尔点一下没反应，要重启工作台才能再点」。
+    原因是 `running` 只在 `_done_set` 里被放开；一旦后台线程被卡住（豆包 CLI 网关
+    挂起、子进程不返回、异常被吞掉），它永远是 True，前端每一下都被这句挡回去，
+    只能重启整个进程才能解开——表现就是"点了没反应"。
+
+    超龄兜底：超过该阶段的合理上限，判定这一轮已经死了，直接把坑放开，让用户能再点。
+    prepare 正常几十秒，confirm 的 CLI 内层超时是 30 分钟，所以分别给 10 / 45 分钟。
+    """
+    stalled = 0
     with _LOCK:
-        return _STATE["running"]
+        if not _STATE["running"]:
+            return False
+        stage = _STATE.get("stage") or ""
+        started = float(_STATE.get("started") or 0)
+        limit = 600 if stage == "prepare" else 2700
+        el = (time.time() - started) if started else 0
+        if el <= limit:
+            return True
+        stalled = int(el // 60)
+        _STATE.update({
+            "running": False, "stage": "stalled", "finished": round(time.time(), 1),
+            "stageName": "上一轮卡住已放开", "etaLeft": 0,
+            "error": "上一轮跑了 %d 分钟没有结果，已自动放开；可以重新点一次" % stalled})
+        _PROG_GEN["n"] += 1                  # 让还在转的进度线程收工
+    _log("stalled: %s 上一轮 %d 分钟没结果，自动放开 busy" % (stage, stalled))
+    return False
 
 
 def _reset(stage, params):
