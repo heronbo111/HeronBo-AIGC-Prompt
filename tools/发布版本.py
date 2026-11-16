@@ -222,7 +222,7 @@ def gh_publish(tag, target, body, files, force):
                     cfg += 'proxy = "%s"\n' % _proxy
                 try:
                     r = subprocess.run(
-                        ["curl", "-sS", "-o", os.devnull, "-w", "%{http_code}",
+                        ["curl", "-sS", "--ssl-no-revoke", "-o", os.devnull, "-w", "%{http_code}",
                          "--max-time", "1700", "--retry", "2", "--retry-delay", "10", "-K", "-"],
                         input=cfg.encode("utf-8"), capture_output=True, timeout=1800)
                     code = (r.stdout or b"").decode("utf-8", "replace").strip()[-3:]
