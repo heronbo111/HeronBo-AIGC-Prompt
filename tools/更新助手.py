@@ -89,8 +89,21 @@ def apply_pkg(d, src_dir, keep=KEEP_DEFAULT, ts=None, move_src=True):
     bak = os.path.join(d, "_old", ts)
     cur_exe = os.path.join(d, "score-tool.exe")
     cur_int = os.path.join(d, INTERNAL)
-    take = shutil.move if move_src else shutil.copy2
+    new_int = os.path.join(src_dir, INTERNAL)
+    tmp_exe = cur_exe + ".new"
+    tmp_int = cur_int + ".new"
     moved_exe = moved_int = False
+
+    def _clean_side():
+        """旁路残留清掉（.new 是这一轮没换成的半成品，留着会让下次误判）。"""
+        for p in (tmp_exe,):
+            try:
+                if os.path.isfile(p):
+                    os.remove(p)
+            except OSError:
+                pass
+        if os.path.isdir(tmp_int):
+            shutil.rmtree(tmp_int, ignore_errors=True)
 
     def _rollback():
         """把旧 exe/_internal 挪回原位（新放上的先删/挪掉）。"""
@@ -108,29 +121,43 @@ def apply_pkg(d, src_dir, keep=KEEP_DEFAULT, ts=None, move_src=True):
                 if os.path.isdir(cur_int):
                     shutil.rmtree(cur_int, ignore_errors=True)
                 shutil.move(b_int, cur_int)
+            _clean_side()
             log(d, "apply_pkg 失败已回滚（旧文件都在原位；备份目录 %s）" % bak)
         except OSError as e2:
             log(d, "!! 回滚也失败：%s（旧文件在 %s，请手动挪回）" % (e2, bak))
 
+    # ⚠️ 2026-11-16：**目录不能再 shutil.move**。
+    # move 目录在 Windows 上不是原子操作——_internal 里只要有一个文件被占用
+    # （杀软实时扫描 / 旧进程没退干净），它会搬一半就抛错，留下"旧目录残缺 + 新目录残缺"，
+    # 回滚也可能跟着失败。用户那台 0.6.8 在线更新后正是这个现场：软件自己关掉、
+    # 再打开起不来。改成 **先完整复制到旁路 .new，再靠两次同盘 rename 切换**：
+    # rename 是原子的，要么整块换过去，要么一个字节都不动。
     try:
+        # 1) 新件先落到旁路（此步失败时旧件完全没动）
+        if os.path.isfile(tmp_exe):
+            os.remove(tmp_exe)
+        shutil.copy2(exe_new, tmp_exe)
+        if os.path.isdir(new_int):
+            if os.path.isdir(tmp_int):
+                shutil.rmtree(tmp_int, ignore_errors=True)
+            shutil.copytree(new_int, tmp_int)
+        # 2) 备份旧件（同盘 rename）
         if os.path.isfile(cur_exe) or os.path.isdir(cur_int):
             os.makedirs(bak, exist_ok=True)
             if os.path.isfile(cur_exe):
-                shutil.move(cur_exe, os.path.join(bak, "score-tool.exe"))
+                os.replace(cur_exe, os.path.join(bak, "score-tool.exe"))
                 moved_exe = True
             if os.path.isdir(cur_int):
-                shutil.move(cur_int, os.path.join(bak, INTERNAL))
+                os.rename(cur_int, os.path.join(bak, INTERNAL))
                 moved_int = True
-        take(exe_new, cur_exe)
-        new_int = os.path.join(src_dir, INTERNAL)
-        if os.path.isdir(new_int):
-            if move_src:
-                shutil.move(new_int, cur_int)
-            else:
-                shutil.copytree(new_int, cur_int)
+        # 3) 新件到位（同盘 rename）
+        os.replace(tmp_exe, cur_exe)
+        if os.path.isdir(tmp_int):
+            os.rename(tmp_int, cur_int)
     except OSError as e:
         _rollback()
         return False, "摊入失败（%s）" % e
+    _clean_side()
     log(d, "pkg applied: src=%s backup=%s" % (os.path.basename(src_dir), os.path.basename(bak)))
     tidy_old(d, keep)
     return True, ""
@@ -330,14 +357,14 @@ def main(argv=None):
         # 用途：界面里「切换 agent 通道」后让工作台以新通道重新搭桥（重启最干净）；
         # 走的是同一个助手（等退出 / 静置防杀软 / 起不来自动重试一次，这段逻辑全复用）。
         clean_stale_mei()
-        time.sleep(1.5)
-        pid = start(d)
-        if not alive(pid, timeout=3.0):
-            log(d, "restart: first start died (pid=%s), retrying once" % pid)
-            time.sleep(1.0)
-            pid2 = start(d)
-            if not alive(pid2, timeout=3.0):
-                log(d, "restart: second start died too (pid=%s) - user will start it manually" % pid2)
+        time.sleep(2.0)
+        for i in range(3):
+            pid = start(d)
+            if alive(pid, timeout=5.0):
+                break
+            log(d, "restart: attempt %d died (pid=%s)" % (i + 1, pid))
+            if i < 2:
+                time.sleep(2.0 + i * 2.0)
         return 0
     srcp = a.src if os.path.isabs(a.src) else os.path.join(d, a.src)
     if os.path.isfile(srcp) and srcp.lower().endswith(".zip"):
@@ -376,14 +403,21 @@ def main(argv=None):
     # 基础 DLL、score_core.py 没解出来），弹"找不到 score_core.py"的白屏报错；
     # 手动再开就正常。所以：先静置 1.5s，启动后 3s 确认还活着，死了自动再拉一次。
     clean_stale_mei()
-    time.sleep(1.5)
-    pid = start(d)
-    if not alive(pid, timeout=3.0):
-        log(d, "first start died (pid=%s), retrying once" % pid)
-        time.sleep(1.0)
-        pid2 = start(d)
-        if not alive(pid2, timeout=3.0):
-            log(d, "second start died too (pid=%s) - user will start it manually" % pid2)
+    time.sleep(2.0)
+    # 2026-11-16：**别只试两次就撒手**。换位后新 exe 刚落盘，杀软实时扫描常常正压在上面，
+    # 头一两次解包被打断很常见（旧的注释里 2026-10-06 就踩过）。给三次机会、每次多等一会儿，
+    # 仍然失败才算真失败——那时旧版还完整躺在 _old\<ts>\ 里，用户可以手动起。
+    ok_started = False
+    for i in range(3):
+        pid = start(d)
+        if alive(pid, timeout=5.0):
+            ok_started = True
+            break
+        log(d, "start attempt %d died (pid=%s)" % (i + 1, pid))
+        if i < 2:
+            time.sleep(2.0 + i * 2.0)
+    if not ok_started:
+        log(d, "!! 三次都没起来 - 旧版在 %s，请手动启动或回滚" % bak)
     return 0
 
 
