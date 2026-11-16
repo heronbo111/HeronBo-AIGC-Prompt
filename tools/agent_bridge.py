@@ -384,7 +384,8 @@ def _probe_doubaowork():
         return False, "找不到豆包桥脚本 tools\\doubao_cdp.mjs（它随本仓库走，别单独拷一半）"
     exe = doubaowork_exe()
     if not exe:
-        return False, ("没找到豆包工作客户端（装官方桌面端即可；装在别处就用 "
+        return False, ("没找到豆包工作客户端（没装也不影响干活：可以用豆包 CLI、即梦，"
+                       "或者别的 agent 通道；真要接它，就用 "
                        "agent_bridge.local.json 的 \"doubaowork\" 字段写 DoubaoWork.exe 绝对路径）")
     if not lib_runner(js)[0]:
         return False, ("跑不了桥脚本：需要 Node——独立 node 没找到（没有独立 node 时，本机的 "
@@ -1437,6 +1438,7 @@ def pick_agent(prefer=None, rows=None):
     # 旧安装包曾内置 agent_bridge.local.json={"agent":"doubaowork"}，那是固定
     # CDP 的默认值，不是用户选择；不能让它继续把每台新机器拉回 CDP。
     want = prefer or (cfg.get("agent") if cfg.get("agent_manual") else "")
+    want_why = ""
     if rows is None:
         rows = list_agents()
     rows = {r["key"]: r for r in rows}
@@ -1444,7 +1446,10 @@ def pick_agent(prefer=None, rows=None):
         r = rows[want]
         if r["ok"]:
             return want, ("按配置用 %s" % r["label"]) if prefer or cfg.get("agent")                 else r["label"]
-        return None, "配置指定的 %s 不可用：%s" % (r["label"], r["why"])
+        # 2026-11-16 用户要求「没有豆包就用别的 agent，不要强制装豆包」：
+        # 手动选过的通道当场不可用（典型是选了豆包工作，但这台机器没装 / 没开调试端口）
+        # 时不再 return None 卡死，把原因揣着继续往下找本机可用的通道。
+        want_why = "配置指定的 %s 不可用：%s" % (r["label"], r["why"])
     for key in running_desktop():                # ① 跟随你正开着的软件
         if key == "doubaowork":
             # 豆包工作只能手动选：它没有 CLI，走 CDP 会拉起调试端口、重启客户端，
@@ -1472,6 +1477,9 @@ def pick_agent(prefer=None, rows=None):
         return key, "%s（本机可用%s）" % (
             r["label"], "，已验证" if r.get("verified") else "，还没验证过；建议点一下「测一下」")
     miss = "；".join("%s：%s" % (r["label"], r["why"]) for r in rows.values())
+    if want_why:
+        return None, ("%s；本机也没有其它可自动使用的 agent（可开一个 WorkBuddy / ZCode / Claude "
+                      "等通道，或在 agent 弹窗里手动换一个）。%s" % (want_why, miss))
     return None, ("本机没有可自动使用的 agent（豆包工作需要手动选，走 CDP）；"
                   "可开一个 WorkBuddy/ZCode/Claude 等通道，或在 agent 弹窗里手动选豆包工作。%s" % miss)
 

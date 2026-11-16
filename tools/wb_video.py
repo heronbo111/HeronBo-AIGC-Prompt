@@ -980,10 +980,31 @@ def start_confirm(p):
                 imgs = list(p.get("images") or [])
                 if not imgs and p.get("image"):
                     imgs = [p["image"]]
-                r = cli_bridge.generate_video(
-                    prompt, outdir, ratio=ratio, duration=duration, model=model,
-                    images=imgs, audio=p.get("audio") or "", video=p.get("video") or "",
-                    timeout=int(p.get("timeout") or 1800), session_key=p.get("sid") or "")
+                # 2026-11-16 用户反馈「豆包 CLI 跑进度不显示面板或者没动作」：
+                # generate_video 是阻塞调用（最长 30 分钟），期间一条 flow 都不发，
+                # 界面看起来就是点了没反应。这里起心跳，每 15 秒报一次已等时长。
+                _t0 = time.time()
+                _hb = threading.Event()
+
+                def _heartbeat():
+                    while not _hb.wait(15):
+                        try:
+                            el = time.time() - _t0
+                            _flow("豆包 CLI 生成中：已等 %d 分 %02d 秒（%s / %s秒 / %s）"
+                                  % (int(el // 60), int(el % 60), model, duration, ratio),
+                                  "think")
+                        except Exception:  # noqa: BLE001
+                            pass
+
+                threading.Thread(target=_heartbeat, daemon=True,
+                                 name="cli-video-heartbeat").start()
+                try:
+                    r = cli_bridge.generate_video(
+                        prompt, outdir, ratio=ratio, duration=duration, model=model,
+                        images=imgs, audio=p.get("audio") or "", video=p.get("video") or "",
+                        timeout=int(p.get("timeout") or 1800), session_key=p.get("sid") or "")
+                finally:
+                    _hb.set()
                 _log("豆包 CLI 已返回：%s" % (r.get("path") or r.get("error") or "无结果"))
                 v = str(r.get("path") or "").strip()
                 if r.get("ok") and v:

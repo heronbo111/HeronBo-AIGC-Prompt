@@ -895,6 +895,57 @@ def _scan(outdir, exts, since):
     return sorted(out, key=lambda p: os.path.getmtime(p), reverse=True)
 
 
+def _harvest_videos(primary, outdir, since, out_text=""):
+    """在 outdir 之外再找一遍成片：CLI 自报的绝对路径 + 常见下载目录。
+
+    2026-11-16 用户报「豆包会话出片了，但工作台只说放在文件夹里，前端拿不到视频」：
+    agent 未必照我们给的 target 落盘，常见是收进它自己的下载目录、再在回答里报一句
+    「已放在 X」。_scan(outdir) 只扫一层本目录，于是成片看得见名字、拿不到文件。
+    """
+    exts = (".mp4", ".mov", ".mkv", ".webm")
+    seen = set()
+    out = []
+
+    def add(p):
+        try:
+            p = os.path.abspath(str(p).strip().strip("`\"'"))
+        except (OSError, ValueError):
+            return
+        if p in seen or not os.path.isfile(p):
+            return
+        if not p.lower().endswith(exts):
+            return
+        try:
+            if os.path.getmtime(p) < since - 600:   # 只认这一轮前后的片子
+                return
+        except OSError:
+            return
+        seen.add(p)
+        out.append(p)
+
+    for p in primary or []:                          # 我们指定过的 target 排最前
+        add(p)
+    for mt in re.finditer(r"([A-Za-z]:\\[^\"\r\n<>|*?]*?\.(?:mp4|mov|mkv|webm))",
+                          str(out_text or ""), re.I):
+        add(mt.group(1))
+    for root in (outdir,
+                 os.path.join(os.path.expanduser("~"), "Downloads"),
+                 os.path.join(os.path.expanduser("~"), "下载")):
+        try:
+            for name in sorted(os.listdir(root), reverse=True):   # 新文件通常在后
+                p = os.path.join(root, name)
+                add(p)
+                if os.path.isdir(p):
+                    try:
+                        for sub in os.listdir(p):
+                            add(os.path.join(p, sub))
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+    return out
+
+
 def _model_id(label):
     s = str(label or "")
     for k, v in _MODEL_MAP.items():
@@ -1033,8 +1084,13 @@ def generate_video(prompt, outdir, ratio="9:16", duration=5,
     files = _scan(outdir, (".mp4", ".mov", ".mkv", ".webm"), started)
     if os.path.isfile(target):
         files = [target] + [p for p in files if os.path.abspath(p) != os.path.abspath(target)]
+    # 2026-11-16：agent 可能没照 target 落盘，改看它自报的路径和下载目录
+    files = _harvest_videos(files, outdir, started,
+                            (r.get("out") or "") + "\n" + (r.get("err") or ""))
     if not files:
-        return {"ok": False, "error": "CLI 返回成功但没有找到视频文件",
+        return {"ok": False,
+                "error": "CLI 返回成功，但在 %s 和下载目录里都没找到这一轮生成的视频。"
+                         "如果片子确实下好了，把它的完整路径填进「成片路径」再试。" % outdir,
                 "raw": r, "taskFile": pfile, "session": r.get("session", "")}
     path = files[0]
     size = os.path.getsize(path) if os.path.isfile(path) else 0
