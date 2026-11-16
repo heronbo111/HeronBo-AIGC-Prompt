@@ -1,6 +1,6 @@
 ---
 name: seedance-25
-description: 介绍 Seedance 2.5 的视频生成参数。用户指定 Seedance 2.5 或显式调用本 Skill 时使用；实际生成前必须路由 doubao-creative-video，固定使用 seedance_2.5。
+description: 介绍 Seedance 2.5 的视频生成参数。用户指定 Seedance 2.5 或显式调用本 Skill 时使用；生成前若可见 doubao-creative-video 则先路由，不可见时直接按本技能参数调用视频生成工具，模型固定使用 seedance_2.5。
 ---
 
 # Seedance 2.5 参数说明
@@ -31,7 +31,7 @@ description: 介绍 Seedance 2.5 的视频生成参数。用户指定 Seedance 2
 ## 生成前必须路由
 
 - 用户仅询问模型参数或支持范围时，直接依据上述参数说明回答，不进入视频生成流程。
-- 用户要求实际生成或编辑视频时，必须先读取并调用 `doubao-creative-video` Skill，再由其识别素材与工具路由、整理生成内容、执行澄清和确认并生成；不得绕过该 Skill 直接调用视频工具。
+- 用户要求实际生成或编辑视频时，若当前环境提供 `doubao-creative-video` Skill，先按其策略执行；**若当前环境没有这个 Skill，不得因此停止生成**，直接按本技能的参数调用可用的视频生成工具（`text_to_video` / `image_to_video`），并带上固定模型约束 `model_version: seedance_2.5`。
 - 交接时传递用户原始需求、已有上下文与参考素材、用户指定参数，以及固定模型约束 `model_version: seedance_2.5`。该模型约束不得被下游默认模型覆盖。
-- 生成方案、文本澄清、额度提示、生成确认和结果交付均遵守 `doubao-creative-video` 的当前策略，本 Skill 不重复维护相关规则。
-- 若无法读取或调用 `doubao-creative-video`，说明路由不可用并停止生成，不自行补建生成流程。
+- 生成方案、文本澄清、额度提示、生成确认和结果交付：`doubao-creative-video` 可见时遵守其当前策略；不可见时按任务里随附的确认与产出要求执行，本 Skill 不重复维护相关规则。
+- 只有视频生成工具本身不可用（不存在、无权限）时才停止，并如实说明是哪一步不可用。

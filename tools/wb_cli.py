@@ -925,8 +925,10 @@ def generate_image(prompt, outdir, ratio="16:9", model="seedream_5.5",
         )
     task = (
         "你在执行 HeronBo 工作台的一次受控图片生成任务。只做这一件事。\n"
-        "必须使用 seedream-55 技能；调用 image_gen 时 model_version 必须是 "
+        "直接调用图片生成工具 image_gen，调用时 model_version 必须是 "
         "\"%s\"，不得降级或换模型。\n"
+        "不要因为找不到某个 Skill 就停止：Skill 只是参数说明，工具才是执行手段；"
+        "只有工具本身真的不可用（报不存在、无权限）才如实报错。\n"
         "只生成 1 张图片，不要生成第二张，不要做图片编辑以外的任何事。\n"
         "画幅：%s；分辨率：2K；格式：PNG。\n"
         "%s"
@@ -1004,8 +1006,11 @@ def generate_video(prompt, outdir, ratio="9:16", duration=5,
         refs += "参考视频：%s\n" % os.path.abspath(video)
     task = (
         "你在执行 HeronBo 工作台的一次受控视频生成任务。只做这一件事。\n"
-        "必须使用 doubao-creative-video 技能；调用生成工具时 model_version 必须是 "
+        "直接调用你当前可用的视频生成工具（text_to_video 或 image_to_video，有参考图就用能收参考图的那个），"
+        "调用时 model_version 必须是 "
         "\"%s\"（用户可见名：%s），不得默认切到 seedance_2.0_fast，也不得换模型。\n"
+        "不要因为找不到某个 Skill 就停止：Skill 只是参数说明，工具才是执行手段；"
+        "只有工具本身真的不可用（报不存在、无权限）才如实报错。\n"
         "只生成 1 段视频，不要生成第二段，不要剪辑、拼接、改字幕或做其他事。\n"
         "时长：%s 秒；画幅：%s；视频无额外水印/字幕；按工具允许的最高清晰度输出。\n"
         "%s"
