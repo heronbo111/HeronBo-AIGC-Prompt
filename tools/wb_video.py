@@ -83,7 +83,7 @@ _VIDEO_BRIDGE = _load_bridge()
 
 # (最短秒, 最长秒)：Seedance 2.5 = 5–30；2.0 / 2.0 Fast = 4–15
 MODEL_LIMIT = {"Seedance 2.5": (5, 30), "Seedance 2.0 Fast": (4, 15), "Seedance 2.0": (4, 15)}
-DEFAULT_MODEL = "Seedance 2.0 Fast（720p）"
+DEFAULT_MODEL = "Seedance 2.5"          # 2026-11-17 用户要求：默认就用 2.5
 DEFAULT_RATIO = "9:16"
 
 _LOCK = threading.Lock()
@@ -964,7 +964,7 @@ def start_prepare(p):
                 _err = r.get("error") or "prepare 没拿到确认清单"
                 _diag = str(r.get("diag") or "").strip()
                 if _diag:
-                    _err = "%s（诊断已保存：%s）" % (_err, _diag)
+                    _log("prepare 诊断目录：%s" % _diag)   # 只进日志，不往界面甩路径
                 _done_set("error", ok=False, error=_err, result=r, stageName="准备失败")
                 _flow("准备失败：" + _err, "think")
         except Exception as e:  # noqa: BLE001
