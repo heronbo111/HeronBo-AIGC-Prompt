@@ -32,6 +32,70 @@ import zipfile
 LOG_NAME = "score-tool.update.log"
 KEEP_DEFAULT = 2
 INTERNAL = "_internal"          # onedir 的依赖目录（2026-10-13）
+# Windows 下目录/文件被占住或权限不足时，OS 给的错误号：5=拒绝访问，32=正被占用。
+# 这类多半是瞬时锁（杀软实时扫描、残留子进程、句柄还没释放），隔一下重来是安全的。
+_LOCK_WINERRORS = (5, 32)
+_RETRY_ATTEMPTS = 5
+_RETRY_WAIT = 0.7
+
+
+def _is_lock_err(e):
+    w = getattr(e, "winerror", None)
+    if w in _LOCK_WINERRORS:
+        return True
+    return getattr(e, "errno", None) in (13, 26, 32)
+
+
+def _human_err(e):
+    """把系统错误翻成大白话（界面文案纪律：不堆错误号）。"""
+    w = getattr(e, "winerror", None)
+    if w == 5:
+        return "安装目录被后台程序占用，或当前账号没有写入权限"
+    if w == 32:
+        return "程序文件正被其他程序占用"
+    return str(e)
+
+
+def _rename_retry(src, dst, label, dir_move=False):
+    """同盘改名/移动，占用或拒绝访问时隔一下重试。
+
+    2026-11-17 实测 0.7→0.73：旧 `_internal` 备份到 `_old` 时 WinError 5——画布 node
+    残留进程把目录当工作目录占住、或杀软正压在文件上。单步一次失败就整体回滚太脆，
+    这里先原地重试几轮；仍不行再抛给上层回滚。
+    """
+    last = None
+    op = os.rename if dir_move else os.replace
+    for attempt in range(1, _RETRY_ATTEMPTS + 1):
+        try:
+            op(src, dst)
+            return
+        except OSError as e:
+            last = e
+            if not _is_lock_err(e) or attempt == _RETRY_ATTEMPTS:
+                raise
+            time.sleep(_RETRY_WAIT)
+            log(os.path.dirname(os.path.dirname(dst)) if dir_move else os.path.dirname(dst),
+                "retry %s (%d/%d): %s" % (label, attempt, _RETRY_ATTEMPTS, e))
+    if last:
+        raise last
+
+
+def _backup_ts(d, ts=None):
+    """给 _old 备份目录一个不会撞车的名字。
+
+    同一秒内连续两次换位（更新失败立刻重试、或更新后马上回滚）时，只到秒的时间戳会让
+    第二次写进第一次的备份目录，把旧 exe/_internal 覆盖成半新半旧；同名就加 -01/-02。
+    """
+    if ts:
+        return ts
+    base = time.strftime("%Y%m%d-%H%M%S")
+    out = base
+    n = 1
+    root = os.path.join(d, "_old")
+    while os.path.exists(os.path.join(root, out)):
+        out = "%s-%02d" % (base, n)
+        n += 1
+    return out
 
 
 def log(d, msg):
@@ -100,7 +164,7 @@ def apply_pkg(d, src_dir, keep=KEEP_DEFAULT, ts=None, move_src=True):
     exe_new = os.path.join(src_dir, "score-tool.exe")
     if not os.path.isfile(exe_new):
         return False, "新包里没有 score-tool.exe（%s）" % src_dir
-    ts = ts or time.strftime("%Y%m%d-%H%M%S")
+    ts = _backup_ts(d, ts)
     bak = os.path.join(d, "_old", ts)
     cur_exe = os.path.join(d, "score-tool.exe")
     cur_int = os.path.join(d, INTERNAL)
@@ -130,12 +194,12 @@ def apply_pkg(d, src_dir, keep=KEEP_DEFAULT, ts=None, move_src=True):
                         os.remove(cur_exe)
                     except OSError:
                         pass
-                shutil.move(b_exe, cur_exe)
+                _rename_retry(b_exe, cur_exe, "回滚 exe", dir_move=False)
             b_int = os.path.join(bak, INTERNAL)
             if moved_int and os.path.isdir(b_int):
                 if os.path.isdir(cur_int):
                     shutil.rmtree(cur_int, ignore_errors=True)
-                shutil.move(b_int, cur_int)
+                _rename_retry(b_int, cur_int, "回滚 _internal", dir_move=True)
             _clean_side()
             log(d, "apply_pkg 失败已回滚（旧文件都在原位；备份目录 %s）" % bak)
         except OSError as e2:
@@ -156,22 +220,24 @@ def apply_pkg(d, src_dir, keep=KEEP_DEFAULT, ts=None, move_src=True):
             if os.path.isdir(tmp_int):
                 shutil.rmtree(tmp_int, ignore_errors=True)
             shutil.copytree(new_int, tmp_int)
-        # 2) 备份旧件（同盘 rename）
+        # 2) 备份旧件（同盘 rename；占用/拒绝访问先原地重试几轮）
         if os.path.isfile(cur_exe) or os.path.isdir(cur_int):
             os.makedirs(bak, exist_ok=True)
             if os.path.isfile(cur_exe):
-                os.replace(cur_exe, os.path.join(bak, "score-tool.exe"))
+                _rename_retry(cur_exe, os.path.join(bak, "score-tool.exe"),
+                              "备份旧 exe", dir_move=False)
                 moved_exe = True
             if os.path.isdir(cur_int):
-                os.rename(cur_int, os.path.join(bak, INTERNAL))
+                _rename_retry(cur_int, os.path.join(bak, INTERNAL),
+                              "备份旧 _internal", dir_move=True)
                 moved_int = True
         # 3) 新件到位（同盘 rename）
-        os.replace(tmp_exe, cur_exe)
+        _rename_retry(tmp_exe, cur_exe, "新版 exe 就位", dir_move=False)
         if os.path.isdir(tmp_int):
-            os.rename(tmp_int, cur_int)
+            _rename_retry(tmp_int, cur_int, "新版 _internal 就位", dir_move=True)
     except OSError as e:
         _rollback()
-        return False, "摊入失败（%s）" % e
+        return False, "摊入失败（%s）" % _human_err(e)
     _clean_side()
     log(d, "pkg applied: src=%s backup=%s" % (os.path.basename(src_dir), os.path.basename(bak)))
     tidy_old(d, keep)
@@ -363,6 +429,9 @@ def main(argv=None):
         except OSError:
             pass
         return 1
+    # 主进程刚退出，Python DLL / pyd 的内存映射可能还没被 OS 回收；马上改名 _internal
+    # 容易撞上瞬时占用。先静置一小段，给句柄释放和杀软扫描留出窗口。
+    time.sleep(0.8)
     # 三种 src 形态都吃（2026-10-13 onedir 化）：
     #   · .zip  → 新版 onedir 整包：解压 → 摊入（exe + _internal）
     #   · 目录   → 回滚（_old\<ts>\）或已解压的包：直接摊入

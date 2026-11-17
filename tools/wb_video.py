@@ -83,7 +83,7 @@ _VIDEO_BRIDGE = _load_bridge()
 
 # (最短秒, 最长秒)：Seedance 2.5 = 5–30；2.0 / 2.0 Fast = 4–15
 MODEL_LIMIT = {"Seedance 2.5": (5, 30), "Seedance 2.0 Fast": (4, 15), "Seedance 2.0": (4, 15)}
-DEFAULT_MODEL = "Seedance 2.5"          # 2026-11-17 用户要求：默认就用 2.5
+DEFAULT_MODEL = "Seedance 2.0 Fast（720p）"
 DEFAULT_RATIO = "9:16"
 
 _LOCK = threading.Lock()
@@ -305,24 +305,123 @@ def exported_paths():
         return out
 
 
+def _tool(name):
+    """找 ffmpeg / ffprobe：主程序解析好的优先（wb_prep 的 _FIXED），再退 PATH。"""
+    try:
+        import wb_prep as _wp
+        p = _wp._bin(name) or ""
+    except Exception:                                    # noqa: BLE001
+        p = ""
+    if p and os.path.isfile(p):
+        return p
+    if name == "ffprobe" and pcore_mod is not None:
+        try:
+            p = pcore_mod.ffprobe_exe() or ""
+        except Exception:                                # noqa: BLE001
+            p = ""
+        if p and os.path.isfile(p):
+            return p
+    return shutil.which(name) or ""
+
+
+def _probe_streams(path):
+    """读全部流信息；没 ffprobe / 读失败返回 None（调用方按"不知道"处理）。"""
+    ff = _tool("ffprobe")
+    if not ff:
+        return None
+    cmd = [ff, "-v", "error", "-show_entries",
+           "stream=index,codec_type,codec_name,pix_fmt,profile", "-of", "json", path]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=25,
+                           creationflags=0x08000000 if os.name == "nt" else 0)
+        return json.loads(r.stdout or "{}")
+    except Exception:                                    # noqa: BLE001
+        return None
+
+
+def _web_preview(src):
+    """前端播放器能吃的格式：H.264 8bit（yuv420p）。
+
+    2026-11-17 用户报「豆包生出来的视频返回到前端只会返回音频，本机播放器却有画面」：
+    成片是 H.265/HEVC（本地播放器/硬件解码能放），而工作台前端是网页播放器，
+    解不了 HEVC，就只剩音轨出声、画面一片空白。
+    这里在成片交给前端**之前**探一次编码：不是 H.264 就原地转一份
+    `<原名>_预览.mp4`（libx264 + yuv420p + faststart + AAC），原片一律不动。
+    返回 (给前端播的路径, 说明)；说明为空表示原文件本来就能播、没做改动。
+    """
+    src = str(src or "").strip()
+    if not src or not os.path.isfile(src) or not src.lower().endswith((".mp4", ".mov", ".webm")):
+        return src, ""
+    info = _probe_streams(src)
+    if info is None:
+        return src, ""
+    v = None
+    for s in (info.get("streams") or []):
+        if s.get("codec_type") == "video":
+            v = s
+            break
+    if not v:
+        return src, "成片里没有画面轨（只有声音）：这是生成侧的问题，不是播放器"
+    vcodec = str(v.get("codec_name") or "").lower()
+    pix = str(v.get("pix_fmt") or "").lower()
+    if vcodec in ("h264", "avc1") and pix in ("yuv420p", "yuvj420p", ""):
+        return src, ""
+    dst = os.path.splitext(src)[0] + "_预览.mp4"
+    if os.path.isfile(dst) and os.path.getsize(dst) > 1024:
+        # 已经转过了（原片没更新才复用），省一次几秒的转码
+        try:
+            if os.path.getmtime(dst) >= os.path.getmtime(src) - 1:
+                return dst, "成片是 %s/%s，已用之前的 H.264 预览" % (vcodec, pix or "?")
+        except OSError:
+            pass
+    ff = _tool("ffmpeg")
+    if not ff:
+        return src, "成片是 %s/%s，网页播放器多半放不出画面，但本机没找到 ffmpeg 可转" % (
+            vcodec, pix or "?")
+    cmd = [ff, "-y", "-i", src,
+           "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast",
+           "-crf", "20", "-profile:v", "high", "-level", "4.1",
+           "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", dst]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=900,
+                           creationflags=0x08000000 if os.name == "nt" else 0)
+        if r.returncode == 0 and os.path.isfile(dst) and os.path.getsize(dst) > 1024:
+            return dst, "成片是 %s/%s，已转成 H.264 预览：%s" % (vcodec, pix or "?", dst)
+        tail = ((r.stderr or "").strip().splitlines() or ["无输出"])[-1]
+        return src, "把成片转成 H.264 失败（%s），前端可能仍然只有声音" % tail[:120]
+    except Exception as e:                               # noqa: BLE001
+        return src, "把成片转成 H.264 失败（%s），前端可能仍然只有声音" % e
+
+
 def _stash_final(pdir, src):
     """把成片落到项目 `成片/`，保证前端回显时文件一定还在、一定在读白名单内。
 
     2026-11-05 用户报「豆包生成成功但工作台不显示成片」：桥返回的是豆包工作区
     原路径（或用户自选交接目录），文件被豆包清理/移动后 `/api/video/play` 就 404。
     这里优先硬链接（同盘几乎零成本），跨盘再复制；已在项目内则原样返回。
+    2026-11-17 再往前一步：落盘后按需转一份前端能解码的 H.264 预览（见 `_web_preview`）。
     """
     src = str(src or "").strip()
     if not src or not os.path.isfile(src):
         return src
+
+    def _final(path):
+        """落定后统一走一遍可播性检查：能播用原片，不能播换 H.264 预览。"""
+        play, note = _web_preview(path)
+        if note:
+            _log("成片可播性：%s" % note)
+        return play or path
+
     pdir = str(pdir or "").strip()
     if not pdir:
-        return src
+        return _final(src)
     try:
         src_real = os.path.realpath(src)
         pdir_real = os.path.realpath(pdir)
         if src_real.startswith(pdir_real + os.sep):
-            return src
+            return _final(src)
     except OSError:
         pass
     dst_dir = os.path.join(pdir, "成片")
@@ -336,15 +435,15 @@ def _stash_final(pdir, src):
             dst = os.path.join(dst_dir, "%s_%d%s" % (base, i, ext))
             i += 1
         if os.path.realpath(dst) == os.path.realpath(src):
-            return dst
+            return _final(dst)
         try:
             os.link(src, dst)          # 同盘硬链接：不占额外空间，删除原文件也不影响
         except OSError:
             shutil.copy2(src, dst)     # 跨盘/文件系统不支持硬链接：复制一份
-        return dst
     except OSError as e:
         _log("成片落盘失败（继续用原路径）：%s" % e)
-        return src
+        return _final(src)
+    return _final(dst)
 
 
 
@@ -964,7 +1063,7 @@ def start_prepare(p):
                 _err = r.get("error") or "prepare 没拿到确认清单"
                 _diag = str(r.get("diag") or "").strip()
                 if _diag:
-                    _log("prepare 诊断目录：%s" % _diag)   # 只进日志，不往界面甩路径
+                    _err = "%s（诊断已保存：%s）" % (_err, _diag)
                 _done_set("error", ok=False, error=_err, result=r, stageName="准备失败")
                 _flow("准备失败：" + _err, "think")
         except Exception as e:  # noqa: BLE001
