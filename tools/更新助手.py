@@ -37,6 +37,7 @@ INTERNAL = "_internal"          # onedir 的依赖目录（2026-10-13）
 _LOCK_WINERRORS = (5, 32)
 _RETRY_ATTEMPTS = 5
 _RETRY_WAIT = 0.7
+CREATE_NO_WINDOW = 0x08000000     # 子进程不闪命令行窗
 
 
 def _is_lock_err(e):
@@ -78,6 +79,50 @@ def _rename_retry(src, dst, label, dir_move=False):
                 "retry %s (%d/%d): %s" % (label, attempt, _RETRY_ATTEMPTS, e))
     if last:
         raise last
+
+
+def _kill_holders(d):
+    """摊入前清场：把占着安装目录的残留进程收掉。
+
+    2026-11-17 实测 0.7→0.73：画布 node 的工作目录就在 `_internal\\canvas` 下，主程序
+    退出后它还在。Windows 不允许把「被进程当成工作目录」的目录树改名，备份旧 `_internal`
+    那一步直接 WinError 5（拒绝访问），_rename_retry 重试 3.5 秒也等不到它自己退——
+    现场表现就是「更新没完成：摊入失败」。
+
+    两个坑，都踩过：
+      * 匹配条件里写死路径，命令行本身含这个路径 → 把自己（powershell 子进程）也命中。
+        所以路径只走环境变量，命令行里不出现；
+      * 再显式排除 powershell / 当前进程，双保险。
+    只动自家进程：exe 或命令行落在安装目录下，或路径带 HeronBo 的 node（工作台自带运行时）。
+    用户全局装的 node（Program Files 那种）不动。
+    """
+    try:
+        p = os.path.abspath(d).rstrip("\\")
+        script = (
+            "$d = $env:HB_UPD_DIR; $self = [int]$env:HB_UPD_PID; "
+            "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | "
+            "Where-Object { "
+            "  $_.ProcessId -ne $self -and $_.ProcessId -ne 0 "
+            "  -and $_.Name -ne 'powershell.exe' -and $_.Name -ne 'pwsh.exe' -and ("
+            "    ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($d)) -or "
+            "    ($_.CommandLine -and $_.CommandLine.IndexOf($d, [StringComparison]::OrdinalIgnoreCase) -ge 0) -or "
+            "    ($_.Name -eq 'node.exe' -and $_.ExecutablePath -like '*HeronBo*')"
+            "  )"
+            "} | ForEach-Object { "
+            "  try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {} "
+            "}"
+        )
+        env = dict(os.environ)
+        env["HB_UPD_DIR"] = p
+        env["HB_UPD_PID"] = str(os.getpid())
+        subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+            capture_output=True, timeout=30, creationflags=CREATE_NO_WINDOW, env=env)
+        log(d, "摊入前清场完成（安装目录 %s）" % d)
+        return True
+    except Exception as e:  # noqa: BLE001
+        log(d, "摊入前清场没做成（不影响继续）：%s" % e)
+        return False
 
 
 def _backup_ts(d, ts=None):
@@ -211,6 +256,9 @@ def apply_pkg(d, src_dir, keep=KEEP_DEFAULT, ts=None, move_src=True):
     # 回滚也可能跟着失败。用户那台 0.6.8 在线更新后正是这个现场：软件自己关掉、
     # 再打开起不来。改成 **先完整复制到旁路 .new，再靠两次同盘 rename 切换**：
     # rename 是原子的，要么整块换过去，要么一个字节都不动。
+    # 2026-11-17：动手前先把占着这个目录的残留进程（画布 node 等）收掉，
+    # 否则备份旧 _internal 那一步必然被拒（WinError 5），怎么重试都没用。
+    _kill_holders(d)
     try:
         # 1) 新件先落到旁路（此步失败时旧件完全没动）
         if os.path.isfile(tmp_exe):
