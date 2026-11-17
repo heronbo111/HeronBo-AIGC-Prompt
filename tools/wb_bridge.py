@@ -97,7 +97,7 @@ def create(title, content, channel, runner=None):
     if not content:
         return {"ok": False, "error": "指令正文不能为空"}
     if channel not in CHANNELS:
-        return {"ok": False, "error": "不认识的通道：%s（只有 cdp / plugin / mcp）" % channel}
+        return {"ok": False, "error": "不支持的通道：%s" % channel}
     title = (title or "").strip()[:60] or content.strip()[:24]
     now = time.time()
     task = {"id": str(uuid.uuid4()), "title": title, "content": content[:20000],
@@ -110,7 +110,7 @@ def create(title, content, channel, runner=None):
         elif channel == "cdp":
             if runner is None:
                 task["status"] = "failed"
-                task["errorMessage"] = "cdp 通道不可用：缺 agent_bridge.py（桥执行器没注入）"
+                task["errorMessage"] = "cdp 通道不可用：组件缺失（桥执行器没注入）"
             else:
                 task["status"] = "running"
             items.append(task)
@@ -159,8 +159,7 @@ def submit(tid, ok, result="", error_message=""):
         for t in items:
             if t.get("id") == tid:
                 if t.get("status") not in ("running",):
-                    return {"ok": False, "error": "任务不在执行中（当前 %s），不能回写"
-                            % (t.get("status") or "?")}
+                    return {"ok": False, "error": "这个任务已经结束了，不能再回写结果"}
                 t["status"] = "completed" if ok else "failed"
                 t["result"] = (result or "")[:100000]
                 t["errorMessage"] = (error_message or "")[:2000]

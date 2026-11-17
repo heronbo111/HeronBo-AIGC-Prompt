@@ -395,7 +395,7 @@ def install_item(name):
             return {"ok": False, "msg": "不认识的项：%s" % mod}
         exe = py_exe()
         if not exe:
-            return {"ok": False, "msg": "找不到随包 Python（runtime\\python\\python.exe），没法自动安装"}
+            return {"ok": False, "msg": "没找到内置的运行环境，装不了"}
         r = run([exe, "-m", "pip", "install", "--upgrade", pkg], timeout=1800)
         tail = ((r.stdout or "") + (r.stderr or "")).strip().splitlines()[-3:]
         return {"ok": r.returncode == 0,

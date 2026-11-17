@@ -276,7 +276,8 @@ def resolve(force=False):
                 break
         _CACHE["path"], _CACHE["node"] = path, node
         if not path:
-            _CACHE["why"] = "找不到豆包 CLI（需要 @bytedance/doubao-cli 与 node）"
+            # 2026-11-17 用户要求：不在提示里写包名和依赖，只说结论。
+            _CACHE["why"] = "没找到豆包 CLI，可以先用别的通道"
             return None, None, _CACHE["why"]
         _CACHE["why"] = ""
         return path, node, ""
@@ -1088,9 +1089,11 @@ def generate_video(prompt, outdir, ratio="9:16", duration=5,
     files = _harvest_videos(files, outdir, started,
                             (r.get("out") or "") + "\n" + (r.get("err") or ""))
     if not files:
+        # 2026-11-17 用户要求：别把内部路径糊到脸上。原来这里会把成片目录和下载目录
+        # 的绝对路径（还是 \\172.16.0.12 这种网络盘）整段拼进提示，用户只看到一堵墙。
         return {"ok": False,
-                "error": "CLI 返回成功，但在 %s 和下载目录里都没找到这一轮生成的视频。"
-                         "如果片子确实下好了，把它的完整路径填进「成片路径」再试。" % outdir,
+                "error": "没找到这轮生成的视频。如果片子已经下好了，"
+                         "把视频文件的完整路径填进「成片路径」再点一次。",
                 "raw": r, "taskFile": pfile, "session": r.get("session", "")}
     path = files[0]
     size = os.path.getsize(path) if os.path.isfile(path) else 0

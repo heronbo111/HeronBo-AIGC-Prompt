@@ -674,11 +674,11 @@ def _cdp_guard():
 def restart_doubao(timeout=90):
     """用户点「重启豆包并接管」后才调：走桥的 restart --yes（WMI 守场员执行）。"""
     if not ab:
-        return {"ok": False, "error": "缺 agent_bridge.py"}
+        return {"ok": False, "error": "组件缺失"}
     js = ab.doubao_js()
     runner, renv = ab.lib_runner(js) if js else (None, None)
     if not (js and runner):
-        return {"ok": False, "error": "视频桥不可用：缺 doubao_cdp.mjs 或 node"}
+        return {"ok": False, "error": "视频桥没准备好，暂时用不了"}
     cmd = [runner, js, "restart", "--yes"]
     env = ab.child_env()
     env.update(renv or {})
@@ -712,11 +712,11 @@ def show_doubao(timeout=40):
     这里直接借它；顺带把在跑但没调试端口的情况一起解决不现实，那种仍走 restart。
     """
     if not ab:
-        return {"ok": False, "error": "缺 agent_bridge.py"}
+        return {"ok": False, "error": "组件缺失"}
     js = ab.doubao_js()
     runner, renv = ab.lib_runner(js) if js else (None, None)
     if not (js and runner):
-        return {"ok": False, "error": "视频桥不可用：缺 doubao_cdp.mjs 或 node"}
+        return {"ok": False, "error": "视频桥没准备好，暂时用不了"}
     cmd = [runner, js, "show"]
     env = ab.child_env()
     env.update(renv or {})
@@ -752,7 +752,7 @@ def show_doubao(timeout=40):
 
 def _run_video(args):
     if not ab:
-        raise RuntimeError("缺 agent_bridge.py")
+        raise RuntimeError("组件缺失")
     stage = ""
     for i, a in enumerate(args):
         if str(a) == "--stage" and i + 1 < len(args):
@@ -762,7 +762,7 @@ def _run_video(args):
     js = ab.doubao_js()
     runner, renv = ab.lib_runner(js) if js else (None, None)
     if not (js and runner):
-        raise RuntimeError("视频桥不可用：缺 doubao_cdp.mjs 或 node")
+        raise RuntimeError("视频桥没准备好，暂时用不了")
     cmd = [runner, js, "video"] + [str(a) for a in args]
     env = ab.child_env()
     env.update(renv or {})
@@ -863,7 +863,7 @@ def _use_cli():
     if _VIDEO_BRIDGE == "cdp":
         return False
     if cli_bridge is None:
-        raise _ChannelError("缺 wb_cli.py，无法走豆包 CLI", "cli_missing",
+        raise _ChannelError("组件缺失，无法走豆包 CLI", "cli_missing",
                             "改用本地豆包（CDP）")
     ok, why = cli_bridge.available()
     if ok:

@@ -343,7 +343,7 @@ def doubao_alive(timeout=120):
     mode = _bridge_mode()
     if mode == "cli":
         if wb_cli is None:
-            return False, "缺 wb_cli.py，无法走豆包 CLI"
+            return False, "组件缺失，无法走豆包 CLI"
         try:
             ok, why = wb_cli.available(force=True)
         except Exception as e:  # noqa: BLE001
@@ -377,7 +377,7 @@ def channel_available():
             except Exception as e:                               # noqa: BLE001
                 out["why"] = str(e)[:120]
         else:
-            out["why"] = "缺 wb_cli.py"
+            out["why"] = "组件缺失"
     else:
         js = os.path.join(HERE, "doubao_cdp.mjs")
         try:
@@ -410,7 +410,7 @@ def _gen_doubao(pdir, prompt, ratio, outdir):
     mode = _bridge_mode()
     if mode == "cli":
         if wb_cli is None:
-            return [], (1, "缺 wb_cli.py，无法走豆包 CLI")
+            return [], (1, "组件缺失，无法走豆包 CLI")
         try:
             ok, why = wb_cli.available()
         except Exception as e:  # noqa: BLE001

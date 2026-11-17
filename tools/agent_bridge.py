@@ -381,20 +381,17 @@ def _probe_doubaowork():
     """
     js = doubao_js()
     if not js:
-        return False, "找不到豆包桥脚本 tools\\doubao_cdp.mjs（它随本仓库走，别单独拷一半）"
+        # 2026-11-17 用户要求：通道状态就说"通 / 不通"，别把文件名、配置字段、
+        # 绝对路径这些排障细节糊到界面上（那份说明在下面的 docstring 里，够用）。
+        return False, "缺少接管脚本，这一项暂时用不了"
     exe = doubaowork_exe()
     if not exe:
-        return False, ("没找到豆包工作客户端（没装也不影响干活：可以用豆包 CLI、即梦，"
-                       "或者别的 agent 通道；真要接它，就用 "
-                       "agent_bridge.local.json 的 \"doubaowork\" 字段写 DoubaoWork.exe 绝对路径）")
+        return False, "这台机器没找到豆包工作"
     if not lib_runner(js)[0]:
-        return False, ("跑不了桥脚本：需要 Node——独立 node 没找到（没有独立 node 时，本机的 "
-                       "WorkBuddy/ZCode 自带 Electron 也能当 node）；绿色版/安装版应自带 "
-                       "runtime\\node\\node.exe，若确实没有，可用 agent_bridge.local.json 的 "
-                       "\"node\" 字段指定 node.exe 的绝对路径")
+        return False, "缺 Node 运行环境，跑不了接管脚本"
     if _doubaowork_running():
-        return True, exe + "（正在运行；接管它要**用调试端口起的**那份，否则先退出重开，见 tools\\doubao_cdp.mjs）"
-    return True, exe + "（没在跑：点「出提示词」时我会带调试端口把它拉起来）"
+        return True, "豆包工作正在运行，可以接通"
+    return True, "豆包工作已安装，用的时候会自动打开并接管"
 
 
 def _doubaowork_exe_from_registry():
@@ -954,10 +951,10 @@ def _probe_dsh():
         return False, "DSH 脚本找到了，但本机没有 node（装官方桌面版可自带运行时；或装 Node.js）"
     # ⚠️ 命中 npx 缓存 ≠ 装了它（2026-09-22 用户反馈）：「谁以前用 npx 跑过一次」就会在
     # `npm-cache\_npx\…` 留下整包，被当成"装了 DSH 且可用"。这种标成 weak（疑似），
-    # 界面显示成"未验证"，要用户点一下「测一下」才认。
+    # 界面显示成"未验证"，要用户点一下「连通测试」才认。
     if "npm-cache" in pkg.lower() or "_npx" in pkg.lower():
         return True, ("只找到 npx 缓存里的那份（以前 npx 跑过一次留下的）：%s"
-                      "；未验证，点「测一下」确认" % pkg)
+                      "；未验证，点「连通测试」确认" % pkg)
     if os.path.normcase(pkg) == os.path.normcase(str(dsh_desktop_cli() or "")):
         # 桌面版自带的那档（2026-10-16）：Electron 当 node 跑 asar 里的 cli.js
         return True, "DSH 桌面版自带的命令行档（Electron 当 node）" + _dsh_note()
@@ -1036,7 +1033,7 @@ CHANNEL_GUIDE = {
     "builtin": {
         "workbuddy": {
             "get": "装 WorkBuddy 桌面端即可——它自带 CLI，连 Node.js 都不用装",
-            "wire": "装完点「测一下」；工作台自动认"},
+            "wire": "装完点「连通测试」；工作台自动认"},
         "doubaowork": {
             "get": "装豆包工作官方桌面端（它没有命令行）",
             "wire": "工作台靠调试端口接管：接管前先退出它，或跑 tools\\doubao_cdp.mjs restart --yes 让它带端口重启"},
@@ -1044,11 +1041,11 @@ CHANNEL_GUIDE = {
             "get": "装 ZCode 桌面端——安装目录自带 CLI",
             "wire": "自动认；首次用前确认 ~/.zcode/cli/config.json 已配好 provider"},
         "codex": {"get": "npm i -g @openai/codex（需要 Node.js）",
-                  "wire": "装完点「测一下」；工作台自动认"},
+                  "wire": "装完点「连通测试」；工作台自动认"},
         "claude": {"get": "npm i -g @anthropic-ai/claude-code（需要 Node.js）",
-                   "wire": "装完点「测一下」；工作台自动认"},
+                   "wire": "装完点「连通测试」；工作台自动认"},
         "dsh": {"get": "npx @deepseek-ai/dsh 跑过一次（需要 Node.js）",
-                "wire": "装完点「测一下」；工作台自动认"},
+                "wire": "装完点「连通测试」；工作台自动认"},
     },
     # 其它主流 agent（未内置适配）：都走"一条自定义命令行"接（弹窗第 3 页给了模板）
     "others": [
@@ -1079,13 +1076,13 @@ _RUN_CACHE = {"t": 0.0, "keys": [], "active": ""}
 # 一次 0.7~1.4 秒；而 `/api/state` 每次刷新都要 agent_info()，前端切个项目就卡
 # 2 秒多（2026-10-09 实测：GET /api/state 2200ms，其中 agent_ok() 2187ms）。
 # 探测结果（装没装 CLI、哪个客户端在跑）本来就不会秒级变化，缓存 20 秒足够；
-# 用户点「测一下」或改完配置走 fresh=True 强制重探。
+# 用户点「连通测试」或改完配置走 fresh=True 强制重探。
 ROWS_TTL = 20.0
 _ROWS_CACHE = {"t": 0.0, "rows": None}
 
 
 def invalidate_agents():
-    """清掉探测缓存（改了配置 / 用户点「测一下」后调，下一次 list_agents 重探）。"""
+    """清掉探测缓存（改了配置 / 用户点「连通测试」后调，下一次 list_agents 重探）。"""
     _ROWS_CACHE.update({"t": 0.0, "rows": None})
     _RUN_CACHE.update({"t": 0.0, "keys": [], "active": ""})
 
@@ -1280,13 +1277,14 @@ def quick_check(key):
             except (ValueError, TypeError):
                 d = {}
             if d.get("cdp"):
-                return True, "生成平台在跑，且能被接管（调试端口 %s）" % d.get("port")
+                # 2026-11-17 用户原话：通了就说「通道已接通可以继续使用」，不要报端口号。
+                return True, "通道已接通，可以继续使用"
             if d.get("running"):
                 # 2026-10-09：以前这里只报"连不上"，让用户自己去重启，结果 bridge 兜底又另起一套实例
                 # → 桌面上两个豆包。现在点「出提示词」会自动安排带端口重启那一套，这里只需说明它会自动弄。
                 return False, ("生成平台在跑，但还没法直接接管——点「出提示词」时我会"
-                               "自动重启一次接上（几秒，你原来的对话都在历史里）；"
-                               "急的话也可以在命令行跑 `node tools\\doubao_cdp.mjs restart --yes`")
+                               "自动重启一次接上（几秒，你原来的对话都在历史里）。"
+                               "不想等的话，自己把豆包关掉再开一次也行")
             return False, "生成平台没在跑：点「出提示词」时我会自动启动它"
         else:
             return None, "这条通道没有自检命令（自定义通道请点「真跑一句」）"
@@ -1306,7 +1304,7 @@ def quick_check(key):
 
 
 def test_agent(key, lite=True, timeout=180):
-    """测一下这条通道到底能不能用。
+    """连通测试这条通道到底能不能用。
 
     lite=True（默认）＝免费自检（`--version`）；lite=False＝**真跑一句最小任务**
     （会消耗一点点额度，但这是唯一能证明"接得上"的办法）。
@@ -1372,8 +1370,7 @@ def scan_hosts(max_depth=1):
             continue
         out.append({"key": "host:" + label, "label": label + "（疑似）", "found": True,
                     "ok": False, "weak": True, "host": False, "verified": False,
-                    "why": "这台机器上有 %s，但工作台还不知道怎么叫它干活——"
-                           "在 agent_bridge.local.json 里加一条 agents（key/label/cmd）就能用" % q})
+                    "why": "这台机器上装了 %s，但工作台还不会调用它" % label})
     return out
 
 
@@ -1421,6 +1418,21 @@ def list_agents(fresh=False):
     rows += scan_hosts()
     _ROWS_CACHE.update({"t": time.time(), "rows": [dict(r) for r in rows]})
     return rows
+
+
+def _probe_log(msg):
+    """把通道探测明细落到文件里备查。
+
+    2026-11-17 用户要求：界面上别糊技术清单。原来 pick_agent 把七条通道各自的
+    "没找到 codebuddy-headless.js / npm i -g @anthropic-ai/claude-code" 全拼进提示语，
+    用户看到的就是一坨黑话。现在界面只给一句人话，明细写进 agent_bridge.log。
+    """
+    try:
+        p = os.path.join(HERE, "agent_bridge.log")
+        with open(p, "a", encoding="utf-8", errors="replace") as f:
+            f.write("[%s] %s\n" % (time.strftime("%Y%m%d-%H%M%S"), msg))
+    except OSError:
+        pass
 
 
 def pick_agent(prefer=None, rows=None):
@@ -1475,13 +1487,13 @@ def pick_agent(prefer=None, rows=None):
             return key, "%s（本 skill 就装在它名下%s）" % (
                 r["label"], "，已验证" if r.get("verified") else "，还没验证过")
         return key, "%s（本机可用%s）" % (
-            r["label"], "，已验证" if r.get("verified") else "，还没验证过；建议点一下「测一下」")
+            r["label"], "，已验证" if r.get("verified") else "，还没验证过；建议点一下「连通测试」")
+    # 2026-11-17 用户要求：这条是给人看的，不是磁盘诊断报告。只留一句结论 + 一个
+    # 能照着做的下一步；七条通道各不相同的探测细节全部落到 agent_bridge.log。
     miss = "；".join("%s：%s" % (r["label"], r["why"]) for r in rows.values())
-    if want_why:
-        return None, ("%s；本机也没有其它可自动使用的 agent（可开一个 WorkBuddy / ZCode / Claude "
-                      "等通道，或在 agent 弹窗里手动换一个）。%s" % (want_why, miss))
-    return None, ("本机没有可自动使用的 agent（豆包工作需要手动选，走 CDP）；"
-                  "可开一个 WorkBuddy/ZCode/Claude 等通道，或在 agent 弹窗里手动选豆包工作。%s" % miss)
+    _probe_log("pick_agent 无可用通道。%s%s"
+               % (("指定通道不可用：" + want_why + "。") if want_why else "", miss))
+    return None, "没找到可用的 Agent，建议先装豆包工作（或 WorkBuddy / ZCode 等桌面端）再开始。"
 
 
 def build_cmd_for(key, prompt, session_id=None, cwd=None, permission_mode=None,
@@ -1926,7 +1938,8 @@ def ask(prompt, session_id=None, cwd=None, timeout=DEFAULT_TIMEOUT,
                              encoding="utf-8", errors="replace", env=env,
                              bufsize=1, **no_window_kwargs())
     except OSError as e:
-        return {"ok": False, "error": "起不来：%s" % e, "session_id": session_id,
+        _probe_log("拉起 %s 失败：%s" % (key, e))
+        return {"ok": False, "error": "启动失败，没能拉起这个 Agent", "session_id": session_id,
                 "text": "", "cmd": cmd, "agent": key}
     _CURRENT["proc"] = p
     if on_start:
