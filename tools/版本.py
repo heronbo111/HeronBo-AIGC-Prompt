@@ -247,7 +247,10 @@ def compare(cur, rem, with_hash=True):
 
 
 def _notes_from_changelog(tools_dir=None):
-    """从 CHANGELOG 顶部取一段给人看的更新说明（标题 + 头两条）。取不到就返回 ""。"""
+    """从 CHANGELOG 顶部取几条一句话更新条目（新增：/修复：/优化：）。
+
+    只留"做了什么"，不写为什么、不写现象细节——界面上就那么点地方。
+    """
     root = skill_root(tools_dir)
     if not root:
         return ""
@@ -257,26 +260,28 @@ def _notes_from_changelog(tools_dir=None):
             lines = f.read().splitlines()
     except OSError:
         return ""
-    out, started = [], False
+    out, started, cat = [], False, ""
     for ln in lines:
         s = ln.strip()
         if not started:
             if s.startswith("## "):
                 started = True
-                out.append(s.lstrip("# ").strip())
             continue
         if s.startswith("## "):
             break
+        if s.startswith("### "):
+            cat = s[4:].strip()
+            continue
         if s.startswith("- "):
-            out.append(s[2:].strip()[:90])
-            if len(out) >= 4:
+            item = s[2:].strip()[:40]
+            out.append(("%s：%s" % (cat, item)) if cat else item)
+            if len(out) >= 5:
                 break
-    txt = " ｜ ".join(out)[:400]
+    txt = " ｜ ".join(out)[:220]
     # 更新说明是要显示在界面上的，去掉 markdown 记号（**粗体**、`代码`、[文字](链接)）
     txt = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", txt)
     txt = txt.replace("**", "").replace("`", "")
     return txt
-
 
 def write_local(tools_dir=None, version="", notes="", log=_say, pkg=None):
     """生成 tools\\_version.json（打包前调；spec 的 datas 会把它打进 exe）。
