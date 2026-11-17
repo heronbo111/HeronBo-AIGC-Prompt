@@ -99,25 +99,14 @@ def find_update_pkg(version, explicit=""):
 
 
 def make_body(version, notes, has_setup, setup_name, has_update=True):
+    """Release 正文只写更新条目，一句一条；不写怎么装、不写怎么更新。"""
     lines = ["HeronBo 视频工作台 v%s" % version, ""]
     if notes:
-        lines += [notes, ""]
-    lines += ["【如何更新 / 安装】",
-              "· 已安装：打开工作台 →「检查更新」，自动拉取本版本内核并重启；"]
-    if has_update:
-        lines.append("· 本版本附件：HeronBo-Workbench-Update-v%s.zip（在线更新包）、"
-                     "version.json（版本元数据）。" % version)
-    else:
-        lines.append("· 本版本附件：score-tool.exe（工作台内核）、version.json（版本元数据）。")
-    if has_setup:
-        lines.append("· 新安装：下载本页完整安装包 %s（双击即装、依赖全封装）。" % setup_name)
-    else:
-        lines.append("· 新安装需完整安装包：Gitee 单附件限 100MB，完整包仅放在 GitHub Release。")
-    # 一次性迁移提示（2026-10-13 起程序改"目录式"）：老的单文件形态客户端「检查更新」
-    # 接不上新更新包（会明确报错）——引导它装一次完整安装包，之后就能在线更新。
-    lines.append("· 老版本（0.6.2 及更早的单文件形态）：「检查更新」会提示去装完整安装包——"
-                 "下载本页的 Setup 重装一次即可（一次性迁移；之后就能在线更新）。")
-    return "\n".join(lines)
+        for item in notes.split(" ｜ "):
+            if item.strip():
+                lines.append("- " + item.strip())
+    return "\n".join(lines).strip()
+
 
 
 # ---------------- GitHub ----------------
