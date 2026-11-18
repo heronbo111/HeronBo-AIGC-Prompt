@@ -623,8 +623,12 @@ def set_agent(key):
         rows = {r["key"]: r for r in list_agents()}
         if key not in rows:
             return False, "未知的 agent：%s" % key
-        if not rows[key]["ok"]:
-            return False, "%s 现在不可用：%s" % (rows[key]["label"], rows[key]["why"])
+        if not rows[key].get("found"):
+            return False, "这台机器上没找到 %s，先装上再选（它在「不可用通道」页里有装法）" % rows[key]["label"]
+        # 2026-11-18 用户报「切成豆包通道、连通测试也过了，关掉创作台再开又变回别的通道」：
+        # 根子就在这门禁——以前要求「选的那一刻当场就能用」，豆包正没开 / 没带端口时
+        # ok 是 False，选择直接被拒、压根没写进配置，下次开就回到自动挑选。
+        # 现在只要盘上找得到就先记下来，"到底接没接上"交给「连通测试」判。
         cfg["agent"] = key
         cfg["agent_manual"] = True
     else:
@@ -1036,7 +1040,9 @@ CHANNEL_GUIDE = {
             "wire": "装完点「连通测试」；工作台自动认"},
         "doubaowork": {
             "get": "装豆包工作官方桌面端（它没有命令行）",
-            "wire": "工作台靠调试端口接管：接管前先退出它，或跑 tools\\doubao_cdp.mjs restart --yes 让它带端口重启"},
+            # 2026-11-18 用户报「通道失效时弹出来的是调试端口那套话，看不懂」：
+            # 这里只讲"选它、点测试、接不上它会自己弄"，别写脚本名和端口。
+            "wire": "选好点「连通测试」；豆包正开着但接不上时，工作台会自己把它重启一次（对话都还在），不用你动手关"},
         "zcode": {
             "get": "装 ZCode 桌面端——安装目录自带 CLI",
             "wire": "自动认；首次用前确认 ~/.zcode/cli/config.json 已配好 provider"},
@@ -1228,7 +1234,7 @@ def _run_quiet(cmd, timeout=25, cwd=None):
         return -1, str(e)
 
 
-def quick_check(key):
+def quick_check(key, repair=False):
     """**免费**自检：跑这条 CLI 自己的版本/帮助命令，看它到底能不能启动。
 
     返回 (ok, why)：ok 为 True/False 表示测得出来；**None 表示这条通道没有合适的自检命令**
@@ -1280,11 +1286,24 @@ def quick_check(key):
                 # 2026-11-17 用户原话：通了就说「通道已接通可以继续使用」，不要报端口号。
                 return True, "通道已接通，可以继续使用"
             if d.get("running"):
-                # 2026-10-09：以前这里只报"连不上"，让用户自己去重启，结果 bridge 兜底又另起一套实例
-                # → 桌面上两个豆包。现在点「出提示词」会自动安排带端口重启那一套，这里只需说明它会自动弄。
-                return False, ("生成平台在跑，但还没法直接接管——点「出提示词」时我会"
-                               "自动重启一次接上（几秒，你原来的对话都在历史里）。"
-                               "不想等的话，自己把豆包关掉再开一次也行")
+                # 2026-11-18 用户报「切成豆包通道、测通之后重开创作台就变别的通道，
+                # 隔三差五还得手动换通道手动连」：豆包在跑却没带端口时，光告诉用户
+                # "没接上"没用——他点「连通测试」就是要它接上。
+                # 所以只有用户手动点测试（repair=True）时才真去把它带端口重启一次；
+                # 后台轮询仍然只读不动机器，免得用户没点也把豆包踢一记。
+                if repair:
+                    _run_quiet([runner, js, "restart", "--yes"], timeout=180)
+                    rc3, out3 = _run_quiet([runner, js, "status"], timeout=60)
+                    try:
+                        d3 = json.loads(out3[out3.index("{"):])
+                    except (ValueError, TypeError):
+                        d3 = {}
+                    if d3.get("cdp"):
+                        return True, "通道已接通，可以继续使用"
+                    return False, ("重启了豆包工作还是没接上——可能被安全软件挡了，"
+                                   "或这个版本不支持这种接法。先把豆包手动关掉，再点一次「连通测试」")
+                return False, ("豆包工作开着，但这次没接上——点「出提示词」我会自动重启它一次"
+                               "（几秒，对话都还在）。不想等就点「连通测试」重新接一下")
             return False, "生成平台没在跑：点「出提示词」时我会自动启动它"
         else:
             return None, "这条通道没有自检命令（自定义通道请点「真跑一句」）"
@@ -1313,7 +1332,9 @@ def test_agent(key, lite=True, timeout=180):
     if key not in {r["key"] for r in list_agents(fresh=True)}:
         return {"ok": False, "error": "未知的通道：%s" % key}
     if lite:
-        ok, why = quick_check(key)
+        # repair=True：这次是用户自己点的「连通测试」，豆包在跑但没端口就顺手带端口重启一次，
+        # 让他点一下就真接上，别点完还留个"没接上"回头再手动弄（2026-11-18）。
+        ok, why = quick_check(key, repair=True)
         if ok is None:
             return {"ok": False, "unsupported": True, "agent": key, "why": why,
                     "error": why}
@@ -1458,6 +1479,11 @@ def pick_agent(prefer=None, rows=None):
         r = rows[want]
         if r["ok"]:
             return want, ("按配置用 %s" % r["label"]) if prefer or cfg.get("agent")                 else r["label"]
+        if cfg.get("agent_manual") and not prefer:
+            # 2026-11-18 用户报「切成豆包通道、关掉再开又变回别的通道」：
+            # 他自己点过的通道就得尊重，别偷偷换成另一条——不可用也明说原因，
+            # 让他自己在界面上点「连通测试」。只有"配置里带的默认值"才往下找可用的。
+            return want, "%s（%s）" % (r["label"], r["why"])
         # 2026-11-16 用户要求「没有豆包就用别的 agent，不要强制装豆包」：
         # 手动选过的通道当场不可用（典型是选了豆包工作，但这台机器没装 / 没开调试端口）
         # 时不再 return None 卡死，把原因揣着继续往下找本机可用的通道。

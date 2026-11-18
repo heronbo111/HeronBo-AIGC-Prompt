@@ -1656,10 +1656,22 @@ async function ensureAttached({ launch = true } = {}) {
   if (doubaoRunning()) {
     step('生成平台正在运行、但没法直接接管；正在自动重启一次（几秒，对话历史都保留）');
     if (!spawnLaunchAfterKillViaWmi()) {
-      return { ok: false, code: 3,
-               why: '豆包工作正在运行，但它不是用调试端口启动的，我连不上；自动重启也没安排成'
-                    + '（WMI 被安全软件挡了）。请手动退出豆包工作后重试，'
-                    + '或在命令行跑 node tools\\doubao_cdp.mjs restart --yes' };
+      /* 2026-11-18 用户报「选 CDP 通道之后拉不起豆包工作、一直连不上」，根子在这：
+         以前守场员起不来就当场放弃，把"手动退出豆包再试一次"甩给用户。
+         其实只要我们自己不挂在豆包的进程树里，就地关掉再带端口拉起来效果一样，
+         用户那边只是"豆包闪一下又回来"，登录态和历史都还在。 */
+      if (inDoubaoTree()) {
+        return { ok: false, code: 3,
+                 why: '豆包工作正在运行，但它不是用调试端口起的，我连不上；自动重启也没安排成。'
+                      + '这一次是工作台被豆包拉起来的，关它会把工作台一起带走——'
+                      + '请先手动退出豆包工作，再点一次「连通测试」。' };
+      }
+      log('· WMI 守场员没起来，改成就地重启');
+      killApp();
+      const r1 = await launchApp();
+      if (!r1.ok) return { ok: false, code: 2, why: r1.why };
+      stateWrite({ port: PORT, exe: EXE });
+      return { ok: true };
     }
     // 守场员会 killApp() → launchApp()，整体最多约 50 秒。这里只轮询等端口出现：
     // 用 findLivePort() 而不是固定 PORT，因为守场员是独立进程、自己挑的空闲口。
