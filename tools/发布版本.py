@@ -368,6 +368,10 @@ def main():
     ap.add_argument("--notes", default="", help="更新说明（默认取 CHANGELOG 顶部）")
     ap.add_argument("--apply", action="store_true", help="真正外发（默认只预演）")
     ap.add_argument("--force", action="store_true", help="tag 已存在也继续（默认拒绝覆盖）")
+    ap.add_argument("--wire-version", default="",
+                    help="写进 version.json 的版本号（版本.py remote/local 都按它比）。"
+                         "默认同 --version；只有给旧版过渡时才另给，"
+                         "例如 0.72/0.73 那一代把版本写成两段，认不得 0.7.4")
     a = ap.parse_args()
 
     version = a.version.strip().lstrip("vV")
@@ -401,7 +405,13 @@ def main():
     if up_pkg:
         pkg = {"name": os.path.basename(up_pkg), "size": os.path.getsize(up_pkg),
                "sha256": sha256_file(up_pkg)}
-    meta, vj = prepare_local(version, a.notes, pkg)
+    # version.json 里记的号可以和 tag 不一样（2026-11-18）：
+    # 0.72/0.73 那两代客户端把版本写成两段，"0.72" 会被当成第二段 72，
+    # 拿去和 "0.7.4" 的 7 比永远更大 → 界面显示"已是最新"、实际升不上来。
+    # 所以这一版把 version.json 记成 0.74（老客户端认 74 > 72），
+    # 新客户端在 版本.py 里把它还原成 0.7.4 再比、再显示。tag 与文件名仍是 0.7.4。
+    wire = a.wire_version.strip() or version
+    meta, vj = prepare_local(wire, a.notes, pkg)
     body = make_body(version, meta.get("notes") or "", bool(setup),
                      gh_asset_name(os.path.basename(setup)) if setup else "", bool(up_pkg))
 

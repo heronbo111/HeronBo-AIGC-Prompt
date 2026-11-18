@@ -131,7 +131,7 @@ def current(tools_dir=None, with_hash=False):
     """我这一版是谁。exe 里读 _version.json；源码运行时用 SKILL.md + git 兜。"""
     d = _read_local_json()
     if d.get("version"):
-        out = {"version": str(d["version"]), "commit": d.get("commit") or "",
+        out = {"version": norm_version(str(d["version"])), "commit": d.get("commit") or "",
                "builtAt": d.get("builtAt") or "", "source": "exe" if _frozen() else "local",
                "exe": d.get("exe") or {}, "pkg": d.get("pkg") or {}, "repo": d.get("repo") or {},
                "notes": d.get("notes") or ""}
@@ -177,10 +177,30 @@ def remote(urls=None, timeout=12):
         with open(tmp, encoding="utf-8-sig") as f:
             d = json.load(f)
         if isinstance(d, dict) and d.get("version"):
+            # 远端也按三段看（2026-11-18）：0.74 这种给旧版过渡用的桥号，
+            # 新版自己要认成 0.7.4，否则会反复提示"有更新"、装完还是同一个号。
+            d = dict(d)
+            d["version"] = norm_version(str(d["version"]))
             return d
         return {}
     except Exception:                                            # noqa: BLE001
         return {}
+
+
+def norm_version(v):
+    """把历史里写成两段的号还原成三段看（2026-11-18）。
+
+    2026-11-18 用户报「0.72 和 0.73 都更新不了，界面显示已是最新，但明明有 0.7.4」：
+    根子是把 0.7.2 写成了 0.72——两段号里第二段"72"被当成数字 72，
+    拿去和 0.7.4 的"7"比，72 > 7，于是旧版永远觉得自己更新。
+    这里把 0.74 / 0.72 / 0.68 这类**主段为 0、第二段两位数**的号还原成 0.7.4 / 0.7.2 / 0.6.8，
+    只用于显示与比较；写文件、发版另走原值。
+    """
+    s = str(v or "").strip()
+    m = re.match(r"^0\.(\d)(\d)$", s)
+    if m:
+        return "0.%s.%s" % (m.group(1), m.group(2))
+    return s
 
 
 def vkey(v):
@@ -188,17 +208,20 @@ def vkey(v):
 
     为什么不直接比字符串：`"2.10" < "2.9"` 会得出"远端更旧"的错结论。
 
-    两段式特例（2026-10-10，用户规则「满 10 进大版本」）：版本序列改为 0.51、0.52…0.59 → 0.6
-    后，"0.6" 实际是"第 60 版"，必须当 0.60 比——否则 0.6 < 0.59，客户端永远不提示升级。
-    规则：**主段为 0** 的两段号、且第二段是个位数（1~9）时，第二段按"该数 ×10"参与比较
-    （0.6 → 0.60；0.51 仍是 51）。主段非 0 的号（如 minLauncher 的 2.9/2.10）不受影响，
-    仍按普通数字段比（2.10 > 2.9）；三段式 v0.5.x 老号也不受影响（第三位本来就是个位迭代）。
+    两段式处理（2026-11-18 重定）：
+      · 主段为 0、第二段是个位数（1~9）→ 当"该数 ×10"（0.6 → 0.60）；
+      · 主段为 0、第二段是两位数 → **拆成三段**（0.72 → 0.7.2，0.68 → 0.6.8）。
+        不拆的话 0.72 会变成"第二段 72"，比 0.7.4 的 7 还大，旧版永远提示"已是最新"——
+        这正是 2026-11-18 用户报的那个更新不了的 bug。
+    主段非 0 的号（如 minLauncher 的 2.9/2.10）不受影响，仍按普通数字段比（2.10 > 2.9）。
     """
     parts = str(v or "0").split(".")
-    if (len(parts) == 2 and parts[0].strip() == "0"
-            and len(parts[1].strip()) == 1 and parts[1].strip().isdigit()
-            and parts[1].strip() != "0"):
-        parts = [parts[0], parts[1] + "0"]
+    if len(parts) == 2 and parts[0].strip() == "0" and parts[1].strip().isdigit():
+        s = parts[1].strip()
+        if len(s) == 1 and s != "0":
+            parts = [parts[0], s + "0"]          # 0.6 → 0.60
+        elif len(s) == 2:
+            parts = [parts[0], s[0], s[1]]       # 0.72 → 0.7.2
     out = []
     for p in parts:
         p = p.strip()
