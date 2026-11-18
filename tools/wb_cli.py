@@ -266,6 +266,7 @@ def resolve(force=False):
         if not force and _CACHE["path"] and _CACHE["node"]:
             return _CACHE["path"], _CACHE["node"], ""
         path = ""
+        node = ""          # 候选一个都没有时也要有值，不然下面赋值会直接抛异常
         for cand in _candidates():
             node = os.path.abspath(os.path.join(os.path.dirname(cand), "..", "..",
                                                 "..", "..", "node.exe"))
@@ -293,6 +294,13 @@ def _cli_env(path):
     return env
 
 
+def _start_hint(why, denied=False):
+    """把启动失败的原话翻成用户看得懂的一句，别把路径和错误码甩给人家。"""
+    if denied:
+        return "豆包程序被安全软件拦住了：去安全软件里允许它运行，或者等几秒再点一次"
+    return "豆包程序没能启动：先关掉再点一次，还不行就换通道"
+
+
 def _run(args, timeout=60, cwd=None, env_extra=None, session_key=""):
     path, node, why = resolve()
     if not path:
@@ -315,14 +323,30 @@ def _run(args, timeout=60, cwd=None, env_extra=None, session_key=""):
     kw = {}
     if os.name == "nt":
         kw["creationflags"] = 0x08000000       # CREATE_NO_WINDOW
-    try:
-        p = subprocess.Popen(cmd, cwd=cwd or os.path.dirname(path),
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                             stdin=subprocess.DEVNULL, env=env,
-                             text=True, encoding="utf-8", errors="replace",
-                             **kw)
-    except Exception as e:  # noqa: BLE001
-        return {"rc": 1, "out": "", "err": str(e), "session": ""}
+    p = None
+    denied = False
+    for attempt in range(3):
+        try:
+            p = subprocess.Popen(cmd, cwd=cwd or os.path.dirname(path),
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 stdin=subprocess.DEVNULL, env=env,
+                                 text=True, encoding="utf-8", errors="replace",
+                                 **kw)
+            break
+        except Exception as e:  # noqa: BLE001
+            why = str(e)
+            # “拒绝访问”多半是安全软件正在查这个程序，等两秒再试一次就好，
+            # 不用让用户自己去点。真被禁止运行的话，三次都过不去。
+            denied = any(k in why for k in ("拒绝访问", "Access is denied",
+                                            "WinError 5", "EPERM"))
+            if denied and attempt < 2:
+                time.sleep(2)
+                continue
+            return {"rc": 1, "out": "", "err": _start_hint(why, denied),
+                    "session": ""}
+    if p is None:
+        return {"rc": 1, "out": "", "err": _start_hint("启动失败", denied),
+                "session": ""}
     if session_key:
         with _LOCK:
             _PROCS[session_key] = p
