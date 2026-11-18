@@ -1234,6 +1234,29 @@ def _run_quiet(cmd, timeout=25, cwd=None):
         return -1, str(e)
 
 
+def _wait_cdp(runner, js, deadline_sec=45):
+    """重启完别急着下结论，等豆包带着端口回来（最多 deadline_sec 秒）。
+
+    2026-11-18 用户报「我自己也试着打开了一遍，还是拉不起来」：
+    `restart --yes` 做的是"安排几秒后自动重启"，豆包十几秒才真的起来；
+    以前重启之后**立刻**查一次状态，那时豆包还在启动中，一律判成"没起来"，
+    用户点了半天看着就像拉不起来。现在每 3 秒查一次，通了就返回。
+    """
+    import time
+    t0 = time.time()
+    d = {}
+    while time.time() - t0 < deadline_sec:
+        _rc, out = _run_quiet([runner, js, "status"], timeout=60)
+        try:
+            d = json.loads(out[out.index("{"):])
+        except (ValueError, TypeError):
+            d = {}
+        if d.get("cdp"):
+            return d
+        time.sleep(1.5)
+    return d
+
+
 def quick_check(key, repair=False):
     """**免费**自检：跑这条 CLI 自己的版本/帮助命令，看它到底能不能启动。
 
@@ -1293,17 +1316,23 @@ def quick_check(key, repair=False):
                 # 后台轮询仍然只读不动机器，免得用户没点也把豆包踢一记。
                 if repair:
                     _run_quiet([runner, js, "restart", "--yes"], timeout=180)
-                    rc3, out3 = _run_quiet([runner, js, "status"], timeout=60)
-                    try:
-                        d3 = json.loads(out3[out3.index("{"):])
-                    except (ValueError, TypeError):
-                        d3 = {}
+                    d3 = _wait_cdp(runner, js)
                     if d3.get("cdp"):
                         return True, "通道已接通，可以继续使用"
                     return False, ("重启了豆包工作还是没接上——可能被安全软件挡了，"
                                    "或这个版本不支持这种接法。先把豆包手动关掉，再点一次「连通测试」")
                 return False, ("豆包工作开着，但这次没接上——点「出提示词」我会自动重启它一次"
                                "（几秒，对话都还在）。不想等就点「连通测试」重新接一下")
+            # 豆包压根没在跑（2026-11-18 用户报「我自己也试着打开了一遍，还是拉不起来」）：
+            # 以前这一支只回一句"没在跑"，用户点「连通测试」等半天什么也没发生，
+            # 看起来就是"拉不起来"。点测试本来就是想让它能用，所以这里真去启动一次。
+            if repair:
+                _run_quiet([runner, js, "restart", "--yes"], timeout=240)
+                d2 = _wait_cdp(runner, js)
+                if d2.get("cdp"):
+                    return True, "已启动并接通，可以继续使用"
+                return False, ("没能把生成平台启动起来——可能被安全软件挡了，"
+                               "或它正在自己更新。手动打开一下豆包工作，再点一次「连通测试」")
             return False, "生成平台没在跑：点「出提示词」时我会自动启动它"
         else:
             return None, "这条通道没有自检命令（自定义通道请点「真跑一句」）"

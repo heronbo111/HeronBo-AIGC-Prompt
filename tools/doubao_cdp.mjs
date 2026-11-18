@@ -1579,16 +1579,20 @@ async function launchApp() {
   // 沿用正在跑那个实例的数据目录（登录态/历史都在里面），别起第二个目录。
   // 豆包已经被关掉时抓不到运行实例，就用上次记下来的目录（state.udd）。
   const st = stateRead();
-  const udd = findUserDataDir() || st.udd || null;
+  // 先看上次记下的数据目录，别再跑一趟进程查询（2026-11-18 用户报「启动变慢了」）：
+  // 豆包没在跑的时候那趟查询必然落空，却要起一个 PowerShell 慢慢问，白等好几秒。
+  let udd = st.udd || null;
+  if (!udd) udd = findUserDataDir() || null;
   if (udd) { args.push('--user-data-dir=' + udd); try { stateWrite({ ...st, udd }); } catch {} }
   spawn(EXE, args, { detached: true, stdio: 'ignore' }).unref();
   for (let i = 0; i < 30; i++) {
     await sleep(1000);
     if (await cdpReady()) {
       await hideLaunchedWindow().catch(() => {});
-      // 再压一轮（有的客户端首帧窗口要 1–2s 才真正冒出来，第一轮 bounds 可能落空）
-      await sleep(2500);
-      await hideLaunchedWindow().catch(() => {});
+      // 第二轮补压放到后台做，别挡在这里（2026-11-18 用户报「启动变慢了」）：
+      // 以前这里无条件 sleep 2500ms 再压一轮，用户就在那儿干等这 2.5 秒。
+      // 第一轮已经把窗口摆正了，第二轮只是兜底，晚点做效果一样。
+      setTimeout(() => { hideLaunchedWindow().catch(() => {}); }, 2500).unref();
       return { ok: true };
     }
   }
@@ -3287,6 +3291,14 @@ function inDoubaoTree() {
 }
 
 async function actRestart() {
+  // 豆包根本没在跑时，没必要走"关掉再重开"那一套（2026-11-18 用户报「启动变得很慢了」）：
+  // 那条路要先跑一趟进程查询去抓数据目录、再起一个 WMI 守场员，守场员再去杀再去拉，
+  // 多出来的两趟 PowerShell 在机械盘上就是好几秒。没在跑就直接带调试端口拉起来。
+  if (!doubaoRunning()) {
+    step('生成平台没在跑，直接启动（没有东西要关）');
+    const r = await launchApp();
+    return (r && r.ok) ? 0 : 3;
+  }
   step('重启生成平台（几秒，对话历史都保留）');
   // 关之前先把数据目录记下来：豆包一关就抓不到命令行，重启会落到另一个数据目录（登录态/历史全换）。
   const udd0 = findUserDataDir();
