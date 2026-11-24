@@ -502,29 +502,6 @@ class _MiniDL:
                     f.write(buf)
 
 
-def mirror_env():
-    """让 faster_whisper / huggingface_hub 走国内镜像（设 `HF_ENDPOINT`，**不改调用方代码**）。
-
-    ⚠️ 2026-10-08 实测的**边界**：`HF_ENDPOINT=https://hf-mirror.com` 对小文件有效
-    （`hf_hub_download(...'config.json')` 成功），但 **LFS 大件不行**——镜像会把 `model.bin`
-    这类 302 到 HF 的 Xet CAS 服务器，然后被 `401 Unauthorized` 挡下来
-    （`cas-server.xethub.hf.co/v2/reconstructions/...`）。所以**下模型请走 `ensure()`**
-    （自己的下载器直取 resolve 直链，实测 461MB / 21.5MB/s / 支持 Range 续传）；
-    本函数只适合"模型已在本地缓存、只想让它别去连官方站"这类场景。
-
-    返回设好的 endpoint，供调用方打日志。
-    """
-    ep = os.environ.get("HF_ENDPOINT", "").strip()
-    if not ep:
-        ep = os.environ.get("HERONBO_HF_MIRROR", "").strip() or HF_MIRROR
-        os.environ["HF_ENDPOINT"] = ep
-    if os.environ.get("HERONBO_NO_HF") == "1":            # 显式要求离线：别偷偷联网
-        os.environ["HF_HUB_OFFLINE"] = "1"
-    else:
-        os.environ["HF_HUB_OFFLINE"] = "0"
-    return ep
-
-
 def _pip(cap, tools_dir, py, log):
     import subprocess
     v = vendor_dir(tools_dir)

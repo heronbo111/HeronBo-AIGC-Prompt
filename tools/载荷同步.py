@@ -25,7 +25,7 @@ REPO = os.path.dirname(HERE)                               # 仓库根
 EXCLUDE_DIRS = {".git", "__pycache__", "build", "_stage", "_release",
                 "wheels", "wheels-heavy", "wheels-stt", "wheels-depth"}
 EXCLUDE_FILES = {"*.local.json", "*.local.md", "*.pyc", "*.tgz",
-                 # 2026-10-22 瘦身：ffplay 播放器没人调用（与 打包发行.py 的 FFMPEG_DROP 同口径）
+                 # 2026-10-22 瘦身：ffplay 播放器没人调用，一起去掉
                  "ffplay.exe",
                  # 历史发布工具：硬编码本机路径，已移出公开仓，新机也用不上
                  "发布完整setup.py", "同步Gitee发行版.py", "重建GitHub v0.4.0.py"}

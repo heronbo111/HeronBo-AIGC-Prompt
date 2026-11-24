@@ -87,6 +87,8 @@ DEFAULT_MODEL = "Seedance 2.5"          # 2026-11-17 用户要求：默认就用
 DEFAULT_RATIO = "9:16"
 
 _LOCK = threading.Lock()
+# 正在跑的 CDP mjs 子进程：中止/取消时整棵树杀掉，别让它在后台挂着
+_CDP_PROC = {"proc": None}
 _STATE = {
     "running": False, "stage": "", "sid": "", "confirmText": "", "events": [],
     "params": {}, "result": None, "video": "", "error": "", "estimate": None,
@@ -540,11 +542,6 @@ def model_range(model):
     return None
 
 
-def model_limit(model):
-    r = model_range(model)
-    return r[1] if r else None             # 上限（兼容旧调用）
-
-
 def clamp_duration(model, sec):
     r = model_range(model)
     if not r:
@@ -849,13 +846,37 @@ def show_doubao(timeout=40):
     return {"ok": ok, "rc": rc, "error": "" if ok else (err or (out or "").strip()[-300:] or "没叫醒豆包")}
 
 
+def _kill_cdp_proc():
+    """把登记在案的 CDP mjs 子进程整棵树杀掉（取消/中止时兜底）。"""
+    with _LOCK:
+        p = _CDP_PROC.get("proc")
+    if not p:
+        return False
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"],
+                           capture_output=True, timeout=20,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        else:
+            p.kill()
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _run_video(args):
     if not ab:
         raise RuntimeError("组件缺失")
     stage = ""
+    outer_timeout = 0
     for i, a in enumerate(args):
         if str(a) == "--stage" and i + 1 < len(args):
             stage = str(args[i + 1])
+        if str(a) == "--timeout" and i + 1 < len(args):
+            try:
+                outer_timeout = int(args[i + 1])
+            except (TypeError, ValueError):
+                outer_timeout = 0
     if stage in ("prepare", "confirm"):
         _cdp_guard()          # 只在"要接管并操作页面"的阶段拦；cancel/collect 放行
     js = ab.doubao_js()
@@ -870,6 +891,8 @@ def _run_video(args):
                         stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
                         encoding="utf-8", errors="replace", bufsize=1,
                         **ab.no_window_kwargs())
+    with _LOCK:
+        _CDP_PROC["proc"] = p
 
     def _drain_err():
         try:
@@ -880,23 +903,63 @@ def _run_video(args):
             pass
 
     threading.Thread(target=_drain_err, daemon=True).start()
+
+    # 外层兜底：mjs 内部各阶段自己有 deadline，但万一它自己僵住（CDP 连接挂死之类），
+    # 外壳到点整棵树杀掉，别让子进程一直挂着——和 CLI / agent 桥的 kill 机制对齐。
+    killed = {"timeout": False}
+    timer = None
+    if outer_timeout > 0:
+        def _kill_tree():
+            killed["timeout"] = True
+            try:
+                if os.name == "nt":
+                    subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"],
+                                   capture_output=True, timeout=20,
+                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                else:
+                    p.kill()
+            except Exception:  # noqa: BLE001
+                try:
+                    p.kill()
+                except Exception:  # noqa: BLE001
+                    pass
+        timer = threading.Timer(outer_timeout + 30, _kill_tree)
+        timer.start()
+
     parts = []
-    for line in p.stdout:
-        if line.strip():
-            parts.append(line)
     try:
-        p.wait(timeout=30)
-    except Exception:  # noqa: BLE001
-        pass
+        for line in p.stdout:
+            if line.strip():
+                parts.append(line)
+        try:
+            p.wait(timeout=30)
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        if timer:
+            timer.cancel()
+        with _LOCK:
+            if _CDP_PROC.get("proc") is p:
+                _CDP_PROC["proc"] = None
     rc = p.returncode
     raw = "".join(parts).strip()
     obj = _extract_json(raw)
     if obj is not None:
         obj["returncode"] = rc
+        if killed["timeout"]:
+            obj["ok"] = False
+            obj["error"] = "这一轮等得太久，已经停掉，重试一次"
         return obj
+    # 内部返回码、原始输出只进日志，界面上给一句白话
+    _log("视频桥退出码 %s：%s" % (rc, raw[-200:] if raw else "（无输出）"))
+    if killed["timeout"]:
+        return {"ok": False, "state": "error", "returncode": rc, "raw": raw,
+                "error": "这一轮等得太久，已经停掉，重试一次"}
     if rc != 0:
-        raise RuntimeError("视频桥返回码 %s%s" % (rc, (("：" + raw[-200:]) if raw else "（看动作流）")))
-    return {"ok": False, "returncode": rc, "raw": raw}
+        return {"ok": False, "state": "error", "returncode": rc, "raw": raw,
+                "error": "生成没成功，重试一次"}
+    return {"ok": False, "returncode": rc, "raw": raw,
+            "error": "生成没成功，重试一次"}
 
 
 def _extract_json(raw):
@@ -942,19 +1005,6 @@ def set_bridge(mode):
     except Exception:  # noqa: BLE001
         persisted = False
     return {"ok": True, "mode": m, "persisted": persisted}
-
-
-def bridge_info():
-    """给首次配置页显示当前模式和 CDP 是否具备条件；不连 CDP、不拉起客户端。"""
-    cdp_ready, cdp_why = False, ""
-    try:
-        if ab:
-            cdp_ready, cdp_why = ab._probe_doubaowork()
-    except Exception as e:  # noqa: BLE001
-        cdp_why = str(e)[:160]
-    return {"mode": _VIDEO_BRIDGE, "cdp_ready": bool(cdp_ready),
-            "cdp_why": str(cdp_why or "")[:200],
-            "modes": list(_BRIDGE_MODES)}
 
 
 def _use_cli():
@@ -1181,6 +1231,8 @@ def start_confirm(p):
 
 
 def cancel_now(sid):
+    # 先把正在跑的桥进程整棵树杀掉，再发取消指令——免得旧进程还在后台挂着出片
+    _kill_cdp_proc()
     try:
         if _use_cli():
             r = cli_bridge.cancel(sid)
@@ -1191,6 +1243,29 @@ def cancel_now(sid):
     _done_set("cancelled", ok=False, error="", stageName="已取消")
     _flow("已取消视频任务", "think")
     return {"ok": True, "state": "cancelled", "sid": sid, "result": r}
+
+
+def abort_all():
+    """用户点「中止」时兜底：把 CDP 桥和 CLI 登记在案的子进程都整棵树杀掉。
+
+    动作流那条主进程由 agent_bridge.stop_current() 杀；这里补视频生成这条独立通道，
+    免得只杀了 agent 父进程，生视频的 CLI / mjs 还在后台跑。
+    """
+    killed = 0
+    if _kill_cdp_proc():
+        killed += 1
+    try:
+        if cli_bridge and hasattr(cli_bridge, "cancel_all"):
+            killed += int(cli_bridge.cancel_all().get("killed") or 0)
+    except Exception:  # noqa: BLE001
+        pass
+    # 进程杀了就把视频任务状态落下来，别让前端轮询还停在"运行中"
+    if killed:
+        with _LOCK:
+            was_running = bool(_STATE.get("running"))
+        if was_running:
+            _done_set("cancelled", ok=False, error="", stageName="已中止")
+    return {"ok": True, "killed": killed}
 
 
 # ---------------- 高层 API（server 薄路由调用） ----------------

@@ -194,7 +194,7 @@ def _proc_seconds(pid):
 
 
 def stop_current():
-    """把正在跑的 agent 任务杀掉（界面上的「暂停」按钮）。
+    """把正在跑的 agent 任务杀掉（界面上的「中止」按钮）。
 
     为什么需要：agent 一跑就是几分钟，ZCode 这条通道还不吐过程输出；万一它卡住/跑飞了，
     用户只能等超时（30 分钟）——这不合理。
@@ -2112,8 +2112,8 @@ def ask(prompt, session_id=None, cwd=None, timeout=DEFAULT_TIMEOUT,
         return {"ok": ok, "agent": key, "agent_label": ADAPTERS[key]["label"],
                 "session_id": sid_out, "text": text, "cmd": cmd, "returncode": rc,
                 "stderr": err[-2000:],
-                "error": "" if ok else ("超时 %ds 已终止" % timeout if killed["timeout"]
-                                        else (text or ("CLI 返回码 %s" % rc)))}
+                "error": "" if ok else ("这一轮等得太久，已经停掉，重试一次" if killed["timeout"]
+                                        else ("生成没成功，重试一次"))}
     if mode == "codex-json":
         text = (text_parts[-1] if text_parts else "").strip()
         if out_file and os.path.isfile(out_file):
@@ -2131,8 +2131,8 @@ def ask(prompt, session_id=None, cwd=None, timeout=DEFAULT_TIMEOUT,
         return {"ok": ok, "agent": key, "agent_label": ADAPTERS[key]["label"],
                 "session_id": session_id, "text": text, "cmd": cmd, "returncode": rc,
                 "stderr": err[-2000:],
-                "error": "" if ok else ("超时 %ds 已终止" % timeout if killed["timeout"]
-                                        else "CLI 返回码 %s" % rc)}
+                "error": "" if ok else ("这一轮等得太久，已经停掉，重试一次" if killed["timeout"]
+                                        else "生成没成功，重试一次")}
     res = _parse_output(raw)
     sid = stream_sid or session_id
     text = ""
@@ -2154,13 +2154,13 @@ def ask(prompt, session_id=None, cwd=None, timeout=DEFAULT_TIMEOUT,
         return {"ok": False, "agent": key, "agent_label": ADAPTERS[key]["label"],
                 "session_id": sid, "text": "", "res": res, "returncode": rc, "cmd": cmd,
                 "stderr": err[-2000:],
-                "error": dsh_err or ("超时 %ds 已终止" % timeout if killed["timeout"]
-                                     else "CLI 返回码 %s" % rc)}
+                "error": dsh_err or ("这一轮等得太久，已经停掉，重试一次" if killed["timeout"]
+                                     else "生成没成功，重试一次")}
     return {"ok": ok, "agent": key, "agent_label": ADAPTERS[key]["label"],
             "session_id": sid, "text": text, "res": res, "returncode": rc, "cmd": cmd,
             "stderr": err[-2000:],
-            "error": "" if ok else ("超时 %ds 已终止" % timeout if killed["timeout"]
-                                    else ("agent 报错" if is_err else "CLI 返回码 %s" % rc))}
+            "error": "" if ok else ("这一轮等得太久，已经停掉，重试一次" if killed["timeout"]
+                                    else ("agent 报错" if is_err else "生成没成功，重试一次"))}
 
 
 def _dsh_error_from_events(raw):

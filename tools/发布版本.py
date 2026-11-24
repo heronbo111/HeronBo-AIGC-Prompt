@@ -34,6 +34,7 @@ import mimetypes
 import os
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -106,6 +107,33 @@ def make_body(version, notes, has_setup, setup_name, has_update=True):
             if item.strip():
                 lines.append("- " + item.strip())
     return "\n".join(lines).strip()
+
+
+def check_payload_version(version, setup=""):
+    """发版前核对：安装包肚子里的载荷是不是这一版。
+
+    2026-11-20 实踩：一键打包只把 setup-common.iss 里的名字刷成新号，载荷还是上一版，
+    用户装「v0.7.5」的包，界面却显示 0.7.4。这里直接读载荷自述的版本号，
+    对不上就拦下来；顺带看安装包是不是比载荷还老（比载荷旧＝大概率拿旧 Setup 充数）。
+    """
+    pkg_ver = os.path.normpath(os.path.join(
+        os.path.dirname(HERE), "..", "HeronBo-Workbench",
+        "installer", "pkg-real", "skill", "tools", "_version.json"))
+    if not os.path.isfile(pkg_ver):
+        return "找不到载荷版本身份（%s）——先跑一键打包，别直接发" % pkg_ver
+    try:
+        with open(pkg_ver, encoding="utf-8") as f:
+            got = str((json.load(f) or {}).get("version") or "")
+    except Exception as e:                                       # noqa: BLE001
+        return "载荷版本身份读不出来：%s" % str(e)[:60]
+    if got != version:
+        return ("载荷自述 %s，这次要发 %s —— 安装包是拿旧载荷编的，先重跑一键打包"
+                % (got or "（空）", version))
+    if setup and os.path.isfile(setup) and os.path.getmtime(setup) + 60 < os.path.getmtime(pkg_ver):
+        return ("安装包比载荷还老（Setup %s / 载荷 %s）—— 多半是上一版留下的，重新编一遍再发"
+                % (time.strftime("%m-%d %H:%M", time.localtime(os.path.getmtime(setup))),
+                   time.strftime("%m-%d %H:%M", time.localtime(os.path.getmtime(pkg_ver)))))
+    return ""
 
 
 
@@ -365,7 +393,9 @@ def main():
     ap.add_argument("--update", default="",
                     help="在线更新包路径（默认自动找 _安装包\\HeronBo-Workbench-Update-v<版本>.zip）")
     ap.add_argument("--target", default="", help="release 指向的分支（默认当前分支）")
-    ap.add_argument("--notes", default="", help="更新说明（默认取 CHANGELOG 顶部）")
+    # --notes 从 2026-11-20 起停用：更新说明只能从 CHANGELOG 顶部来。
+    # 以前发版时另给一句话当正文，结果 Release 上是一句、客户端弹窗里是另一段（这次就撞上了）。
+    ap.add_argument("--notes", default="", help=argparse.SUPPRESS)
     ap.add_argument("--apply", action="store_true", help="真正外发（默认只预演）")
     ap.add_argument("--force", action="store_true", help="tag 已存在也继续（默认拒绝覆盖）")
     ap.add_argument("--wire-version", default="",
@@ -379,6 +409,9 @@ def main():
     if not all(p.isdigit() for p in version.split(".")):
         log("版本号应为 X.Y.Z 数字段，收到：%s" % version)
         return 2
+    if a.notes.strip():
+        log("不再接受 --notes：更新说明只从 CHANGELOG 顶部生成，Release 正文和客户端弹窗必须是同一份。")
+        return 2
     target = a.target or current_branch()
 
     if not os.path.isfile(SCORE):
@@ -387,6 +420,12 @@ def main():
     setup = a.setup.strip()
     if setup and not os.path.isfile(setup):
         log("找不到完整安装包：%s" % setup)
+        return 3
+
+    # 安装包里的载荷必须就是这一版；名字对了、肚子不对的包一律不许发（2026-11-20 实踩）
+    bad = check_payload_version(version, setup)
+    if bad:
+        log(bad)
         return 3
 
     # onedir（2026-10-16 起）：dist\score-tool.exe 旁边有 _internal\ —— 单发那个 exe 是残缺件
@@ -411,7 +450,7 @@ def main():
     # 所以这一版把 version.json 记成 0.74（老客户端认 74 > 72），
     # 新客户端在 版本.py 里把它还原成 0.7.4 再比、再显示。tag 与文件名仍是 0.7.4。
     wire = a.wire_version.strip() or version
-    meta, vj = prepare_local(wire, a.notes, pkg)
+    meta, vj = prepare_local(wire, "", pkg)
     body = make_body(version, meta.get("notes") or "", bool(setup),
                      gh_asset_name(os.path.basename(setup)) if setup else "", bool(up_pkg))
 

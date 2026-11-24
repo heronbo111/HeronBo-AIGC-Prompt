@@ -296,11 +296,14 @@ def _notes_from_changelog(tools_dir=None):
             cat = s[4:].strip()
             continue
         if s.startswith("- "):
-            item = s[2:].strip()[:40]
+            # 2026-11-20 实踩：原来每条只留 40 字、整段再砍到 220 字，弹窗里一句话被拦腰切断
+            # （“以前这一步只回一句‘没在跑’，不会真” 后面就没了）。现在整条保留，
+            # 弹窗那个盒子本来就能滚动，不该为了省地方把句子写残。
+            item = s[2:].strip()
             out.append(("%s：%s" % (cat, item)) if cat else item)
-            if len(out) >= 5:
+            if len(out) >= 8:
                 break
-    txt = " ｜ ".join(out)[:220]
+    txt = " ｜ ".join(out)
     # 更新说明是要显示在界面上的，去掉 markdown 记号（**粗体**、`代码`、[文字](链接)）
     txt = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", txt)
     txt = txt.replace("**", "").replace("`", "")

@@ -36,7 +36,7 @@ python tools/提示词体检.py --project "<项目目录>"   # 提示词外形�
 python tools/打包换位.py                      # 开发者重打/换位工作台 exe（普通用户走完整安装包）
 python tools/换exe.py                        # 换工作台 exe（要求当前没有实例在跑）
 tools/score_gui.cmd                          # 弹评分窗口（或直接跑 tools/dist/score-tool.exe）
-python tools/发布exe附件.py                   # 把大件/exe 发到 Release 附件
+python tools/发布版本.py --version <版本> --apply   # 统一发版：安装包 + 更新包发到双平台 Release
 ```
 
 ## 铁律
@@ -114,6 +114,7 @@ python tools/发布exe附件.py                   # 把大件/exe 发到 Release
    （状态条 / 弹窗 / 按钮名 / 报错 / 更新与安装提示）**一律不许出现专业性描述**，只用他能懂的简易白话：
    先说现在什么情况，再说该点哪里。端口号、进程名与 PID、命令行原文、CDP / CLI / IPC / API / token
    这类技术词一个都不许露。细则、对照表、自检命令见 `tools/AGENTS.md` 文末「客户端文案只讲人话」。
+6. **代码卫生**：新方案上去顺手把旧实现拆掉，同一职责不并存两套；不留下只被注释标着"已废弃"的空壳、前端没接的孤儿接口、类内没人调的私有辅助。工具链细则与排查口径见 `tools/AGENTS.md`「改脚本时的硬约定」第 8 条。
 
 ## 当前认领
 

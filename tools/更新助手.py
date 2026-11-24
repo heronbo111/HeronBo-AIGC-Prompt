@@ -415,7 +415,7 @@ def alive(pid, timeout=3.0):
 def clean_stale_mei(max_age_hours=24.0):
     """把 %TEMP% 里断头解包留下的 _MEI* 清掉（2026-10-06 加）。
 
-    来源：工作台被 taskkill（「暂停」按钮）/ 更新换位等异常退出时，PyInstaller 的
+    来源：工作台被 taskkill（「中止」按钮）/ 更新换位等异常退出时，PyInstaller 的
     onefile 解包目录删不掉，一次就漏一个（新机上实测一晚上攒了 8 个）。只动
     **24 小时前**的目录——正在跑的实例最多也就开几个钟头，不会误删活人的解包。
     """

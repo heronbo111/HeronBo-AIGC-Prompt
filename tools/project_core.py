@@ -719,13 +719,6 @@ def new_round(project_dir, feedback_text, push=True, kind="反馈"):
     return n
 
 
-def list_rounds(project_dir):
-    d = os.path.join(session_dir(project_dir), ROUND_DIR)
-    if not os.path.isdir(d):
-        return []
-    return sorted(f for f in os.listdir(d) if f.endswith(".txt"))
-
-
 def accept_deliverables(project_dir, paths, verdict="good", note="", on_log=None):
     """接收成片/废片：good → 成片/，bad → 废片/（文件名=日期-废因，符合命名约定）。
 

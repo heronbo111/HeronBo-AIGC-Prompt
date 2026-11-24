@@ -1366,6 +1366,15 @@ const CONFIRM_UI = `(() => {
     const t = text(el);
     if (t === '确认' || t === '确定' || t === '继续') { if (click(el)) return t; }
   }
+  // 授权类弹窗（允许读本地文件 / 调用工具）：只认按钮上的允许侧，正文里的"允许"不算；
+  // 带 不 / 拒绝 / 取消 / 否 的一律跳过，避免误点到对面。
+  const allowWords = ['始终允许', '允许本次', '不再询问', '允许', '同意'];
+  for (const el of all.filter(vis)) {
+    if (!el.matches || !el.matches('button,[role="button"],[role="option"],[role="menuitem"]')) continue;
+    const t = text(el);
+    if (t.length > 12 || /不|拒绝|取消|否/.test(t)) continue;
+    if (allowWords.some(w => t === w || t.includes(w))) { if (click(el)) return t.slice(0, 80); }
+  }
   return '';
 })()`;
 // 2026-11-13 取回成片的两条新通道（实测：豆包经常**不在页面放 <video>**，

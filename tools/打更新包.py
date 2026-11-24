@@ -8,7 +8,7 @@ r"""打在线更新包：把 dist\ 的工作台本体（onedir）压成 zip—�
 客户端下载 → 校验 → 交更新助手解压摊入工作台目录。
 
 内容：dist\score-tool.exe + dist\_internal\（**只有这两样**——*.local.json 本机配置与凭据、
-_old\ 旧版备份、score-tool_旧_*.exe 都不进包，与 打包发行.py 的 _zip_workbench 同一口径）。
+_old\ 旧版备份、score-tool_旧_*.exe 都不进包）。
 zip 顶层**不带目录**（更新助手解压后直接摊入；它也兼容"套了一层同名目录"的老结构）。
 版本号读 tools\_version.json（打包换位.py 打包时会按 SKILL.md 重写它）。
 

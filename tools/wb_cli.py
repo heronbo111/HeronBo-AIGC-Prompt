@@ -353,9 +353,11 @@ def _run(args, timeout=60, cwd=None, env_extra=None, session_key=""):
 
     # 不能一边 communicate() 一边另开线程读 stderr：两者会抢同一个管道，
     # Windows 上容易把输出吞掉甚至卡住。communicate 本身会同时收 stdout/stderr。
+    timed_out = False
     try:
         out, errout = p.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
+        timed_out = True
         try:
             p.kill()
         except Exception:  # noqa: BLE001
@@ -368,7 +370,7 @@ def _run(args, timeout=60, cwd=None, env_extra=None, session_key=""):
     text = _clean(out or "")
     err = _clean(errout or "")
     sess = _sess_of(text)
-    return {"rc": rc, "out": text, "err": err, "session": sess}
+    return {"rc": rc, "out": text, "err": err, "session": sess, "timed_out": timed_out}
 
 
 def auth_status(force=False, quick=False):
@@ -473,8 +475,8 @@ def _login_reader(proc, entry):
             entry["ended"] = True
             entry["out"] = "\n".join(lines)[-1600:]
             if rc != 0:
-                entry["message"] = "登录进程结束（返回码 %s）：%s" % (
-                    rc, entry["out"].splitlines()[-1] if entry["out"] else "未登录")
+                entry["message"] = "登录没成功：%s" % (
+                    entry["out"].splitlines()[-1] if entry["out"] else "未登录")
             elif not entry.get("qr"):
                 entry["message"] = "登录进程已结束，但没有生成二维码；请重新生成"
 
@@ -528,8 +530,8 @@ def _login_watch_system(b, job, entry):
                 entry["rc"] = st.get("rc")
                 entry["out"] = out[-1600:]
                 if st.get("rc") not in (0, None):
-                    entry["message"] = "登录进程结束（返回码 %s）：%s" % (
-                        st.get("rc"), lines[-1] if lines else "未登录")
+                    entry["message"] = "登录没成功：%s" % (
+                        lines[-1] if lines else "未登录")
                 elif not entry.get("qr"):
                     entry["message"] = "登录进程结束，但没有生成二维码；请重新生成"
             b.cleanup(job, drop_files=False)
@@ -1020,9 +1022,10 @@ def generate_image(prompt, outdir, ratio="16:9", model="seedream_5.5",
     r = _run(["-p", task, "-C", outdir, "--permission-mode", "always_allow"],
               timeout=timeout, cwd=outdir, session_key=session_key)
     if r["rc"] != 0:
-        return {"ok": False, "error": "CLI 返回码 %s：%s" % (
-            r["rc"], (r["err"] or r["out"] or "无输出")[-300:]),
-            "raw": r, "taskFile": pfile, "session": r.get("session", "")}
+        return {"ok": False,
+                "error": "这一轮等得太久，已经停掉，重试一次" if r.get("timed_out")
+                         else "生成没成功，重试一次",
+                "raw": r, "taskFile": pfile, "session": r.get("session", "")}
     files = _scan(outdir, (".png", ".jpg", ".jpeg", ".webp"), started)
     # 目标路径优先；否则用本轮最新文件（CLI 有时会自行改名）
     if os.path.isfile(target):
@@ -1103,9 +1106,10 @@ def generate_video(prompt, outdir, ratio="9:16", duration=5,
     r = _run(["-p", task, "-C", outdir, "--permission-mode", "always_allow"],
               timeout=timeout, cwd=outdir, session_key=session_key)
     if r["rc"] != 0:
-        return {"ok": False, "error": "CLI 返回码 %s：%s" % (
-            r["rc"], (r["err"] or r["out"] or "无输出")[-300:]),
-            "raw": r, "taskFile": pfile, "session": r.get("session", "")}
+        return {"ok": False,
+                "error": "这一轮等得太久，已经停掉，重试一次" if r.get("timed_out")
+                         else "生成没成功，重试一次",
+                "raw": r, "taskFile": pfile, "session": r.get("session", "")}
     files = _scan(outdir, (".mp4", ".mov", ".mkv", ".webm"), started)
     if os.path.isfile(target):
         files = [target] + [p for p in files if os.path.abspath(p) != os.path.abspath(target)]
@@ -1148,8 +1152,21 @@ def cancel(session_key):
         return {"ok": False, "error": str(e)}
 
 
-def available_for_channel():
-    """给前端/后端展示的简短状态。"""
-    ok, why = available()
-    return {"ok": ok, "why": why, "version": version() if ok else "",
-            "path": resolve()[0] or ""}
+def cancel_all():
+    """把登记在案的 CLI 子进程整棵树都杀掉（用户点「中止」时兜底，怕只杀 agent 父进程漏了 CLI 这条）。"""
+    with _LOCK:
+        procs = list(_PROCS.items())
+        _PROCS.clear()
+    killed = 0
+    for _key, p in procs:
+        try:
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"],
+                               capture_output=True, timeout=15,
+                               creationflags=0x08000000)
+            else:
+                p.kill()
+            killed += 1
+        except Exception:  # noqa: BLE001
+            pass
+    return {"ok": True, "killed": killed}
